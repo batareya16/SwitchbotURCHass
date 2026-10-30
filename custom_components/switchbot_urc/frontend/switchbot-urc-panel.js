@@ -137,8 +137,12 @@ class SwitchBotUrcPanel extends HTMLElement {
   _ensureLayout() {
     if (!this._entryId || !this._remoteId) return;
     if (!this._remote()?.layout_editable) return;
-    if (this._physical && this._physicalFor === this._remoteId) return;
-    this._physicalFor = this._remoteId;
+    // Track the attempt, not its result. Keying this on `_physical` meant that a remote whose
+    // layout cannot be loaded was retried from inside every render, and since the request ends
+    // in another render that was an endless loop that took the whole panel down.
+    const token = `${this._entryId}:${this._remoteId}`;
+    if (this._physicalFor === token) return;
+    this._physicalFor = token;
     this._physical = null;
     this._physicalBaseline = null;
     this._openPhysical();
@@ -318,6 +322,24 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
+    // A throw while building the markup used to leave an empty shadow root and a blank page,
+    // which hides the very message that would explain it. Render failures are shown instead.
+    try {
+      this._renderUnsafe();
+    } catch (error) {
+      console.error("SwitchBot URC panel failed to render", error);
+      this.shadowRoot.innerHTML = `<style>${this._styles()}</style><main><div class="error">
+        <b>The panel could not be drawn.</b><br>${escapeHtml(error?.message || String(error))}
+        <br><br><button class="secondary" id="renderRetry">Reload</button></div></main>`;
+      this.shadowRoot.getElementById("renderRetry")?.addEventListener("click", () => {
+        this._physical = null;
+        this._physicalFor = null;
+        this._load();
+      });
+    }
+  }
+
+  _renderUnsafe() {
     const entry = this._entry();
     const remote = this._remote();
     const page = this._page();

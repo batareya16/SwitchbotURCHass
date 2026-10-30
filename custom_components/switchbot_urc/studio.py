@@ -28,7 +28,7 @@ from . import studio_physical
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.20.1"
+FRONTEND_VERSION = "0.20.2"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
