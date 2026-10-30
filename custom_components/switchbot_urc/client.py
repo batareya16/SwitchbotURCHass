@@ -29,11 +29,22 @@ ManagementProxyCallback = Callable[
 ]
 # 0x00 is the successful per-part acknowledgement used by the IR bank uploader. Normal
 # commands still validate their stage-specific accepted codes in send_command_sequence.
-_STATUS_RESPONSES = frozenset({0x00, 0x01, 0x02, 0x04, 0x10, 0x11})
-# Observed decrypted status packets start with 0x3C on current WoRWS firmware. Keep the
-# older 0x4E/0x4F variants accepted because captures from earlier firmware used those forms.
-_STATUS_POLL_RESPONSES = frozenset({0x3C, 0x4E, 0x4F})
-_UNSOLICITED_RESPONSES = _STATUS_POLL_RESPONSES
+_STATUS_RESPONSES = frozenset({0x00, 0x01, 0x02, 0x04, 0x05, 0x10, 0x11})
+# Observed decrypted status packets start with 0x3C, 0x4A, 0x4C, 0x4D, 0x4E or 0x4F: the first
+# byte is not fixed, so an allowlist of it keeps going stale. Every capture so far is sixteen
+# bytes whose second byte is 0x2D or 0x30, which is what is matched instead.
+_STATUS_POLL_RESPONSES = frozenset({0x3C, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F})
+
+
+def is_status_packet(plaintext: bytes) -> bool:
+    """Whether a decrypted notify is an unsolicited status record rather than a reply.
+
+    Treating one as a reply shifts every later response in a sequence by one, which is hard to
+    spot and easy to misread as the device rejecting a command.
+    """
+    if len(plaintext) != 16 or plaintext[1] not in (0x2D, 0x30):
+        return False
+    return plaintext[0] not in _STATUS_RESPONSES
 
 
 class UrcResponseDecodeError(RuntimeError):
@@ -649,7 +660,7 @@ class UrcClient:
         if self._response_fut is not None and not self._response_fut.done() and plaintext:
             if self._expected_response_codes is None or plaintext[0] in self._expected_response_codes:
                 self._response_fut.set_result(plaintext)
-            elif plaintext[0] in _UNSOLICITED_RESPONSES:
+            elif is_status_packet(plaintext):
                 _LOGGER.debug(
                     "ignored unsolicited status notify while waiting for command response: %s",
                     plaintext.hex(),

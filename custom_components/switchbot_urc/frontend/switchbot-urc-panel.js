@@ -920,4 +920,10 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 }
 
-customElements.define("switchbot-urc-panel", SwitchBotUrcPanel);
+// Home Assistant can evaluate this module more than once — navigating back to the panel, or a
+// version change that leaves an earlier copy registered. A second define() throws, and because
+// that happens while the module is still being evaluated nothing below it runs and the panel
+// stays blank, with no chance for the render-time error handler to report anything.
+if (!customElements.get("switchbot-urc-panel")) {
+  customElements.define("switchbot-urc-panel", SwitchBotUrcPanel);
+}
