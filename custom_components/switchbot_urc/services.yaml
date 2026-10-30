@@ -1,0 +1,179 @@
+send_command:
+  name: Send raw command
+  description: >
+    Encrypt + frame + send a raw plaintext command (hex) to the remote. The leading 0x57
+    transport magic is added automatically — pass the plaintext without it (e.g. "0F6206...").
+  fields:
+    address:
+      name: Address
+      description: BLE MAC of the remote (optional if only one is configured).
+      example: "A1:B2:C3:D4:E5:F6"
+      selector: { text: {} }
+    plaintext:
+      name: Plaintext (hex)
+      description: Command plaintext as hex, without the 0x57 magic.
+      required: true
+      example: "02"
+      selector: { text: {} }
+
+create_remote:
+  name: Create remote
+  description: Create/bind one remote page (0F 62 06). For a new native target, use bind_native.
+  fields:
+    address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
+    remote_index:
+      name: Remote index
+      description: Slot index for the remote (0-based).
+      required: true
+      selector: { number: { min: 0, max: 254, mode: box } }
+    name:
+      name: Name
+      description: Display name of the remote.
+      required: true
+      example: "HASS Lamp"
+      selector: { text: {} }
+    device_id:
+      name: Device / target id
+      description: 12 hex chars — the exec/target id (e.g. the host the remote drives).
+      required: true
+      example: "021791812216"
+      selector: { text: {} }
+    device_type:
+      name: Device type
+      description: HID types or any decoded native SwitchBot device layout.
+      default: UNIVERSAL_BLE
+      selector: { select: { options: [UNIVERSAL_BLE, GOOGLE_TV, FIRE_TV, APPLE_TV, LIGHT, STRIP, CURTAIN, BLIND_TILT, CEILING, BULB, FAN, ROLLER_SHADE, AIR_PURIFIER_US, HUMIDIFIER, LOCK, SWITCH, GARAGE_DOOR, TRV] } }
+    icon:
+      name: Icon
+      default: light
+      selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch, tv] } }
+    control_mode:
+      name: Control mode
+      default: 0
+      selector: { number: { min: 0, max: 255, mode: box } }
+
+delete_remote:
+  name: Delete remote
+  description: Delete a remote from the device (0F 62 04 02).
+  fields:
+    address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
+    remote_index:
+      name: Remote index (legacy hint)
+      description: Optional. The integration reads the device table and uses the required sequential index automatically.
+      selector: { number: { min: 0, max: 254, mode: box } }
+    device_id:
+      name: Device / target id
+      description: 12 hex chars identifying the remote.
+      required: true
+      selector: { text: {} }
+    device_type:
+      name: Device type
+      default: UNIVERSAL_BLE
+      selector: { select: { options: [UNIVERSAL_BLE, GOOGLE_TV, FIRE_TV, APPLE_TV, LIGHT, STRIP, FAN, CEILING, CANDLE] } }
+
+hid_pair:
+  name: HID-pair to host
+  description: >
+    Tell the remote to HID-pair (become a BLE keyboard) to a host MAC (0F 62 0E 01). The host
+    must accept the incoming BLE-HID pairing (Linux/BlueZ; macOS does not). Response 11 = not paired.
+  fields:
+    address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
+    host_mac:
+      name: Host MAC
+      description: Real BLE MAC of the host the remote should pair to (12 hex / colon form).
+      required: true
+      example: "DC:A6:32:11:22:33"
+      selector: { text: {} }
+
+set_state_ac:
+  name: Set AC state (screen)
+  description: Draw AC state (temp/mode/fan) on the remote screen (0F 41 02).
+  fields:
+    address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
+    temp: { name: Temperature, required: true, selector: { number: { min: 16, max: 30, mode: box } } }
+    mode: { name: Mode, required: true, selector: { number: { min: 0, max: 5, mode: box } } }
+    fan: { name: Fan, required: true, selector: { number: { min: 0, max: 5, mode: box } } }
+    power_on: { name: Power on, default: true, selector: { boolean: {} } }
+
+poll_status:
+  name: Poll status
+  description: Send a status poll (0x02); the reply is logged and fired as a notify event.
+  fields:
+    address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
+
+bind_native:
+  name: Bind native target
+  description: >
+    Provision the fake target key (0F 20 09), associate it with the target MAC (0F 20 08), then
+    bind the real native strip/light page (0F 62 06). Start the bridge add-on before calling this.
+  fields:
+    address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
+    remote_index:
+      name: Legacy remote-index hint
+      description: Optional compatibility hint. The integration reads the device table and uses its current length.
+      required: false
+      selector: { number: { min: 0, max: 254, mode: box } }
+    name:
+      name: Name
+      description: Name shown on the remote.
+      required: true
+      example: "HASS Bridge"
+      selector: { text: {} }
+    device_id:
+      name: Fake target MAC
+      description: BLE MAC of the adapter owned by the bridge add-on (12 hex or colon form).
+      required: true
+      example: "001122334455"
+      selector: { text: {} }
+    device_type:
+      name: Native type
+      default: STRIP
+      selector: { select: { options: [PLUG, PLUG_US, PLUG_JP, CURTAIN, CURTAIN_3, BLIND_TILT, CEILING, CEILING_PRO, BULB, LIGHT, STRIP, FLOOR_LAMP, RGBICWW_LIGHT_BARS, STRIP_3, NEON_LIGHT, RGBICWW_STRIP_LIGHT, RGBICWW_FLOOR_LAMP, RGBIC_NEON_WIRE_ROPE_LIGHT, RGBIC_NEON_ROPE_LIGHT, RGBIC_PERMANENT_OUTDOOR_LIGHT, CEILING_LIGHT_2, CANDLE, CANDLE_LAMP, BOT, FAN, FAN_2, FAN_3, FAN_PRO, ROLLER_SHADE, AIR_PURIFIER_US, AIR_PURIFIER_JP, AIR_PURIFIER_US_PRO, AIR_PURIFIER_JP_PRO, HUMIDIFIER, HUMIDIFIER_2, LOCK, LOCK_LITE, LOCK_PRO, LOCK_PRO_WIFI, LOCK_2, LOCK_ULTRA_2, VISION_DEADBOLT, VISION_DEADBOLT_PRO, SWITCH, SWITCH_1PM, SWITCH_1PLUS, PLUG_EU, GARAGE_DOOR, TRV] } }
+    icon:
+      name: Icon
+      default: strip
+      selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch] } }
+    target_key:
+      name: Target AES key
+      description: 32 hexadecimal characters; must match device_key in the bridge add-on.
+      required: true
+      example: "00112233445566778899aabbccddeeff"
+      selector: { text: {} }
+    replace_existing:
+      name: Replace existing target
+      description: Delete an existing remote that already uses the same fake-target MAC before binding.
+      default: false
+      selector: { boolean: {} }
+
+dump_device_table:
+  name: Dump device table
+  description: >
+    Read the remote's own device table (0F 63 07) and return it. Read-only: nothing on the
+    remote is created, changed or deleted. Use it to find the slot index a new remote must
+    take (it is the current row count) and the eleven-byte id each installed remote stores.
+  fields:
+    address:
+      name: Address
+      description: BLE MAC of the remote (optional if only one is configured).
+      example: "A1:B2:C3:D4:E5:F6"
+      selector: { text: {} }
+
+send_command_sequence:
+  name: Send raw commands in one session
+  description: >
+    Send several raw plaintext commands (hex, without the 0x57 magic) inside ONE management
+    session, the way native binding does, and return every response. Use this when a command
+    is only accepted after an earlier command in the same connection; send_command opens a
+    fresh connection and handshake for each call.
+  fields:
+    address:
+      name: Address
+      description: BLE MAC of the remote (optional if only one is configured).
+      example: "A1:B2:C3:D4:E5:F6"
+      selector: { text: {} }
+    plaintexts:
+      name: Plaintexts (hex)
+      description: Ordered list of command plaintexts as hex, each without the 0x57 magic.
+      required: true
+      example: '["02", "0f620600..."]'
+      selector: { object: {} }

@@ -1,0 +1,459 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SwitchBot Universal Remote",
+        "description": "Enter the remote's BLE address and its communication key.",
+        "data": {
+          "address": "BLE address (MAC)",
+          "key_id": "Key ID (hex, e.g. 95)",
+          "key": "Communication key (32 hex chars)"
+        }
+      },
+      "cloud_setup": {
+        "title": "Connect SwitchBot cloud?",
+        "description": "Cloud access is optional, but it provides names and cloud-only IR/HID remotes. You can also configure it later.",
+        "menu_options": {
+          "cloud_connect": "Connect SwitchBot cloud",
+          "cloud_skip": "Skip cloud setup"
+        }
+      },
+      "cloud_connect": {
+        "title": "SwitchBot cloud account",
+        "description": "Sign in with the same email and password you use in the SwitchBot app. Home Assistant stores only renewable tokens; your password is never saved.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "cloud_home": {
+        "title": "Choose a SwitchBot home",
+        "description": "This account has more than one home. Select the home that contains this Universal Remote.",
+        "data": {
+          "home": "Home"
+        }
+      }
+    },
+    "error": {
+      "key_length": "Key must be 16 bytes (32 hex characters).",
+      "key_hex": "Key must be valid hexadecimal.",
+      "key_id_hex": "Key ID must be valid hexadecimal.",
+      "key_id_range": "Key ID must fit in one byte (00-FF).",
+      "cloud_auth_failed": "Sign-in failed. Check the email and password. Accounts that use Google, Apple, or Amazon sign-in are not supported by password login yet.",
+      "cloud_no_homes": "Sign-in succeeded, but no SwitchBot homes were returned.",
+      "cloud_home_failed": "The selected home could not be validated."
+    },
+    "abort": {
+      "already_configured": "This remote is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Manage remotes",
+        "menu_options": {
+          "add_remote_menu": "Add remote",
+          "manage_existing_remote": "Edit / recreate remote",
+          "remote_manager": "View / refresh remote inventory",
+          "remote_bindings": "Remote bindings",
+          "refresh_all_remotes": "Refresh all remotes from device + cloud",
+          "cloud_account": "SwitchBot cloud account",
+          "update_credentials": "Update WoRWS communication key",
+          "diagnostics_menu": "Diagnostics and maintenance"
+        }
+      },
+      "remote_bindings": {
+        "title": "Remote bindings",
+        "menu_options": {
+          "quick_bind": "Quick bind a whole remote",
+          "edit_mappings": "Edit mappings"
+        }
+      },
+      "quick_bind": {
+        "title": "Quick bind",
+        "description": "Choose a logical WoRWS remote and a Home Assistant light. A complete default mapping will be generated; it can be edited later without rewriting the physical remote.",
+        "data": {
+          "remote_id": "Remote",
+          "entity_id": "Light"
+        }
+      },
+      "quick_bind_review": {
+        "title": "Review quick binding",
+        "description": "Remote: {remote}\nTarget: {entity}\n\n{mappings}",
+        "data": {
+          "confirm": "Save this binding"
+        }
+      },
+      "edit_mappings": {
+        "title": "Edit mappings",
+        "description": "Select a saved whole-remote binding. Changes affect Home Assistant actions only and do not rewrite the WoRWS remote.",
+        "data": {
+          "binding": "Binding"
+        }
+      },
+      "mapping_menu": {
+        "title": "Edit {remote}",
+        "description": "Edit the generated light preset or assign any Home Assistant action to one exact physical button.",
+        "menu_options": {
+          "edit_mapping": "Edit Quick-bind light preset",
+          "edit_button_action": "Edit an individual button action"
+        }
+      },
+      "edit_mapping": {
+        "title": "Edit mappings for {remote}",
+        "description": "Choose an action for every physical button group. Changes take effect immediately and remain linked by stable remote ID, even if the remote moves to another slot.",
+        "data": {
+          "entity_id": "Light",
+          "enabled": "Binding enabled",
+          "power_on": "Power on button",
+          "power_off": "Power off button",
+          "brightness_up": "Brightness up button",
+          "brightness_down": "Brightness down button",
+          "warmer": "Warmer button",
+          "cooler": "Cooler button",
+          "center": "Centre / OK button",
+          "button_a": "Button A",
+          "button_b": "Button B",
+          "button_c": "Button C",
+          "button_d": "Button D"
+        }
+      },
+      "edit_button_action": {
+        "title": "Choose a button on {remote}",
+        "description": "Buttons are identified by their screen page and physical key index, so mappings remain distinct across multi-page remotes.",
+        "data": {
+          "button_id": "Physical button"
+        }
+      },
+      "configure_button_action": {
+        "title": "Action for {button}",
+        "description": "Remote: {remote}. Build any Home Assistant action sequence below. An empty sequence disables this button. Enable ‘Use Quick-bind default’ to remove the override and inherit the light preset again. No automation entity is created.",
+        "data": {
+          "actions": "Actions",
+          "use_quick_bind_default": "Use Quick-bind default"
+        }
+      },
+      "remote_manager": {
+        "title": "Remote manager",
+        "description": "This is the merged live list from the Universal Remote and SwitchBot cloud. Choose whether you want to add a new remote or work with an existing one. Slots are detected and maintained automatically.\n\n{remotes}",
+        "data": {
+          "action": "What do you want to do?"
+        }
+      },
+      "add_remote_menu": {
+        "title": "Add remote",
+        "menu_options": {
+          "bind_native": "Add native remote",
+          "add_ir_remote": "Add IR remote",
+          "add_remote": "Add HID remote"
+        }
+      },
+      "manage_existing_remote": {
+        "title": "Edit / recreate remote",
+        "description": "Select an existing remote. Its current physical slot is detected automatically.\n\n{remotes}",
+        "data": {
+          "remote": "Remote"
+        }
+      },
+      "existing_remote_actions": {
+        "title": "Remote actions",
+        "description": "Selected remote: {remote}",
+        "menu_options": {
+          "edit_remote": "Rename remote",
+          "customize_native_remote": "Edit pages and buttons",
+          "recreate_remote": "Recreate remote",
+          "delete_managed_remote": "Delete remote"
+        }
+      },
+      "recreate_remote": {
+        "title": "Recreate remote",
+        "description": "Edit the information below, then recreate {remote} ({kind}) in a newly detected slot. The existing entry is removed first.",
+        "data": {
+          "name": "Name shown on the remote",
+          "device_id": "Target Bluetooth MAC / device ID",
+          "device_type": "Remote layout",
+          "icon": "Screen icon",
+          "target_key": "Target AES key (same as add-on device_key)",
+          "buttons": "Buttons",
+          "confirm": "Confirm recreation"
+        }
+      },
+      "edit_remote": {
+        "title": "Rename remote",
+        "description": "Rename {remote} on the Universal Remote and, for a cloud IR remote, in SwitchBot cloud too.",
+        "data": {
+          "name": "New name"
+        }
+      },
+      "delete_managed_remote": {
+        "title": "Delete remote",
+        "description": "Delete {remote} from the Universal Remote and remove its matching cloud record when applicable?",
+        "data": {
+          "confirm": "Confirm deletion"
+        }
+      },
+      "cloud_account": {
+        "title": "SwitchBot cloud account",
+        "description": "Sign in with the same email and password you use in the SwitchBot app. Home Assistant stores only renewable tokens and refreshes them automatically; your password is never saved.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "cloud_account_home": {
+        "title": "Choose a SwitchBot home",
+        "description": "This account has more than one home. Select the home that contains this Universal Remote.",
+        "data": {
+          "home": "Home"
+        }
+      },
+      "update_credentials": {
+        "title": "Update WoRWS communication key",
+        "description": "Update the rotating communication key and key ID used to encrypt commands sent to the Universal Remote. This is not the add-on target key. The integration reloads after saving.",
+        "data": {
+          "key_id": "WoRWS key ID (hex)",
+          "key": "WoRWS communication key (32 hex characters)"
+        }
+      },
+      "bind_native": {
+        "title": "Add native remote",
+        "description": "Choose a native device template for the fake hub. Every native remote can be edited later: templates only provide the initial pages and buttons. Each native tile requires its own live bridge MAC; slots and stable IDs are managed automatically. Current stage/result: {status}",
+        "data": {
+          "name": "Name shown on the remote",
+          "device_id": "Bridge add-on Bluetooth adapter MAC",
+          "device_type": "Native layout",
+          "icon": "Screen icon",
+          "target_key": "Target AES key (same as add-on device_key)"
+        }
+      },
+      "custom_native_builder": {
+        "title": "Remote layout",
+        "description": "Create or edit the complete Main/A/B/C/D layout. Standard device types are templates, not locked profiles. Technical slots and IDs are managed automatically. Page names are stored in Home Assistant; the WoRWS screen uses its native A-D icons.",
+        "data": {
+          "name": "Remote name",
+          "device_id": "Bridge add-on Bluetooth adapter MAC",
+          "icon": "Screen icon",
+          "target_key": "Target AES key (same as add-on device_key)",
+          "pages": "Enabled submenu pages",
+          "page_1_name": "Page A name in Home Assistant",
+          "page_2_name": "Page B name in Home Assistant",
+          "page_3_name": "Page C name in Home Assistant",
+          "page_4_name": "Page D name in Home Assistant"
+        }
+      },
+      "customize_native_remote": {
+        "title": "Edit pages and buttons"
+      },
+      "custom_native_main": {
+        "title": "Remote layout — Main page",
+        "description": "Assign a function to each physical position. A-D positions with enabled pages are reserved for their page links: {page_links}.",
+        "data": {
+          "slot_a": "A position",
+          "slot_b": "B position",
+          "slot_c": "C position",
+          "slot_d": "D position",
+          "slot_on": "ON position",
+          "slot_off": "OFF position",
+          "slot_left": "LEFT position",
+          "slot_right": "RIGHT position",
+          "slot_up": "UP position",
+          "slot_down": "DOWN position",
+          "slot_ok": "OK position",
+          "slot_back": "BACK position",
+          "slot_home": "HOME position",
+          "slot_kata": "Red shortcut position",
+          "slot_soundoff": "MUTE position",
+          "slot_voladd": "VOLUME + position",
+          "slot_voldel": "VOLUME - position",
+          "slot_chup": "CHANNEL + position",
+          "slot_chdown": "CHANNEL - position"
+        }
+      },
+      "custom_native_page": {
+        "title": "Remote layout — Page {page}",
+        "description": "Choose up to 18 categorized actions for page {page} ({name}). WoRWS displays its matching built-in icon; Home Assistant receives the page, button index, function, friendly name and MDI icon.",
+        "data": {
+          "actions": "Actions"
+        }
+      },
+      "custom_native_review": {
+        "title": "Review remote layout",
+        "description": "Review the editable layout before writing it to the Universal Remote. The integration preserves the stable remote ID and Home Assistant button mappings when an existing remote is updated.\n\n{layout}",
+        "data": {
+          "confirm": "Install this remote"
+        }
+      },
+      "add_ir_remote": {
+        "title": "Add IR remote",
+        "menu_options": {
+          "ir_saved_cloud": "Install a remote saved in SwitchBot cloud",
+          "ir_catalog_type": "Add from the SwitchBot IR catalog",
+          "ir_captured": "Use the captured fallback profile"
+        }
+      },
+      "ir_saved_cloud": {
+        "title": "Install a saved cloud IR remote",
+        "description": "Downloads the complete code bank and button map saved by the official app, then selects the WoRWS slot automatically. Current stage/result: {status}",
+        "data": {
+          "remote_id": "Saved remote",
+          "name": "Name shown on the remote",
+          "replace_existing": "Replace the matching remote if already installed"
+        }
+      },
+      "ir_catalog_type": {
+        "title": "SwitchBot IR catalog",
+        "description": "Choose an appliance type. The catalog metadata is local; the selected code bank is downloaded from your SwitchBot account.",
+        "data": {
+          "remote_type": "Appliance type"
+        }
+      },
+      "ir_catalog_brand": {
+        "title": "Choose a brand",
+        "description": "Catalog type: {remote_type}",
+        "data": {
+          "brand": "Brand"
+        }
+      },
+      "ir_catalog_model": {
+        "title": "Choose an IR model",
+        "description": "The integration downloads this model exactly as the official app does, installs it locally, and saves/binds it to your SwitchBot cloud account. Current stage/result: {status}",
+        "data": {
+          "model": "Model / code set",
+          "name": "Name shown on the remote",
+          "replace_existing": "Replace the matching remote if already installed"
+        }
+      },
+      "ir_captured": {
+        "title": "Captured IR fallback",
+        "description": "Installs the known-good code bank recovered from the trace. This path works without cloud access. Current stage/result: {status}",
+        "data": {
+          "profile": "IR profile",
+          "name": "Name shown on the remote",
+          "replace_existing": "Replace this IR profile if it is already installed"
+        }
+      },
+      "native_diagnostics": {
+        "title": "Native diagnostics",
+        "description": "Runs the read-only 0F 63 query set against the Universal Remote. It can take about 30 seconds. Copy the results shown here after it finishes. Current results: {results}",
+        "data": {
+          "run": "Run read-only diagnostics"
+        }
+      },
+      "test_native_bridge": {
+        "title": "Test native bridge connectivity",
+        "description": "Checks that the saved fake-target MAC is advertising and can be observed through Home Assistant's other Bluetooth adapter. The bridge's firmware-specific raw ATT path is verified by an actual WoRWS button press. Current result: {status}",
+        "data": {
+          "run": "Run connectivity test"
+        }
+      },
+      "add_remote": {
+        "title": "Add an HID remote",
+        "description": "The physical slot is selected automatically. UniversalBLE needs a prior HID pair.",
+        "data": {
+          "name": "Name",
+          "device_type": "Device type",
+          "icon": "Screen icon",
+          "device_id": "Target / host id (12 hex)",
+          "buttons": "Buttons"
+        }
+      },
+      "remove_remote": {
+        "title": "Remove a remote",
+        "data": {
+          "remote": "Remote"
+        }
+      },
+      "pair_host": {
+        "title": "HID-pair to a host",
+        "description": "Tell the remote to pair as a BLE keyboard to this host MAC. The host must accept the pairing (Linux/BlueZ).",
+        "data": {
+          "host_mac": "Host MAC"
+        }
+      },
+      "diagnostics_menu": {
+        "title": "Diagnostics and maintenance",
+        "description": "Checks that are only needed when something is wrong, or when setting up an HID remote.",
+        "menu_options": {
+          "test_native_bridge": "Test native bridge connectivity",
+          "native_diagnostics": "Native diagnostics (read-only)",
+          "pair_host": "HID-pair to a host"
+        }
+      }
+    },
+    "error": {
+      "key_length": "Key must be 16 bytes (32 hex characters).",
+      "key_hex": "Key must be valid hexadecimal.",
+      "key_id_hex": "Key ID must be valid hexadecimal.",
+      "key_id_range": "Key ID must fit in one byte (00-FF).",
+      "not_connected": "Not connected to the remote over Bluetooth.",
+      "not_found": "That remote was not found.",
+      "no_reply": "No reply from the device (timeout).",
+      "resp_value_err": "Device rejected the command (value/operation error, 0x02).",
+      "resp_format_err": "Device rejected the command (format error, 0x04).",
+      "resp_hid_no_pair": "Remote is not HID-paired to a host yet (0x11). Pair it first.",
+      "resp_unknown": "Device returned an unexpected error code.",
+      "target_key_id_hex": "Target key ID must be hexadecimal.",
+      "target_key_id_range": "Target key ID must fit in one byte (00-FF).",
+      "target_key_hex": "Target key must be valid hexadecimal.",
+      "target_key_length": "Target key must be 16 bytes (32 hexadecimal characters).",
+      "native_table_timeout": "The Universal Remote device table could not be read.",
+      "device_id_invalid": "Enter exactly six hexadecimal MAC bytes.",
+      "native_target_mac_in_use": "This target MAC already belongs to a native tile. WoRWS requires a different live BLE MAC for every additional native tile.",
+      "communication_key_invalid": "An encrypted reply arrived but could not be decoded. The WoRWS communication key/key ID is stale or incorrect; update it and retry.",
+      "native_set_key_timeout": "The remote did not answer the target-key command (set_key timeout).",
+      "native_set_key_rejected": "The remote rejected the target-key command. The response code is shown above.",
+      "native_associate_timeout": "The remote did not answer the target association command (associate timeout).",
+      "native_associate_rejected": "The remote rejected the target association command. The response code is shown above.",
+      "native_bind_timeout": "The remote did not answer the native page command (bind timeout).",
+      "native_bind_main_timeout": "The remote did not answer the native main-page command (bind_main timeout).",
+      "native_bind_page_1_timeout": "The remote did not answer the native Page A command.",
+      "native_bind_page_2_timeout": "The remote did not answer the native Page B command.",
+      "native_bind_page_3_timeout": "The remote did not answer the native Page C command.",
+      "native_bind_page_4_timeout": "The remote did not answer the native Page D command.",
+      "native_bind_colors_timeout": "The remote did not answer the native colour-page command (bind_colors timeout).",
+      "native_bind_rejected": "The remote rejected the native page command. The response code is shown above.",
+      "native_transport_error": "BLE transport failed. Check the Home Assistant log.",
+      "native_handshake_timeout": "The secure session could not be established. The delete command was not sent. Check that the dedicated bridge adapter is excluded from WoRWS management routes.",
+      "native_bridge_not_paused": "The add-on did not acknowledge the pause request, so the remote is still bonded to the fake device and the secure session could not start. Make sure the SwitchBot URC Bridge add-on is running the matching version and connected to MQTT, then retry.",
+      "too_many_custom_buttons": "A submenu can contain at most 18 buttons.",
+      "empty_custom_page": "Select at least one action, or go back and disable this page.",
+      "bridge_not_configured": "No saved native bridge target is available. Bind it once first.",
+      "bridge_not_found": "The bridge adapter was not observed by a direct scan on hci0. Check its advertising, adapter assignment, and radio range.",
+      "bridge_test_failed": "Could not complete the GATT/crypto bridge test. The exact error is shown above and logged.",
+      "bridge_test_rejected": "The bridge connected but did not acknowledge the encrypted test command.",
+      "ir_profile_invalid": "The selected IR profile is invalid.",
+      "ir_table_timeout": "The Universal Remote device table could not be read.",
+      "ir_duplicate_requires_replace": "This IR profile is already installed. Enable replacement to reinstall it.",
+      "ir_delete_failed": "The existing IR profile could not be removed.",
+      "ir_install_timeout": "The Universal Remote did not answer an IR installation stage after three retries. The current stage is shown above.",
+      "ir_install_rejected": "The Universal Remote rejected an IR installation stage. The current stage and response are shown above.",
+      "ir_transport_error": "IR installation failed at the BLE transport layer. Check the Home Assistant log.",
+      "ir_cloud_download_failed": "The SwitchBot cloud did not return a usable IR code bank, or saving the new cloud record failed. Check the log and account region.",
+      "inventory_refresh_failed": "Could not read the current remote list from the Universal Remote.",
+      "remote_required": "Select a remote for this action.",
+      "rename_failed": "The Universal Remote rejected the rename command.",
+      "delete_failed": "The Universal Remote rejected the delete command.",
+      "remote_operation_failed": "The remote operation failed. Check the Home Assistant log.",
+      "recreate_credentials_missing": "This native remote cannot be recreated because its saved bridge credentials are unavailable. Add it again through Add remote instead.",
+      "recreate_profile_missing": "This remote cannot be recreated because its complete local or cloud profile is unavailable.",
+      "recreate_not_supported": "Recreation is not supported for this remote type.",
+      "cloud_auth_failed": "Sign-in failed. Check the email and password. Accounts that use Google, Apple, or Amazon sign-in are not supported by password login yet.",
+      "cloud_no_homes": "Sign-in succeeded, but no SwitchBot homes were returned.",
+      "cloud_home_failed": "The selected home could not be validated.",
+      "cloud_update_failed": "The local change succeeded, but the SwitchBot cloud update failed. Refresh the list before retrying.",
+      "cloud_refresh_token_required": "Enter a refresh token.",
+      "invalid_actions": "Home Assistant could not validate this action sequence."
+    },
+    "abort": {
+      "no_remotes": "No remotes to remove.",
+      "no_bindable_remotes": "No locally managed remote with a stable ID is available. Recreate or add a native remote first.",
+      "no_bindings": "No remote bindings have been created yet. Use Quick bind first.",
+      "button_list_unavailable": "This remote does not have a locally known native button layout, so individual button actions cannot be edited yet.",
+      "cloud_not_configured": "Connect a SwitchBot cloud account first.",
+      "cloud_no_ir_remotes": "No saved IR remotes were found in this SwitchBot account.",
+      "catalog_empty": "The selected catalog section is empty.",
+      "remote_not_on_device": "That remote exists only in the cloud and cannot be renamed on the device.",
+      "inventory_unavailable": "The current physical remote list could not be read, so no change was made."
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# The bridge add-on is published as its own repository (see addons/repository.yaml),
+# so it is not committed here.
+addons/
