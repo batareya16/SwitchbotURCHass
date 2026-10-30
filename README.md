@@ -161,6 +161,26 @@ local.
 **Refresh all remotes from device + cloud** re-reads both sides, merges them by stable id and
 saves a cleaned snapshot with a timestamp. Opening the Remote manager does the same automatically.
 
+### Adding and removing remotes from Studio
+
+The remote selector has **Add native remote** and **Delete remote**. Creating reuses the bridge
+credentials captured when the first native remote was installed, so it only asks for a name;
+IR and HID remotes still need the integration settings, because one needs a catalogue choice and
+the other a pairing step. Deleting reads the device table, proves the row is there, performs the
+single destructive write in that same session and then re-reads the table before dropping the
+local record.
+
+### Whether a press reaches Home Assistant
+
+Each remote says so, because offering an action for a press that never arrives is the most
+confusing thing the panel can do:
+
+- **native** — presses go to the bridge add-on and arrive as Home Assistant events;
+- **HID** — presses go to the host the remote is paired with, and reach Home Assistant only when
+  that host is this machine and it is connected;
+- **IR** — the remote transmits to the appliance and nothing comes back. For these the Home
+  Assistant mapping is not offered at all; the key itself stays editable.
+
 ## Diagnostics and maintenance
 
 **Configure → Diagnostics and maintenance** groups the checks that are only needed when

@@ -113,6 +113,7 @@ class UrcClient:
         self._response_fut: asyncio.Future[bytes] | None = None
         self._query_fut: asyncio.Future[bytes] | None = None
         self._expected_response_codes: frozenset[int] | None = None
+        self._expect_status_reply = False
         self._unexpected_response: tuple[bytes, bytes] | None = None
         self._credential_refresh_cb = credential_refresh_cb
         self._bridge_pause_cb = bridge_pause_cb
@@ -658,7 +659,11 @@ class UrcClient:
         _LOGGER.debug("notify [%s] raw=%s plain=%s", CHAR_NOTIFY, raw.hex(), plaintext.hex())
         # Deliver a command response to any waiter.
         if self._response_fut is not None and not self._response_fut.done() and plaintext:
-            if self._expected_response_codes is None or plaintext[0] in self._expected_response_codes:
+            if (
+                self._expected_response_codes is None
+                or plaintext[0] in self._expected_response_codes
+                or (self._expect_status_reply and is_status_packet(plaintext))
+            ):
                 self._response_fut.set_result(plaintext)
             elif is_status_packet(plaintext):
                 _LOGGER.debug(
@@ -716,6 +721,9 @@ class UrcClient:
         loop = asyncio.get_running_loop()
         self._response_fut = loop.create_future()
         self._unexpected_response = None
+        # The status poll is answered with a status record, so for that command alone a
+        # status-shaped notify is the reply rather than something to skip.
+        self._expect_status_reply = plaintext == bytes([0x02])
         if plaintext == bytes([0x02]):
             self._expected_response_codes = _STATUS_POLL_RESPONSES
         elif plaintext.startswith(bytes([0x0F])):

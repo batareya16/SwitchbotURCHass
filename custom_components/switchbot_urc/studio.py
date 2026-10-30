@@ -25,10 +25,11 @@ from .bindings import (
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
 from .ir_profiles import PROFILES
 from . import studio_physical
+from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.20.5"
+FRONTEND_VERSION = "0.21.0"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -259,6 +260,32 @@ def remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None = None) 
     return pages
 
 
+def _reachability(remote: dict[str, Any]) -> dict[str, str]:
+    """Whether pressing this remote's buttons can reach Home Assistant at all.
+
+    Offering a Home Assistant action for a button whose press never arrives is the single most
+    confusing thing the panel can do, so the answer travels with every remote.
+    """
+    device_type = str(remote.get("device_type", "")).upper()
+    if device_type.startswith("IR_") or device_type == "IR_TV":
+        return {
+            "level": "none",
+            "text": "Infrared only. The remote transmits straight to the appliance and nothing "
+                    "comes back, so Home Assistant never sees these presses.",
+        }
+    if device_type in commands.DEVTYPE:
+        return {
+            "level": "conditional",
+            "text": "HID. Presses go to the host this remote is paired with. They reach Home "
+                    "Assistant only when that host is this machine and it is connected.",
+        }
+    return {
+        "level": "full",
+        "text": "Native. Presses are delivered to the bridge add-on and arrive as Home Assistant "
+                "events.",
+    }
+
+
 def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     registry = er.async_get(hass)
     unique_id = f"{str(entry.data[CONF_ADDRESS]).replace(':', '').lower()}_battery"
@@ -279,18 +306,21 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "remote_id": remote_id,
                 "name": str(remote.get("name") or remote_id),
                 "device_type": device_type,
+                "reachability": _reachability(remote),
                 "layout_editable": True,
                 "remote_slot": remote.get("index"),
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
             }
         )
+    target = entry.data.get("native_target") or {}
     return {
         "entry_id": entry.entry_id,
         "title": entry.title,
         "address": entry.data[CONF_ADDRESS],
         "battery": battery_state.state if battery_state else None,
         "remotes": remotes,
+        "can_create_native": bool(target.get("device_id") and target.get("target_key")),
     }
 
 
@@ -549,6 +579,7 @@ async def async_register_studio(hass: HomeAssistant) -> None:
         if not store.get("_studio_commands_registered"):
             websocket_api.async_register_command(hass, ws_studio_get)
             studio_physical.register(hass)
+            studio_remotes.register(hass)
             websocket_api.async_register_command(hass, ws_studio_save_labels)
             websocket_api.async_register_command(hass, ws_studio_save_button_action)
             websocket_api.async_register_command(hass, ws_studio_quick_bind)
