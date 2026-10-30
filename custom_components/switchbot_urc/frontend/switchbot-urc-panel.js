@@ -379,7 +379,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             <div class="identity"><span>Stable ID</span><code>${escapeHtml(remote?.remote_id || "—")}</code><small>Slot ${escapeHtml(remote?.remote_slot ?? "unknown")}</small></div>
           </section>
           ${this._renderApplyBar()}
-          ${remote && !this._physical ? `
+          ${remote ? `
             <section class="quick-bind">
               <div><b>Quick bind</b><span>Apply a complete light preset; individual buttons can override it.</span></div>
               <select id="lightSelect"><option value="">Choose a light…</option>${lights.map((state) => `<option value="${escapeHtml(state.entity_id)}" ${state.entity_id === boundLight ? "selected" : ""}>${escapeHtml(state.attributes.friendly_name || state.entity_id)}</option>`).join("")}</select>
@@ -400,7 +400,7 @@ class SwitchBotUrcPanel extends HTMLElement {
               </section>
               <aside class="editor">${button ? this._editor(button, remote) : `<div class="empty small">Choose a button.</div>`}</aside>
             </div>
-          ` : this._physical ? "" : `<div class="empty"><b>No locally managed remotes.</b><br>Add a remote or import an existing HID remote.</div>`}
+          ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
         ` : ""}
       </main>`;
     this._wireEvents();
@@ -642,15 +642,11 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _wireEvents() {
     const root = this.shadowRoot;
-    for (const id of ["entrySelect", "remoteSelect", "refresh", "editLayout"]) {
+    for (const id of ["entrySelect", "remoteSelect", "refresh"]) {
       const el = root.getElementById(id);
       if (el) el.disabled = this._physicalBusy;
     }
-    if (root.getElementById("refresh") && this._physical) root.getElementById("refresh").disabled = true;
     root.getElementById("refresh")?.addEventListener("click", () => this._refresh());
-    root.getElementById("editLayout")?.addEventListener("click", () => {
-      if (!this._physicalBusy) this._openPhysical();
-    });
     this._wirePhysical();
     root.getElementById("entrySelect")?.addEventListener("change", (event) => {
       this._entryId = event.target.value;
