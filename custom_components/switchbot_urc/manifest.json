@@ -2,8 +2,8 @@
   "domain": "switchbot_urc",
   "name": "SwitchBot Universal Remote (WoRWS)",
   "version": "0.19.32",
-  "documentation": "https://github.com/batareya16/switchbot-urc",
-  "issue_tracker": "https://github.com/batareya16/switchbot-urc/issues",
+  "documentation": "https://github.com/batareya16/SwitchbotURCHass",
+  "issue_tracker": "https://github.com/batareya16/SwitchbotURCHass/issues",
   "dependencies": [
     "bluetooth_adapters",
     "frontend",
