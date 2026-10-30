@@ -44,6 +44,7 @@ from .client import (
 from .cloud import (
     CloudError,
     SwitchBotCloudClient,
+    parse_communication_credentials,
 )
 from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import CONF_ADDRESS, CONF_KEY, CONF_KEY_ID, DOMAIN, RESP_OK
@@ -89,6 +90,9 @@ _RESP_ERR = {
 
 def _valid(data: dict[str, Any]) -> dict[str, str]:
     errors: dict[str, str] = {}
+    if not data.get(CONF_KEY) and not data.get(CONF_KEY_ID):
+        # Both blank means "fetch them from the account"; the cloud step then fills them in.
+        return errors
     try:
         if len(bytes.fromhex(data[CONF_KEY])) != 16:
             errors[CONF_KEY] = "key_length"
@@ -145,8 +149,8 @@ class UrcConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required(CONF_ADDRESS, default=self._discovered_address or ""): str,
-                vol.Required(CONF_KEY_ID, default="95"): str,
-                vol.Required(CONF_KEY): selector.TextSelector(
+                vol.Optional(CONF_KEY_ID, default=""): str,
+                vol.Optional(CONF_KEY, default=""): selector.TextSelector(
                     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
                 ),
             }
@@ -166,6 +170,8 @@ class UrcConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         if self._pending_data is None:
             return await self.async_step_user()
+        if not self._pending_data.get(CONF_KEY):
+            return self.async_abort(reason="key_or_account_required")
         return self.async_create_entry(
             title=f"Universal Remote {self._pending_data[CONF_ADDRESS]}",
             data=self._pending_data,
@@ -275,6 +281,21 @@ class UrcConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="cloud_home_failed")
         data = dict(self._pending_data)
         data["cloud"] = candidate
+        if not data.get(CONF_KEY):
+            # The communication key rotates and the account is its source of truth, so there is
+            # no reason to make anyone copy it by hand when they have just signed in.
+            try:
+                credentials = parse_communication_credentials(
+                    await cloud.get_communication_key()
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("could not fetch the WoRWS communication key: %s", err)
+                credentials = None
+            if credentials is None:
+                return self.async_abort(reason="cloud_no_communication_key")
+            key, key_id = credentials
+            data[CONF_KEY] = key.hex()
+            data[CONF_KEY_ID] = f"{key_id:02X}"
         return self.async_create_entry(
             title=f"Universal Remote {data[CONF_ADDRESS]}", data=data
         )

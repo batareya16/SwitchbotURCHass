@@ -6,8 +6,8 @@
         "description": "Enter the remote's BLE address and its communication key.",
         "data": {
           "address": "BLE address (MAC)",
-          "key_id": "Key ID (hex, e.g. 95)",
-          "key": "Communication key (32 hex chars)"
+          "key_id": "Key ID (leave empty to fetch it from your account)",
+          "key": "Communication key (leave empty to fetch it from your account)"
         }
       },
       "cloud_setup": {
@@ -44,7 +44,9 @@
       "cloud_home_failed": "The selected home could not be validated."
     },
     "abort": {
-      "already_configured": "This remote is already configured."
+      "already_configured": "This remote is already configured.",
+      "cloud_no_communication_key": "Signed in, but the account did not return a communication key for this remote. Check that the remote belongs to the selected home, or enter the key manually.",
+      "key_or_account_required": "Either sign in to SwitchBot so the communication key can be fetched, or go back and enter the key and key ID by hand."
     }
   },
   "options": {

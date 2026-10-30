@@ -24,7 +24,8 @@ re-pairing. Use it at your own risk, on hardware you own.
 - Two BLE controllers. One stays with Home Assistant to talk to the WoRWS; the other is handed
   entirely to the add-on as a BLE peripheral. The second adapter must not also be used by Home
   Assistant as a scanner — disable it under Settings → Connectivity → Bluetooth → Adapters.
-- The WoRWS communication key and key id for the integration.
+- A SwitchBot account, or the WoRWS communication key and key id if you would rather not
+  connect one. The key rotates, and the account is where it comes from.
 - A separate 16-byte AES key of your choosing for the fake device. The same value goes in the
   add-on configuration and in `bind_native`.
 
@@ -32,8 +33,11 @@ re-pairing. Use it at your own risk, on hardware you own.
 
 1. Copy `custom_components/switchbot_urc/` to `/config/custom_components/switchbot_urc/` and
    restart Home Assistant.
-2. Add the **SwitchBot Universal Remote (WoRWS)** integration; give it the remote's address,
-   `key_id` and 32-character hex key.
+2. Add the **SwitchBot Universal Remote (WoRWS)** integration. Home Assistant normally
+   discovers the remote over Bluetooth and fills in its address. Leave the key and key ID empty
+   and sign in to your SwitchBot account on the next screen: the communication key is fetched
+   from the account, which is where it comes from anyway and which is also where it rotates.
+   Entering the key by hand still works if you do not want to connect an account.
 3. Install the bridge add-on from
    [switchbot-urc-addon](https://github.com/batareya16/switchbot-urc-addon): add that repository
    under Settings → Add-ons → Add-on Store → ⋮ → Repositories, install **SwitchBot URC Bridge**,
