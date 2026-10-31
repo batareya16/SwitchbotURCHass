@@ -453,6 +453,18 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
 
 async def _set_bridge_paused(hass: HomeAssistant, paused: bool) -> bool:
     """Ask the add-on to release or restore the fake hub radio and await its ACK."""
+    return await async_bridge_control(hass, "pause" if paused else "resume")
+
+
+async def async_bridge_control(
+    hass: HomeAssistant, action: str, extra: dict | None = None
+) -> bool:
+    """Send one control request to the add-on and await its acknowledgement.
+
+    `pause`/`resume` free and restore the controller for a management session. `addresses`
+    changes which BLE addresses the bridge advertises, which is how a newly bound native tile
+    starts being answered without anyone editing the add-on's configuration.
+    """
     store = hass.data[DOMAIN]
     waiters: dict[str, asyncio.Future[bool]] = store.setdefault(
         "_bridge_control_waiters", {}
@@ -470,7 +482,6 @@ async def _set_bridge_paused(hass: HomeAssistant, paused: bool) -> bool:
         return False
     from homeassistant.components import mqtt
 
-    action = "pause" if paused else "resume"
     # The control topic is published with retain=False, so a request sent while the add-on is
     # still (re)connecting or re-subscribing is silently dropped. Re-publish a few times before
     # giving up so a brief add-on unavailability does not doom the whole management operation.
@@ -487,7 +498,7 @@ async def _set_bridge_paused(hass: HomeAssistant, paused: bool) -> bool:
             await mqtt.async_publish(
                 hass,
                 MQTT_BRIDGE_CONTROL_TOPIC,
-                json.dumps({"action": action, "request_id": request_id}),
+                json.dumps({"action": action, "request_id": request_id, **(extra or {})}),
                 qos=1,
                 retain=False,
             )
@@ -581,6 +592,18 @@ def _apply_bridge_identity(hass: HomeAssistant, data: dict[str, object]) -> None
             address or "unknown",
         )
     store["_bridge_identity"] = {"adapter": adapter, "adapter_address": address}
+    # What this controller can carry, so Remote Studio can plan addresses without anyone
+    # reading an add-on log. Keyed by controller address: one add-on instance per adapter.
+    if data.get("multi_address"):
+        bridges = dict(store.get("_bridge_capabilities") or {})
+        bridges[address.upper()] = {
+            "adapter": adapter,
+            "address": address.upper(),
+            "advertising_sets": int(data.get("advertising_sets") or 1),
+            "extended_advertising": bool(data.get("extended_advertising")),
+            "serving": [str(item) for item in (data.get("serving") or [])],
+        }
+        store["_bridge_capabilities"] = bridges
     for value in store.values():
         if not isinstance(value, dict):
             continue

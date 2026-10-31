@@ -18,6 +18,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from dataclasses import asdict
 
 from . import commands as c
+from . import addressing
 from . import install
 from . import ir_catalog
 from . import targets
@@ -40,10 +41,95 @@ def _client(hass, entry):
     return client
 
 
+def new_remote_id(entry) -> str:
+    """An event identity no other remote on this integration already uses.
+
+    Bindings are matched on this value alone, so a collision would silently run one remote's
+    actions for another's presses. Thirty-two bits make that unlikely, not impossible, and the
+    check costs nothing.
+    """
+    taken = {
+        str(item.get("remote_id", "")).lower()
+        for item in entry.options.get("remotes", [])
+    }
+    for _ in range(100):
+        candidate = uuid.uuid4().hex[:8]
+        if candidate not in taken:
+            return candidate
+    raise ValueError("could not find a free remote id")
+
+
 def _save_remotes(hass, entry, remotes: list[dict[str, Any]]) -> None:
     options = deepcopy(dict(entry.options))
     options["remotes"] = remotes
     hass.config_entries.async_update_entry(entry, options=options)
+
+
+def _bridges(hass, entry) -> list:
+    """What Remote Studio can plan against: one entry per controller, with its real capacity.
+
+    An add-on that reports its capabilities is believed. One that does not is assumed to be the
+    single-address BlueZ build, which is what every bridge was before this existed — so an old
+    add-on keeps working and is simply described as holding one address.
+    """
+    reported = hass.data.get(DOMAIN, {}).get("_bridge_capabilities") or {}
+    seen: set[str] = set()
+    result = []
+
+    def add(address: str, fallback_name: str) -> None:
+        compact = addressing.normalise(address)
+        if not compact or compact in seen:
+            return
+        # An address a controller already serves, or could derive, is that controller's
+        # capacity — not a second controller. Counting it twice would offer room that the
+        # hardware does not have.
+        if any(
+            compact in {addressing.normalise(item) for item in bridge.serving}
+            or compact in {addressing.normalise(item) for item in bridge.candidates()}
+            for bridge in result
+        ):
+            return
+        seen.add(compact)
+        match = next(
+            (value for key, value in reported.items()
+             if addressing.normalise(key) == compact), {})
+        result.append(addressing.Bridge(
+            adapter=str(match.get("adapter") or fallback_name or "bridge"),
+            address=addressing.format_address(compact),
+            advertising_sets=int(match.get("advertising_sets") or 1),
+            serving=[str(item) for item in match.get("serving") or [addressing.format_address(compact)]],
+            extended_advertising=bool(match.get("extended_advertising", False)),
+        ))
+
+    # Controllers the add-on announced come first: they carry the capacity figures.
+    for key, value in reported.items():
+        add(key, str(value.get("adapter") or ""))
+    # Then any bridge the integration stored that no add-on has announced — an adapter whose
+    # add-on is stopped still holds the tiles bound to it.
+    for item in targets.all_targets(entry):
+        add(str(item.get("device_id", "")), str(item.get("name") or ""))
+    return result
+
+
+def _next_address(bridges, used) -> str:
+    """The address Add remote would take, or empty when there is none.
+
+    Suggesting an address is a convenience, so a failure here must not take the whole dialog
+    down with it — without this the Add remote form would simply not open.
+    """
+    try:
+        return addressing.allocate(bridges, used)[0].address
+    except ValueError:
+        return ""
+
+
+def _used_addresses(entry) -> list[str]:
+    """Every address a native remote is already bound to."""
+    return [
+        str(remote.get("physical_device_id") or remote.get("device_id") or "")
+        for remote in entry.options.get("remotes", [])
+        if str(remote.get("device_type", "")).upper() in c.NATIVE_DEVTYPE
+    ]
 
 
 @websocket_api.require_admin
@@ -59,7 +145,11 @@ async def ws_remote_delete(hass, connection, msg):
         entry, remote = resolve(hass, msg)
         client = _client(hass, entry)
         table = c.parse_added_devices(await client.query(7))
-        expected_id = stable_id_for_local(str(remote["device_id"]))
+        # A native remote is found in the table by the bridge address it is bound to, which is
+        # `physical_device_id` once it has been moved. Everything below works from this one
+        # value, so the delete, its preflight and the key repair all name the same address.
+        bound_address = str(remote.get("physical_device_id") or remote["device_id"])
+        expected_id = stable_id_for_local(bound_address)
         matches = [row for row in table if row[3] == expected_id]
         if len(matches) > 1:
             # Several native profiles can share one target address and then store the same id,
@@ -87,7 +177,7 @@ async def ws_remote_delete(hass, connection, msg):
         slot, device_type, control_type, _ = matches[0]
         command = c.build_delete(
             remote_index=slot, device_type=device_type, control_type=control_type,
-            device_id=str(remote["device_id"]),
+            device_id=bound_address,
         )
 
         def _still_there(raw: bytes) -> bool:
@@ -118,7 +208,7 @@ async def ws_remote_delete(hass, connection, msg):
         key_restored = False
         if control_type == c.CTRL_NATIVE:
             key_restored = await install.reassociate_shared_target(
-                client, str(remote["device_id"])) is not None
+                client, bound_address) is not None
 
         remotes = [
             item for item in entry.options.get("remotes", [])
@@ -141,33 +231,73 @@ async def ws_remote_delete(hass, connection, msg):
     vol.Optional("device_type"): str,
     vol.Optional("icon"): str,
     vol.Optional("target_id"): str,
+    vol.Optional("new_target_address"): str,
+    vol.Optional("target_key"): str,
+    vol.Optional("auto_address", default=False): bool,
 })
 @websocket_api.async_response
 async def ws_remote_create(hass, connection, msg):
-    """Install a native bridge remote using the credentials already stored for the bridge.
+    """Install a native bridge remote, on a stored bridge address or a new one.
 
-    Only the native kind is offered here: it is the one that needs no extra input beyond a name,
-    because the target address and key were captured when the bridge was first set up. IR and HID
-    remotes need a catalogue choice or a pairing step and stay in the integration options.
+    A native tile connects to one fixed BLE address and the firmware keeps the target key per
+    address, so a second tile needs a second address. `new_target_address` binds to one the
+    integration has not seen before, reusing the key already stored for the first bridge — the
+    add-on serves every address in its `addresses` option from the same controller, so the new
+    address has to be listed there too.
     """
     try:
         entry = hass.config_entries.async_get_entry(msg["entry_id"])
         if entry is None or entry.domain != DOMAIN:
             raise ValueError("Integration not found")
         known = targets.all_targets(entry)
-        wanted = str(msg.get("target_id") or "").replace(":", "").lower()
-        target = next(
-            (item for item in known
-             if str(item.get("device_id", "")).replace(":", "").lower() == wanted),
-            known[0] if known else {},
-        )
+        new_address = str(msg.get("new_target_address") or "").strip()
+        if msg.get("auto_address") and not new_address:
+            # Pick the next free address across every controller, so nobody has to know what a
+            # static random address is or which adapter still has room.
+            chosen = allocate_address(hass, entry)
+            new_address = chosen.address
+            _LOGGER.info("allocated %s on %s for the new native remote",
+                         chosen.address, chosen.bridge.adapter)
+        if new_address:
+            compact = new_address.replace(":", "").replace("-", "")
+            if len(compact) != 12 or any(ch not in "0123456789abcdefABCDEF" for ch in compact):
+                raise ValueError("A bridge address is six hex bytes, like DA:71:16:E0:1F:92")
+            source = known[0] if known else {}
+            if not source.get("target_key"):
+                raise ValueError(
+                    "No bridge key is stored yet, so there is nothing to reuse for a new "
+                    "address. Add the first native remote in the integration settings."
+                )
+            # A new address defaults to the first bridge's key: the add-on serves every address
+            # from one controller with one DEVICE_KEY, so a different key would simply fail to
+            # decrypt. It stays editable because a second controller is also a valid setup.
+            target = dict(source) | {"device_id": new_address, "name": msg["name"]}
+            is_new = True
+        else:
+            wanted = str(msg.get("target_id") or "").replace(":", "").lower()
+            target = next(
+                (item for item in known
+                 if str(item.get("device_id", "")).replace(":", "").lower() == wanted),
+                known[0] if known else {},
+            )
+            if wanted and str(target.get("device_id", "")).replace(":", "").lower() != wanted:
+                raise ValueError("That bridge is not known to this integration")
+            is_new = False
+        supplied_key = str(msg.get("target_key") or "").strip().replace(" ", "")
+        if supplied_key:
+            try:
+                if len(bytes.fromhex(supplied_key)) != 16:
+                    raise ValueError
+            except ValueError:
+                raise ValueError(
+                    "The AES key must be exactly 32 hexadecimal characters"
+                ) from None
+            target = dict(target) | {"target_key": supplied_key}
         if not target.get("device_id") or not target.get("target_key"):
             raise ValueError(
                 "No native bridge credentials are stored yet. Add the first native remote in the "
                 "integration settings; after that this button can reuse them."
             )
-        if wanted and str(target["device_id"]).replace(":", "").lower() != wanted:
-            raise ValueError("That bridge is not known to this integration")
         client = _client(hass, entry)
         table = c.parse_added_devices(await client.query(7))
         # One address holds one native tile: the firmware keys the target key on the address,
@@ -176,12 +306,14 @@ async def ws_remote_create(hass, connection, msg):
                and row[3][:6] == c.id_to_bytes(str(target["device_id"]))[:6]
                for row in table):
             raise ValueError(
-                f"{target['device_id']} already carries a native tile. Each native remote needs "
-                "its own Bluetooth adapter running its own bridge."
+                f"{target['device_id']} already carries a native tile, and the firmware keys the "
+                "target key on the address, so it cannot hold a second one. Give this remote a "
+                "new address instead, and add that address to the add-on's `addresses` option — "
+                "one Bluetooth 5 controller can serve several."
             )
         slot = len(table)
         device_type = str(msg.get("device_type") or target.get("device_type") or "STRIP")
-        remote_id = uuid.uuid4().hex[:8]
+        remote_id = new_remote_id(entry)
         stages = c.build_native_bind_sequence(
             key_id=0x01,
             target_key=bytes.fromhex(str(target["target_key"])),
@@ -213,7 +345,26 @@ async def ws_remote_create(hass, connection, msg):
             "buttons": [],
         })
         _save_remotes(hass, entry, remotes)
-        connection.send_result(msg["id"], {"remote_id": remote_id, "slot": slot})
+        served = ""
+        if is_new:
+            served = await ask_bridge_to_serve(hass, entry, str(target["device_id"]))
+        if is_new or supplied_key:
+            # Only record the bridge once the remote is actually bound to it, so a failed
+            # attempt does not leave an address the integration thinks it can use.
+            targets.remember_target(hass, entry, {
+                "name": msg["name"],
+                "device_id": str(target["device_id"]),
+                "device_type": device_type,
+                "icon": str(msg.get("icon") or target.get("icon") or "strip"),
+                "control_mode": 0,
+                "target_key_id": str(target.get("target_key_id", "01")),
+                "target_key": str(target["target_key"]),
+            })
+        connection.send_result(msg["id"], {
+            "remote_id": remote_id, "slot": slot,
+            "bridge": str(target["device_id"]), "new_bridge": is_new,
+            "warning": served,
+        })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio create failed")
         connection.send_error(msg["id"], "remote_create_failed", str(err))
@@ -334,6 +485,65 @@ async def ws_remote_install_ir(hass, connection, msg):
         connection.send_error(msg["id"], "ir_install_failed", str(err))
 
 
+def allocate_address(hass, entry, release: str = ""):
+    """The next free address across every controller, as an `addressing.Allocation`.
+
+    `release` is the address a remote is moving off: it stops counting as used, so a tile on a
+    full controller can still be moved somewhere else.
+    """
+    used = _used_addresses(entry)
+    if release:
+        used = addressing.without(used, release)
+    return addressing.allocate(_bridges(hass, entry), used)[0]
+
+
+async def ask_bridge_to_serve(hass, entry, address: str) -> str:
+    """Tell the add-on to advertise a newly bound address, and say so if it could not.
+
+    Binding a tile writes the address into the remote; nothing answers on it until the add-on
+    advertises it. Doing this automatically is the difference between a working remote and one
+    that silently does nothing, so a failure is reported rather than swallowed — but it is a
+    warning, not an error: the tile is already bound, and the add-on's `addresses` option is
+    still a way to fix it by hand.
+    """
+    from . import async_bridge_control
+
+    compact = addressing.normalise(address)
+    owner = next(
+        (bridge for bridge in _bridges(hass, entry)
+         if addressing._belongs_to(bridge, address)), None)
+    if owner is None:
+        # The list sent to a bridge replaces everything it serves, so sending one that does not
+        # describe a real controller would stop every other tile from being answered. Refusing
+        # is the safe half: the tile is bound, and the add-on's own option still works.
+        return (
+            f"The remote is bound to {address}, but no known controller serves it. Add the "
+            "address to the add-on's `addresses` option, or move the remote to an address one "
+            "of the known controllers can carry."
+        )
+    # Always a superset of what it already serves: this list replaces the bridge's own.
+    wanted = [addressing.format_address(addressing.normalise(item))
+              for item in owner.serving] or [owner.address]
+    if not any(addressing.normalise(item) == compact for item in wanted):
+        wanted.append(addressing.format_address(compact))
+    try:
+        ok = await async_bridge_control(hass, "addresses", {
+            "addresses": wanted,
+            # One control topic serves every add-on instance, so each must be able to tell
+            # whether a request is meant for its own controller.
+            "adapter_address": owner.address,
+        })
+    except Exception as err:  # noqa: BLE001 - the tile is bound either way
+        _LOGGER.warning("could not ask the add-on to serve %s: %s", address, err)
+        ok = False
+    if ok:
+        return ""
+    return (
+        f"The remote is bound to {address}, but the add-on did not confirm it is advertising "
+        "it. Check the add-on log, or add the address to its `addresses` option."
+    )
+
+
 @websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/remote/sources",
@@ -347,6 +557,8 @@ async def ws_remote_sources(hass, connection, msg):
         connection.send_error(msg["id"], "not_found", "Integration not found")
         return
     known = targets.all_targets(entry)
+    bridges = _bridges(hass, entry)
+    used = _used_addresses(entry)
     connection.send_result(msg["id"], {
         "native": any(item.get("device_id") and item.get("target_key") for item in known),
         "bridges": [
@@ -363,6 +575,27 @@ async def ws_remote_sources(hass, connection, msg):
         ],
         "profiles": [{"key": key, "label": getattr(value, "title", key)}
                      for key, value in PROFILES.items()],
+        # The same choices the options flow's bind_native step offers. The key is prefilled as
+        # it is there: this command is admin-only, and binding a bridge without seeing which key
+        # it will carry is how mismatched keys happen.
+        "native_options": {
+            "capacity": addressing.capacity(bridges),
+            "free": addressing.free_slots(bridges, used),
+            "summary": addressing.describe(bridges, used),
+            "controllers": [
+                {"adapter": bridge.adapter, "address": bridge.address,
+                 "capacity": bridge.capacity,
+                 "used": sum(1 for item in used if addressing._belongs_to(bridge, item)),
+                 "extended_advertising": bridge.extended_advertising}
+                for bridge in bridges
+            ],
+            "next_address": _next_address(bridges, used),
+            "device_types": list(c.SUPPORTED_NATIVE_DEVICE_TYPES),
+            "icons": list(ICONS),
+            "default_key": str((known[0] if known else {}).get("target_key", "")),
+            "default_device_type": str((known[0] if known else {}).get("device_type", "STRIP")),
+            "default_icon": str((known[0] if known else {}).get("icon", "strip")),
+        },
         # HID remotes need a paired host before the firmware accepts them, so the panel is
         # told the current pairing as well as the choices.
         "hid": {

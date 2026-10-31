@@ -25,6 +25,8 @@ from .cloud import CloudError
 from .cloud_ir import find_cloud_items, profile_from_cloud
 from .const import DOMAIN, RESP_OK
 from .inventory import merge_inventory, stable_id_for_local
+from . import addressing
+from . import studio_remotes
 from . import targets
 from .ir_profiles import PROFILES
 from .studio_catalog import cloud_client
@@ -172,6 +174,9 @@ async def ws_remote_rename(hass, connection, msg):
     vol.Required("entry_id"): str,
     vol.Required("remote_id"): str,
     vol.Optional("name"): str,
+    vol.Optional("target_address"): str,
+    vol.Optional("auto_address", default=False): bool,
+    vol.Optional("icon"): vol.In(ICONS),
 })
 @websocket_api.async_response
 async def ws_remote_recreate(hass, connection, msg):
@@ -181,6 +186,10 @@ async def ws_remote_recreate(hass, connection, msg):
     their bundled profile or from the account record; HID remotes are deleted and rebuilt from
     the stored button list; native remotes are deleted and bound again from the stored bridge
     credentials, which also repairs the per-address target key the delete releases.
+
+    A native remote can also move: `target_address` binds it to a different address and
+    `auto_address` picks the next free one. That is what fixes a tile whose controller was
+    replaced — its old address no longer answers, and nothing else can re-point it.
     """
     try:
         entry = _entry(hass, msg)
@@ -188,6 +197,10 @@ async def ws_remote_recreate(hass, connection, msg):
         item = _find(await _inventory(hass, entry, client), msg["remote_id"])
         managed = item.get("managed_item") or {}
         name = (msg.get("name") or item.get("name") or "Remote").strip()
+        # The icon is drawn on the remote's own screen and only changes when the tile is
+        # written again, so it rides along with the rebuild rather than having a command of
+        # its own that would have to delete and rebuild anyway.
+        icon = str(msg.get("icon") or managed.get("icon") or "")
 
         if item["control_type"] == c.CTRL_IR:
             profile_key = managed.get("profile")
@@ -247,7 +260,7 @@ async def ws_remote_recreate(hass, connection, msg):
                 remote_index=slot,
                 name=name,
                 device_id=str(managed["device_id"]),
-                icon_name=str(managed.get("icon", "light")),
+                icon_name=icon or "light",
                 buttons=list(managed.get("buttons") or DEFAULT_BUTTONS),
             ))
             error = install.resp_error(response)
@@ -258,6 +271,8 @@ async def ws_remote_recreate(hass, connection, msg):
                 if remote.get("remote_id") == managed.get("remote_id"):
                     remote["index"] = slot
                     remote["name"] = name
+                    if icon:
+                        remote["icon"] = icon
             _save_remotes(hass, entry, remotes)
             connection.send_result(msg["id"], {"slot": slot, "kind": "hid"})
             return
@@ -269,6 +284,32 @@ async def ws_remote_recreate(hass, connection, msg):
                     "No stored bridge credentials for this remote, so it cannot be written again"
                 )
             device_id = str(managed.get("physical_device_id") or managed["device_id"])
+            moved_from = ""
+            wanted = str(msg.get("target_address") or "").strip()
+            if msg.get("auto_address") and not wanted:
+                # The address this remote is leaving is free again, so release it before
+                # planning, or a full controller would refuse its own tile's move.
+                chosen = studio_remotes.allocate_address(
+                    hass, entry, release=device_id)
+                wanted = chosen.address
+            if wanted:
+                if not addressing.is_valid(wanted):
+                    raise ValueError(
+                        "A bridge address is six hex bytes, like DA:71:16:E0:1F:92")
+                wanted = addressing.format_address(addressing.normalise(wanted))
+                if addressing.normalise(wanted) != addressing.normalise(device_id):
+                    moved_from, device_id = device_id, wanted
+            if moved_from:
+                # Checked before the delete, not after: the firmware refuses a second tile on
+                # one address with 0x02, and by then this remote's own tile would be gone.
+                table = c.parse_added_devices(await client.query(0x07))
+                if any(row[2] == c.CTRL_NATIVE
+                       and row[3][:6] == c.id_to_bytes(device_id)[:6]
+                       for row in table):
+                    raise ValueError(
+                        f"{device_id} already carries a native tile. Move that one first, or "
+                        "choose an address that is free."
+                    )
             error = await install.delete_and_verify(
                 client,
                 c.build_delete(
@@ -294,7 +335,7 @@ async def ws_remote_recreate(hass, connection, msg):
                 remote_index=slot,
                 name=name,
                 device_id=device_id,
-                icon_name=str(managed.get("icon", "strip")),
+                icon_name=icon or "strip",
                 control_mode=0,
                 event_remote_id=managed.get("remote_id"),
             )
@@ -308,13 +349,35 @@ async def ws_remote_recreate(hass, connection, msg):
             # The bind sequence rewrote the key for this address; siblings on the same address
             # were released by the delete above and are covered by the same association.
             await install.reassociate_shared_target(client, device_id)
+            if moved_from:
+                # The tile it was moved off also loses its key entry, and a sibling may still
+                # be using that address.
+                await install.reassociate_shared_target(client, moved_from)
             remotes = deepcopy(list(entry.options.get("remotes", [])))
             for remote in remotes:
                 if remote.get("remote_id") == managed.get("remote_id"):
                     remote["index"] = slot
                     remote["name"] = name
+                    if icon:
+                        remote["icon"] = icon
+                    if moved_from:
+                        # Both, not just one: `device_id` is what the device table is searched
+                        # by, so leaving it on the old address would make this remote
+                        # undeletable — the row would never be found and the local record
+                        # would be dropped while the tile stayed on the screen.
+                        remote["physical_device_id"] = device_id
+                        remote["device_id"] = device_id
             _save_remotes(hass, entry, remotes)
-            connection.send_result(msg["id"], {"slot": slot, "kind": "native"})
+            warning = ""
+            if moved_from:
+                targets.remember_target(hass, entry, dict(target) | {
+                    "device_id": device_id, "name": name,
+                })
+                warning = await studio_remotes.ask_bridge_to_serve(hass, entry, device_id)
+            connection.send_result(msg["id"], {
+                "slot": slot, "kind": "native",
+                "address": device_id, "moved_from": moved_from, "warning": warning,
+            })
             return
 
         raise ValueError(f"Control type {item['control_type']} cannot be written again from here")
@@ -387,7 +450,7 @@ async def ws_create_hid(hass, connection, msg):
                 "the remote rejected it because no host is paired yet"
                 if error == "resp_hid_no_pair" else f"the remote rejected it ({error})"
             )
-        remote_id = uuid.uuid4().hex[:8]
+        remote_id = studio_remotes.new_remote_id(entry)
         remotes = list(entry.options.get("remotes", []))
         remotes.append({
             "index": slot,

@@ -15,6 +15,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .addressing import normalise
+
 
 def _usable(target: Any) -> bool:
     return isinstance(target, dict) and bool(target.get("device_id"))
@@ -40,11 +42,11 @@ def target_for(entry, remote: dict[str, Any] | None) -> dict[str, Any]:
     targets = all_targets(entry)
     if not targets:
         return {}
-    wanted = str(
+    wanted = normalise(str(
         (remote or {}).get("physical_device_id") or (remote or {}).get("device_id") or ""
-    ).replace(":", "").lower()
+    ))
     for target in targets:
-        if str(target.get("device_id", "")).replace(":", "").lower() == wanted:
+        if normalise(str(target.get("device_id", ""))) == wanted:
             return target
     return targets[0]
 
@@ -53,10 +55,10 @@ def remember_target(hass, entry, target: dict[str, Any]) -> None:
     """Record a bridge, replacing any earlier one at the same address."""
     if not _usable(target):
         raise ValueError("A bridge target needs at least a device_id")
-    address = str(target["device_id"]).replace(":", "").lower()
+    address = normalise(str(target["device_id"]))
     kept = [
         item for item in all_targets(entry)
-        if str(item.get("device_id", "")).replace(":", "").lower() != address
+        if normalise(str(item.get("device_id", ""))) != address
     ]
     kept.append(deepcopy(target))
     data = dict(entry.data)
@@ -68,10 +70,10 @@ def remember_target(hass, entry, target: dict[str, Any]) -> None:
 
 def forget_target(hass, entry, device_id: str) -> bool:
     """Drop a bridge by address. Returns whether anything was removed."""
-    address = str(device_id).replace(":", "").lower()
+    address = normalise(str(device_id))
     kept = [
         item for item in all_targets(entry)
-        if str(item.get("device_id", "")).replace(":", "").lower() != address
+        if normalise(str(item.get("device_id", ""))) != address
     ]
     if len(kept) == len(all_targets(entry)):
         return False

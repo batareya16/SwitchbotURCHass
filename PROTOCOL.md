@@ -213,7 +213,21 @@ Bluetooth 5.1 controller (4 advertising sets, extended advertising on all three 
   application layer instead.
 
 `tools/spike_multi_address.py` proves the advertising half; `tools/hci_multi_bridge.py` serves a
-complete press this way, handshake through decrypted command and acknowledgement.
+complete press this way, handshake through decrypted command and acknowledgement. The add-on
+does it in `hci_multi.py` behind its `addresses` option.
+
+Confirmed on hardware with two tiles on one controller, both reaching Home Assistant:
+
+```
+037200921fe01b888a  slot 3  target 8A:88:1B:E0:1F:92   (the controller's own public address)
+047200921fe01671da  slot 4  target DA:71:16:E0:1F:92   (an extended advertising set)
+```
+
+One caveat surfaced there. Bytes 2-3 of an encrypted frame are the first two bytes of the IV it
+was encrypted with, so they name the session. The remote sometimes sends a frame belonging to
+another session on an open connection; decrypting it with the current IV yields noise, which
+used to be published as an `UNKNOWN` button event. The add-on now drops a frame whose nonce does
+not match the session's IV.
 
 ## Mixed profiles
 

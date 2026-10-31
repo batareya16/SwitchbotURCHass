@@ -329,29 +329,67 @@ class SwitchBotUrcPanel extends HTMLElement {
     return button.label.replace(/^Button /i, "").slice(0, 3);
   }
 
-  _renderStage(page) {
-    const isMain = (page?.index ?? 0) === 0;
-    return isMain ? this._renderFace(page) : this._renderGrid(page);
+  // The icons the remote itself can draw, as single paths on a 20x20 grid.
+  static ICON_PATHS = {
+    light: "M10 2a6 6 0 0 0-3.5 10.9V15h7v-2.1A6 6 0 0 0 10 2Zm-2.5 15h5M8 19h4",
+    desklamp: "M4 18h8M8 18V9m0 0L4 5l5-3 4 4-5 3Z",
+    floorlamp: "M10 18v-8m-4 0h8l-2-7H8l-2 7Zm-3 8h6",
+    ceilinglamp: "M10 2v4m-5 4h10l-2.5-4h-5L5 10Zm1 0v2a4 4 0 0 0 8 0v-2",
+    strip: "M3 8h14v4H3zM6 12v3M10 12v3M14 12v3",
+    switch: "M4 6h12v8H4zM7 10h6",
+    tv: "M3 5h14v9H3zM7 17h6M10 14v3",
+  };
+
+  _iconPath(name) {
+    return this.constructor.ICON_PATHS[name] || this.constructor.ICON_PATHS.switch;
   }
 
-  _renderGrid(page) {
-    const buttons = page?.buttons || [];
-    if (!buttons.length) return `<div class="empty small">This page has no buttons yet.<br>Use <b>Add a button to this page</b> below.</div>`;
-    return `<div class="button-grid">${buttons.map((item) => {
-      const [status, statusLabel] = this._status(item);
-      return `<button class="remote-button ${status} ${item.button_id === this._buttonId ? "selected" : ""} ${this._isActiveButton(item) ? "pressed" : ""}" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)} · ${escapeHtml(item.label)}"><span class="glyph">${escapeHtml(this._buttonIcon(item))}</span><span>${escapeHtml(item.label)}</span><i></i></button>`;
-    }).join("")}</div>`;
-  }
-
-  _faceSlot(byPos, tag, glyph, cls = "") {
+  // Each key the WoRWS actually has, by its firmware position name.
+  _key(byPos, tag, body, label) {
     const button = byPos[tag];
     if (!button) {
-      return `<div class="face-slot ghost ${cls}" title="${tag} — not used by this remote"><span class="fg">${glyph}</span></div>`;
+      return `<g class="k ghost" tabindex="-1"><title>${tag} — not used by this remote</title>${body}</g>`;
     }
     const [status, statusLabel] = this._status(button);
-    const selected = button.button_id === this._buttonId ? "selected" : "";
-    const pressed = this._isActiveButton(button) ? "pressed" : "";
-    return `<button class="face-slot ${status} ${cls} ${selected} ${pressed}" data-button="${escapeHtml(button.button_id)}" title="${escapeHtml(statusLabel)} · ${escapeHtml(button.label)}"><span class="fg">${glyph}</span><span class="cap">${escapeHtml(button.label)}</span><i></i></button>`;
+    const selected = button.button_id === this._buttonId ? " selected" : "";
+    const pressed = this._isActiveButton(button) ? " pressed" : "";
+    return `<g class="k ${status}${selected}${pressed}" role="button" tabindex="0"
+      data-button="${escapeHtml(button.button_id)}"><title>${escapeHtml(label || tag)} · ${
+      escapeHtml(statusLabel)} · ${escapeHtml(button.label)}</title>${body}</g>`;
+  }
+
+  _renderScreen(page) {
+    // Real HTML inside the SVG screen, so the list scrolls like the device's own does instead
+    // of silently cutting off whatever does not fit.
+    const icon = (name) => `<svg viewBox="0 0 20 20" class="ic"><path d="${
+      this._iconPath(name)}"/></svg>`;
+    if ((page?.index ?? 0) !== 0) {
+      const keys = page?.buttons || [];
+      if (!keys.length) {
+        return `<p class="scr-empty">This page has no buttons yet</p>`;
+      }
+      return keys.map((item) => {
+        const [status] = this._status(item);
+        const on = item.button_id === this._buttonId;
+        return `<div class="scr-row k ${status}${on ? " on" : ""}" role="button" tabindex="0"
+          data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}">
+          <span class="pos">${escapeHtml(item.position || "")}</span>
+          <span class="nm">${escapeHtml(item.label)}</span></div>`;
+      }).join("");
+    }
+    const remotes = this._entry()?.remotes || [];
+    if (!remotes.length) return `<p class="scr-empty">No remotes yet</p>`;
+    return remotes.map((item) => {
+      const current = item.remote_id === this._remoteId;
+      return `<div class="scr-row${current ? " on" : ""}">
+        <div class="k pick-remote" role="button" tabindex="0"
+          data-remote="${escapeHtml(item.remote_id)}"
+          title="${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}">
+          ${icon(item.icon)}<span class="nm">${escapeHtml(item.name)}</span></div>
+        ${current ? `<button class="k ic-btn" data-icon-for="${escapeHtml(item.remote_id)}"
+          title="Change this remote's icon">✎</button>` : ""}
+      </div>`;
+    }).join("");
   }
 
   _renderFace(page) {
@@ -359,37 +397,76 @@ class SwitchBotUrcPanel extends HTMLElement {
     (page?.buttons || []).forEach((item) => {
       byPos[String(item.position || "").toUpperCase()] = item;
     });
-    const slot = (tag, glyph, cls) => this._faceSlot(byPos, tag, glyph, cls);
-    const face = `
-      <div class="face">
-        <div class="prow">${slot("ON", "⏻", "pill")}${slot("OFF", "○", "pill")}</div>
-        <div class="dpad">
-          ${slot("UP", "▲", "dp up")}
-          ${slot("LEFT", "◀", "dp left")}
-          ${slot("OK", "OK", "dp ok")}
-          ${slot("RIGHT", "▶", "dp right")}
-          ${slot("DOWN", "▼", "dp down")}
-        </div>
-        <div class="prow trio">${slot("BACK", "↩", "round")}${slot("KATA", "⚡", "round red")}${slot("HOME", "⌂", "round")}</div>
-        <div class="prow bottom">
-          <div class="vstack">${slot("VOLADD", "＋", "wide")}${slot("VOLDEL", "−", "wide")}</div>
-          ${slot("SOUNDOFF", "⊗", "round")}
-          <div class="vstack">${slot("CHUP", "▲", "wide")}${slot("CHDOWN", "▼", "wide")}</div>
-        </div>
-      </div>`;
-    const abcd = ["A", "B", "C", "D"].filter((tag) => byPos[tag]);
-    const abcdRow = abcd.length
-      ? `<div class="screen-keys"><div class="sk-title">Screen keys</div><div class="sk-grid">${abcd.map((tag) => slot(tag, tag, "sk")).join("")}</div></div>`
-      : "";
-    const known = new Set(["ON", "OFF", "UP", "DOWN", "LEFT", "RIGHT", "OK", "BACK", "HOME", "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN", "A", "B", "C", "D"]);
-    const extras = (page?.buttons || []).filter((item) => !known.has(String(item.position || "").toUpperCase()));
+    const key = (tag, body, label) => this._key(byPos, tag, body, label);
+    // Glyphs are drawn around their own origin and moved onto the key's centre, so a key and
+    // its mark cannot drift apart the way hand-placed coordinates did.
+    const mark = (cx, cy, d) => `<path d="${d}" transform="translate(${cx} ${cy})" class="mark"/>`;
+    const cap = (cx, cy, r) => `<circle cx="${cx}" cy="${cy}" r="${r}" class="cap"/>`;
+    // A rocker half, given the centre of that half so it lines up with its own glyph. `up`
+    // rounds the top end, `down` the bottom; both are 36 across and 36 tall.
+    const rocker = (cx, cy, up) => up
+      ? `<path d="M${cx - 18} ${cy}a18 18 0 0 1 36 0v18h-36z" class="cap"/>`
+      : `<path d="M${cx - 18} ${cy}a18 18 0 0 0 36 0v-18h-36z" class="cap"/>`;
+    const svg = `
+      <svg class="device" viewBox="0 0 300 680" role="group" aria-label="Universal Remote">
+        <defs>
+          <linearGradient id="body" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#f0f0f2"/><stop offset="30%" stop-color="#fff"/>
+            <stop offset="70%" stop-color="#fff"/><stop offset="100%" stop-color="#e2e2e6"/>
+          </linearGradient>
+          <radialGradient id="logo" cx="35%" cy="35%" r="65%">
+            <stop offset="0%" stop-color="#ff4d4d"/><stop offset="70%" stop-color="#c00"/>
+            <stop offset="100%" stop-color="#800"/>
+          </radialGradient>
+          <clipPath id="screenClip">
+            <path d="M 35,65 A 45,45 0 0,1 265,65 L 265,262 L 35,262 Z"/>
+          </clipPath>
+        </defs>
+        <rect x="35" y="20" width="230" height="640" rx="45" fill="url(#body)" class="shell"/>
+        <path d="M 35,65 A 45,45 0 0,1 265,65 L 265,280 L 35,280 Z" class="glass"/>
+        <foreignObject x="35" y="65" width="230" height="197" clip-path="url(#screenClip)">
+          <div xmlns="http://www.w3.org/1999/xhtml" class="scr-scroll">
+            ${this._renderScreen(page)}
+          </div>
+        </foreignObject>
+        <g class="scr-sep"><path d="M35 262h230M80 262v18M220 262v18"/></g>
+
+        ${["A", "B", "C", "D"].map((tag, index) => key(tag,
+          `<rect x="${52 + index * 52}" y="296" width="44" height="32" rx="10" class="cap"/>
+           <text x="${74 + index * 52}" y="316" class="cap-t">${tag}</text>`, tag)).join("")}
+
+        ${key("ON", `${cap(88, 362, 18)}<text x="88" y="366" class="cap-t">ON</text>`, "On")}
+        ${key("OFF", `${cap(212, 362, 18)}<text x="212" y="366" class="cap-t">OFF</text>`, "Off")}
+
+        <circle cx="150" cy="427" r="58" class="cap ring"/>
+        ${key("UP", `<path d="M150 377 a58 58 0 0 1 41 17 l-25 25 a26 26 0 0 0-32 0 l-25-25 a58 58 0 0 1 41-17z" class="cap seg"/>${mark(150, 395, "M-6 3l6-6 6 6")}`, "Up")}
+        ${key("DOWN", `<path d="M150 477 a58 58 0 0 1-41-17 l25-25 a26 26 0 0 0 32 0 l25 25 a58 58 0 0 1-41 17z" class="cap seg"/>${mark(150, 459, "M-6-3l6 6 6-6")}`, "Down")}
+        ${key("LEFT", `<path d="M100 427 a58 58 0 0 1 17-41 l25 25 a26 26 0 0 0 0 32 l-25 25 a58 58 0 0 1-17-41z" class="cap seg"/>${mark(118, 427, "M3-6l-6 6 6 6")}`, "Left")}
+        ${key("RIGHT", `<path d="M200 427 a58 58 0 0 1-17 41 l-25-25 a26 26 0 0 0 0-32 l25-25 a58 58 0 0 1 17 41z" class="cap seg"/>${mark(182, 427, "M-3-6l6 6-6 6")}`, "Right")}
+        ${key("OK", `${cap(150, 427, 26)}<text x="150" y="431" class="cap-t">OK</text>`, "OK")}
+
+        ${key("BACK", `${cap(88, 510, 18)}${mark(88, 510, "M3-4a5 5 0 1 0 0 8M3 4l-3-3M3 4l3-3")}`, "Back")}
+        ${key("KATA", `<circle cx="150" cy="510" r="16" fill="url(#logo)" class="logo"/><path d="M-2-7h5l-3 6h4l-7 9 2-7h-4z" transform="translate(150 510)" class="logo-mark"/>`, "SwitchBot")}
+        ${key("HOME", `${cap(212, 510, 18)}${mark(212, 510, "M-6 1l6-6 6 6v5h-4v-4h-4v4h-4z")}`, "Home")}
+
+        ${key("VOLADD", `${rocker(88, 572, true)}${mark(88, 572, "M0-6v12M-6 0h12")}`, "Volume up")}
+        ${key("VOLDEL", `${rocker(88, 612, false)}${mark(88, 612, "M-6 0h12")}`, "Volume down")}
+        ${key("SOUNDOFF", `${cap(150, 560, 18)}${mark(150, 560, "M-8-3h3l3-3v12l-3-3h-3z")}${mark(150, 560, "M3-3l5 5m0-5l-5 5")}`, "Mute")}
+        ${key("CHUP", `${rocker(212, 572, true)}${mark(212, 572, "M-5 3l5-5 5 5")}`, "Channel up")}
+        ${key("CHDOWN", `${rocker(212, 612, false)}${mark(212, 612, "M-5-3l5 5 5-5")}`, "Channel down")}
+      </svg>`;
+    const known = new Set(["ON", "OFF", "UP", "DOWN", "LEFT", "RIGHT", "OK", "BACK", "HOME",
+      "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN", "A", "B", "C", "D"]);
+    const extras = (page?.buttons || []).filter(
+      (item) => !known.has(String(item.position || "").toUpperCase()));
     const extrasRow = extras.length
-      ? `<div class="screen-keys"><div class="sk-title">Other buttons</div><div class="button-grid">${extras.map((item) => {
+      ? `<div class="screen-keys"><div class="sk-title">Positions this remote uses that the
+         device has no key for</div><div class="button-grid">${extras.map((item) => {
           const [status, statusLabel] = this._status(item);
-          return `<button class="remote-button ${status} ${item.button_id === this._buttonId ? "selected" : ""} ${this._isActiveButton(item) ? "pressed" : ""}" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)} · ${escapeHtml(item.label)}"><span class="glyph">${escapeHtml(this._buttonIcon(item))}</span><span>${escapeHtml(item.label)}</span><i></i></button>`;
+          return `<button class="remote-button ${status} ${item.button_id === this._buttonId ? "selected" : ""}" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)}"><span class="glyph">${escapeHtml(this._buttonIcon(item))}</span><span>${escapeHtml(item.label)}</span><i></i></button>`;
         }).join("")}</div></div>`
       : "";
-    return face + abcdRow + extrasRow;
+    return svg + extrasRow;
   }
 
   _render() {
@@ -453,6 +530,7 @@ class SwitchBotUrcPanel extends HTMLElement {
               <button class="secondary compact" id="addRemote">Add remote</button>
               ${remote ? `<button class="secondary compact" id="renameRemote">Rename</button>` : ""}
               ${remote ? `<button class="secondary compact" id="recreateRemote">Write again</button>` : ""}
+              ${remote?.can_move ? `<button class="secondary compact" id="moveRemote">Move to another address</button>` : ""}
               ${remote ? `<button class="secondary compact" id="deleteRemote">Delete remote</button>` : ""}
             </div>
           </section>
@@ -471,14 +549,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             <nav class="pages">${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
             <div class="workspace">
               <section class="remote-stage">
-                <div class="remote-shell">
-                  <div class="remote-top"><span>${escapeHtml(remote.name)}</span><small>${escapeHtml(page?.name || "")}</small></div>
-                  <div class="screen">
-                    <div class="screen-title">${escapeHtml(page?.name || "Main")}</div>
-                    ${this._renderStage(page)}
-                  </div>
-                  <div class="remote-footer"><span></span><span></span><span></span></div>
-                </div>
+                <div class="device-wrap">${this._renderFace(page)}</div>
                 ${this._physical?.pages?.some((item) => item.index === page?.index) ? `
                 <div class="stage-actions">
                   <button class="secondary compact" id="addKeyToPage">Add a button to this page</button>
@@ -696,11 +767,40 @@ class SwitchBotUrcPanel extends HTMLElement {
           <option value="">Choose a model…</option>${
             cat.models.map((item) => option(item.hxd_index, item.label, item.hxd_index === cat.hxd)).join("")
           }</select></label>` : ""}` : ""}
-      ${add.kind === "native" && (sources.bridges || []).length > 1 ? `
-        <label>Bridge<select data-add-field="target_id">${
-          sources.bridges.map((item) => option(item.target_id, item.name, item.target_id === add.targetId)).join("")
+      ${add.kind === "native" ? `
+        <p class="small">${escapeHtml(sources.native_options?.summary || "")}</p>
+        <label>Bridge address<select data-add-field="target_id">${
+          [sources.native_options?.free
+            ? option("__auto__", `Next free address${
+                sources.native_options?.next_address
+                  ? ` (${sources.native_options.next_address})` : ""}`,
+              add.addressMode === "auto")
+            : ""]
+            .concat((sources.bridges || []).map((item) =>
+              option(item.target_id, item.name,
+                add.addressMode === "stored" && item.target_id === add.targetId)))
+            .concat(option("__new__", "An address I type myself…", add.addressMode === "new"))
+            .join("")
         }</select></label>
-        <p class="small">Each bridge is one Bluetooth adapter and holds one native tile.</p>` : ""}
+        ${add.addressMode === "new" ? `
+          <label>New address<input type="text" data-add-field="new_target_address"
+            value="${escapeHtml(add.newAddress || "")}" placeholder="DA:71:16:E0:1F:92"></label>` : ""}
+        ${!sources.native_options?.free ? `<p class="small warning">Every address on every
+          controller is in use. Add another Bluetooth adapter with its own add-on instance to
+          go further.</p>` : ""}
+        <label>Device type<select data-add-field="device_type">${
+          (sources.native_options?.device_types || []).map(
+            (item) => option(item, item, item === add.deviceType)).join("")
+        }</select></label>
+        <label>Icon on the screen<select data-add-field="icon">${
+          (sources.native_options?.icons || []).map(
+            (item) => option(item, item, item === add.icon)).join("")
+        }</select></label>
+        <label>AES key<input type="text" data-add-field="target_key" spellcheck="false"
+          value="${escapeHtml(add.targetKey || "")}"
+          placeholder="32 hex characters, the same as the add-on's device_key"></label>
+        <p class="small">The remote encrypts each press with this key, so it must match the
+          add-on's <b>device_key</b> exactly, or the press decodes to nothing.</p>` : ""}
       ${add.kind === "cloud" ? `<label>Remote<select data-add-field="remote_id">${
         (sources.cloud_remotes || []).map((item) => option(item.remote_id, item.name, item.remote_id === add.remoteId)).join("")
       }</select></label>` : ""}
@@ -757,6 +857,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       button.addEventListener("click", () => {
         add.kind = button.dataset.addKind;
         add.error = "";
+        const kinds = this._sources || {};
+        // Device types and icons differ per kind; carrying one tab's choice into another
+        // would offer a value the backend rejects.
+        add.deviceType = (add.kind === "native"
+          ? kinds.native_options?.default_device_type
+          : (kinds.hid?.device_types || [])[0]) || "";
+        add.icon = (add.kind === "native"
+          ? kinds.native_options?.default_icon
+          : (kinds.hid?.icons || [])[0]) || "";
         this._render();
       });
     });
@@ -771,7 +880,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         else if (name === "device_type") add.deviceType = field.value;
         else if (name === "icon") add.icon = field.value;
         else if (name === "device_id") add.deviceId = field.value;
-        else if (name === "target_id") add.targetId = field.value;
+        else if (name === "new_target_address") add.newAddress = field.value;
+        else if (name === "target_key") add.targetKey = field.value.replace(/\s+/g, "");
       });
       field.addEventListener("change", () => {
         const name = field.dataset.addField;
@@ -780,7 +890,12 @@ class SwitchBotUrcPanel extends HTMLElement {
         if (name === "replace") add.replace = field.checked;
         if (name === "device_type") add.deviceType = field.value;
         if (name === "icon") add.icon = field.value;
-        if (name === "target_id") add.targetId = field.value;
+        if (name === "target_id") {
+          add.addressMode = field.value === "__new__" ? "new"
+            : field.value === "__auto__" ? "auto" : "stored";
+          if (add.addressMode === "stored") add.targetId = field.value;
+          this._render();
+        }
       });
     });
 
@@ -874,6 +989,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!add.deviceId) { add.error = "Give the address of the host to send keys to."; this._render(); return; }
       if (!(add.buttons || []).length) { add.error = "Pick at least one button."; this._render(); return; }
     }
+    if (add.kind === "native" && add.targetKey && !/^[0-9a-fA-F]{32}$/.test(add.targetKey)) {
+      add.error = "The AES key must be exactly 32 hexadecimal characters.";
+      this._render(); return;
+    }
     add.busy = true;
     add.error = "";
     this._physicalBusy = true;
@@ -881,8 +1000,19 @@ class SwitchBotUrcPanel extends HTMLElement {
     try {
       let result;
       if (add.kind === "native") {
+        if (add.addressMode === "new" && !(add.newAddress || "").trim()) {
+          add.error = "Give the new bridge address.";
+          add.busy = false; this._physicalBusy = false; this._render(); return;
+        }
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create`,
-          entry_id: this._entryId, name, ...(add.targetId ? { target_id: add.targetId } : {}) });
+          entry_id: this._entryId, name,
+          device_type: add.deviceType, icon: add.icon,
+          ...(add.targetKey ? { target_key: add.targetKey } : {}),
+          ...(add.addressMode === "new"
+            ? { new_target_address: add.newAddress.trim() }
+            : add.addressMode === "auto"
+              ? { auto_address: true }
+              : add.targetId ? { target_id: add.targetId } : {}) });
       } else if (add.kind === "hid") {
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create_hid`,
           entry_id: this._entryId, name, device_type: add.deviceType,
@@ -900,7 +1030,10 @@ class SwitchBotUrcPanel extends HTMLElement {
             : { profile_key: add.profileKey }),
         });
       }
-      this._notify(result?.warning || `Installed in slot ${result.slot}`);
+      this._notify(result?.warning
+        || (result?.new_bridge
+          ? `Installed in slot ${result.slot} on the new bridge ${result.bridge}`
+          : `Installed in slot ${result.slot}`));
       this._add = null;
       this._physical = null;
       this._physicalFor = null;
@@ -1237,7 +1370,8 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _wireEvents() {
     const root = this.shadowRoot;
-    for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote", "deleteRemote"]) {
+    for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote", "renameRemote",
+                      "recreateRemote", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
       if (el) el.disabled = this._physicalBusy;
     }
@@ -1263,11 +1397,20 @@ class SwitchBotUrcPanel extends HTMLElement {
         kind, name: "", replace: false, busy: false, error: "",
         remoteId: (sources.cloud_remotes || [])[0]?.remote_id || "",
         profileKey: (sources.profiles || [])[0]?.key || "",
-        deviceType: (sources.hid?.device_types || [])[0] || "",
-        icon: (sources.hid?.icons || [])[0] || "",
+        deviceType: (kind === "native"
+          ? sources.native_options?.default_device_type
+          : (sources.hid?.device_types || [])[0]) || "",
+        icon: (kind === "native"
+          ? sources.native_options?.default_icon
+          : (sources.hid?.icons || [])[0]) || "",
         deviceId: sources.hid?.host_mac || "",
         buttons: [...(sources.hid?.default_buttons || [])],
         targetId: (sources.bridges || [])[0]?.target_id || "",
+        // Let the integration pick the address by default: it knows every controller's
+        // capacity and which addresses are already bound.
+        addressMode: sources.native_options?.free ? "auto" : "stored",
+        newAddress: "",
+        targetKey: sources.native_options?.default_key || "",
       };
       this._render();
     });
@@ -1299,6 +1442,38 @@ class SwitchBotUrcPanel extends HTMLElement {
         const result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
           entry_id: this._entryId, remote_id: this._remoteId });
         this._notify(`Rewritten into slot ${result.slot}`);
+        this._physical = null;
+        this._physicalFor = null;
+        this._error = null;
+      } catch (error) { this._error = error?.message || String(error); }
+      finally { this._physicalBusy = false; await this._load(); }
+    });
+
+    root.getElementById("moveRemote")?.addEventListener("click", async () => {
+      const remote = this._remote();
+      if (!remote) return;
+      await this._ensureSources();
+      const next = this._sources?.native_options?.next_address || "";
+      // Typed in full rather than picked, because the usual reason to move is that the
+      // controller changed and the address being moved to may not be one we know yet.
+      const address = prompt(
+        `Bind "${remote.name}" to which address?\n\n` +
+        (next ? `Leave empty to take the next free one (${next}).` : "No free address is known."),
+        "");
+      if (address === null) return;
+      if (!address && !next) return;
+      if (!confirm(`This removes "${remote.name}" from the remote and writes it again. Continue?`)) return;
+      this._physicalBusy = true;
+      this._render();
+      try {
+        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
+          entry_id: this._entryId, remote_id: this._remoteId,
+          ...(address ? { target_address: address.trim() } : { auto_address: true }) });
+        this._notify(result?.warning
+          || (result.moved_from
+            ? `Moved from ${result.moved_from} to ${result.address}`
+            : `Rewritten into slot ${result.slot}`));
+        this._sources = null;
         this._physical = null;
         this._physicalFor = null;
         this._error = null;
@@ -1357,6 +1532,46 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._render();
       }),
     );
+    root.querySelectorAll("[data-remote]").forEach((element) => {
+      const pick = () => {
+        this._remoteId = element.dataset.remote;
+        this._buttonId = null;
+        this._physical = null;
+        this._physicalFor = null;
+        this._normalizeSelection();
+        this._render();
+      };
+      element.addEventListener("click", pick);
+      element.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick(); }
+      });
+    });
+
+    root.querySelectorAll("[data-icon-for]").forEach((element) => {
+      element.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const remote = this._remote();
+        const icons = this._entry()?.icons || [];
+        if (!remote || !icons.length) return;
+        // Step through the list rather than opening a dialog: there are seven, the device
+        // draws the result immediately, and picking one is a glance, not a decision.
+        const next = icons[(icons.indexOf(remote.icon) + 1) % icons.length];
+        if (!confirm(`Change the icon of "${remote.name}" to "${next}"?\n\n`
+            + "The tile is removed from the remote and written again.")) return;
+        this._physicalBusy = true;
+        this._render();
+        try {
+          await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
+            entry_id: this._entryId, remote_id: this._remoteId, icon: next });
+          this._notify(`Icon changed to ${next}`);
+          this._physical = null;
+          this._physicalFor = null;
+          this._error = null;
+        } catch (error) { this._error = error?.message || String(error); }
+        finally { this._physicalBusy = false; await this._load(); }
+      });
+    });
+
     root.querySelectorAll("[data-button]").forEach((element) =>
       element.addEventListener("click", () => {
         const button = this._page()?.buttons.find((item) => item.button_id === element.dataset.button);
@@ -1589,15 +1804,54 @@ class SwitchBotUrcPanel extends HTMLElement {
       .physical-editor{margin-top:20px;padding:22px;background:var(--card-background-color,#fff);border-radius:20px}.physical-editor fieldset{border:0;padding:0;margin:0;min-width:0}.physical-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.physical-page{margin-top:20px;padding:18px;border:1px solid var(--divider-color,#ddd);border-radius:16px}.physical-key{display:grid;grid-template-columns:150px 160px minmax(180px,1fr) auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid var(--divider-color,#ddd)}.physical-key label{display:grid;gap:6px;font-size:12px}.physical-key input,.action-box input{width:100%;min-height:40px;padding:8px;background:var(--card-background-color,#fff);color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:8px}.physical-status{padding:12px;background:var(--secondary-background-color,#eee);border-radius:10px;white-space:pre-wrap}@media(max-width:850px){.physical-key{grid-template-columns:1fr 1fr}.physical-toolbar button{height:auto;min-height:42px;padding:8px}.header-actions{flex-wrap:wrap}.layout-button{display:block!important}}
       :host{display:block;min-height:100%;background:var(--primary-background-color,#f5f6f8);color:var(--primary-text-color,#17202a);font-family:var(--paper-font-body1_-_font-family,system-ui,sans-serif)}
       *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) auto;gap:14px;background:var(--card-background-color,#fff);padding:18px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px) auto;align-items:center;gap:14px;margin:14px 0;padding:14px 18px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:20px 0 14px;padding:4px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:22px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:24px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;margin-top:18px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.save-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:20px}.save-row span{font-size:12px;color:#e74c3c}.primary,.secondary{height:42px;padding:0 18px;border:0;border-radius:12px;font-weight:800;cursor:pointer}.primary{background:var(--primary-color,#03a9f4);color:#fff}.secondary{background:var(--secondary-background-color,#edf0f3);color:var(--primary-text-color,#17202a)}.secondary.compact{height:36px}.primary:disabled{opacity:.5}.error,.loading,.empty{padding:22px;border-radius:16px;background:var(--card-background-color,#fff);margin:16px 0}.error{background:#ee5b6613;color:#d73a46}.loading{display:flex;gap:10px;align-items:center}.loading span{width:14px;height:14px;border:2px solid #ccc;border-top-color:var(--primary-color,#03a9f4);border-radius:50%;animation:spin .7s linear infinite}.empty{text-align:center;color:var(--secondary-text-color,#68727d);line-height:1.7}.empty.small{margin:120px 0}.device-table{margin:10px 0}.device-table table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}.device-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--secondary-text-color,#68727d);padding:4px 6px}.device-table td{padding:4px 6px;border-top:1px solid var(--divider-color,#e2e5e8)}.device-table .small{font-size:11px;color:var(--secondary-text-color,#68727d);margin:4px 0}.device-table .warning{color:#d73a46}.remote-actions{display:flex;flex-direction:column;gap:8px;justify-content:center}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:10px;margin:14px 0;padding:12px 16px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{margin:16px 0;padding:16px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.button-picks{display:flex;flex-wrap:wrap;gap:6px 14px}.button-picks label{font-weight:600;font-size:11px}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}.stage-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:14px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
-      .face{display:grid;justify-items:center;gap:4px}.prow{display:flex;gap:10px;justify-content:center;width:100%;margin:8px 0}.prow.trio{gap:22px;margin:14px 0}.prow.bottom{align-items:center;justify-content:space-between;padding:0 14px}.vstack{display:flex;flex-direction:column;gap:6px}
-      .face-slot{position:relative;border:1px solid #26392d18;border-radius:14px;background:#f7faf7;color:#27352d;display:grid;place-items:center;gap:2px;cursor:pointer;min-height:48px;transition:transform .16s,box-shadow .16s,border-color .16s}.face-slot:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.face-slot .fg{font-size:19px;line-height:1}.face-slot .cap{max-width:100%;font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .face-slot.pill{flex:1;border-radius:999px;min-height:42px}.face-slot.round{width:46px;height:46px;border-radius:50%}.face-slot.red{background:#ee5b6618;border-color:#ee5b6655;color:#d93f4b}.face-slot.wide{width:46px;height:30px;min-height:0;border-radius:15px}
-      .dpad{display:grid;grid-template-columns:repeat(3,54px);grid-template-rows:repeat(3,54px);gap:6px;justify-content:center;margin:10px 0}.face-slot.up{grid-area:1/2}.face-slot.left{grid-area:2/1}.face-slot.ok{grid-area:2/2;border-radius:50%}.face-slot.right{grid-area:2/3}.face-slot.down{grid-area:3/2}
-      .face-slot.ghost{background:#26392d08;border-style:dashed;border-color:#26392d1f;color:#26392d33;cursor:default}.face-slot.ghost:hover{transform:none;box-shadow:none}.face-slot.ghost .cap{display:none}
-      .face-slot i{position:absolute;top:5px;right:5px;width:6px;height:6px;border-radius:50%}.face-slot.preset i{background:#3c8cff}.face-slot.custom i{background:#25bd76}.face-slot.disabled i{background:#ee5b66}.face-slot.none i{background:#9aa4ad}.face-slot.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.face-slot.pressed{animation:press .85s ease}
-      .screen-keys{width:100%;margin-top:16px}.sk-title{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#627168;text-align:center;margin-bottom:8px}.sk-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.face-slot.sk{min-height:56px}.face-slot.sk .fg{font-size:15px;font-weight:800}
-      @media(max-width:850px){main{padding:20px 12px 50px}.selectors{grid-template-columns:1fr}.identity{display:none}.quick-bind{grid-template-columns:1fr}.workspace{grid-template-columns:1fr}.remote-stage,.editor{padding:16px}.editor{min-height:0}header p{display:none}.battery{display:none}.layout-button{display:none}}
-      @media(max-width:430px){header{align-items:center}.live{padding:0 10px}.screen{min-height:400px;padding:13px}.remote-shell{padding:12px;border-radius:32px}.button-grid{gap:7px}.remote-button{min-height:72px;border-radius:15px}dl{grid-template-columns:1fr}dl div:nth-last-child(2){border-bottom:1px solid var(--divider-color,#e2e5e8)}}`;
+      .device-wrap{width:min(100%,360px)}
+      .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
+      .device .shell{stroke:#e0e0e4;stroke-width:1}
+      .device .glass{fill:#090a0c}
+      .scr-scroll{height:197px;overflow-y:auto;padding:12px 13px;scrollbar-width:thin;
+        scrollbar-color:#ffffff40 transparent;font:600 12px/1.2 system-ui,sans-serif;color:#fff}
+      .scr-scroll::-webkit-scrollbar{width:4px}
+      .scr-scroll::-webkit-scrollbar-thumb{background:#ffffff40;border-radius:2px}
+      .scr-empty{color:#ffffff66;font-weight:500;text-align:center;margin:60px 0}
+      .scr-row{display:flex;align-items:center;gap:4px;border-radius:5px;margin-bottom:2px}
+      .scr-row.on{background:#ffffff1f}
+      .scr-row>.k{flex:1;display:flex;align-items:center;gap:9px;padding:6px 7px;cursor:pointer;
+        border-radius:5px;min-width:0}
+      .scr-row>.k:hover{background:#ffffff14}
+      .scr-row>.k:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}
+      .scr-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .scr-row .pos{font-size:10px;font-weight:800;color:#ffffff7a;min-width:28px}
+      .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
+      .scr-row.on .nm{color:#fff}
+      .scr-scroll .ic{width:17px;height:17px;flex:none;fill:none;stroke:#fff;stroke-width:1.6;
+        stroke-linejoin:round;stroke-linecap:round}
+      .ic-btn{flex:none;width:24px;height:24px;margin-right:5px;border:0;border-radius:5px;
+        background:#ffffff26;color:#fff;font-size:12px;cursor:pointer}
+      .ic-btn:hover{background:#ffffff3d}
+      .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
+      .device .cap{fill:#f7f7f9;stroke:#e0e0e4;stroke-width:1}
+      .device .cap.ring{fill:#f4f4f7}
+      .device .cap.seg{fill:#f4f4f7;stroke:#e6e6ea}
+      .device text.cap-t{fill:#333;font:700 11px/1 system-ui,sans-serif;text-anchor:middle}
+      .device .mark{fill:none;stroke:#444;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+      .device .logo{stroke:#a00;stroke-width:1}.device .logo-mark{fill:#fff;stroke:none}
+      /* One rule for every key: the state colours the outline, never the glyph. */
+      .device .k{cursor:pointer;transition:opacity .15s}
+      .device .k:hover .cap{stroke:#03a9f4;stroke-width:2}
+      .device .k:focus-visible{outline:none}
+      .device .k:focus-visible .cap{stroke:#03a9f4;stroke-width:2.5}
+      .device .k.ghost{cursor:default;opacity:.35}
+      .device .k.preset .cap{stroke:#3c8cff;stroke-width:2;fill:#f0f6ff}
+      .device .k.custom .cap{stroke:#25bd76;stroke-width:2;fill:#eefaf3}
+      .device .k.disabled .cap{stroke:#ee5b66;stroke-width:2;fill:#fff2f3}
+      .device .k.selected .cap{stroke:#03a9f4;stroke-width:3;fill:#e6f5fe}
+      .device .k.pressed .cap{animation:keypress .85s ease}
+      @keyframes keypress{0%,100%{fill:#f7f7f9}20%{fill:#c9f6dc}}
+      .screen-keys{margin-top:16px}.sk-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--secondary-text-color,#68727d);margin-bottom:8px}
+      @media(max-width:900px){.workspace{grid-template-columns:1fr}.device-wrap{margin:auto}}
+      @media(max-width:430px){header{align-items:center}.live{padding:0 10px}.device-wrap{width:100%}
+      .button-grid{gap:7px}.remote-button{min-height:72px;border-radius:15px}dl{grid-template-columns:1fr}
+      dl div:nth-last-child(2){border-bottom:1px solid var(--divider-color,#e2e5e8)}}`;
   }
 }
 

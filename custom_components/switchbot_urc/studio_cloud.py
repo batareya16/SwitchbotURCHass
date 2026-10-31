@@ -38,7 +38,11 @@ def _entry(hass, msg):
 @websocket_api.async_response
 async def ws_cloud_status(hass, connection, msg):
     """What the account is set to, without touching the network."""
-    entry = _entry(hass, msg)
+    try:
+        entry = _entry(hass, msg)
+    except ValueError as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
     settings = entry.data.get("cloud")
     settings = settings if isinstance(settings, dict) else {}
     cached = [

@@ -8,3 +8,4 @@ __pycache__/
 # The bridge add-on is published as its own repository (see addons/repository.yaml),
 # so it is not committed here.
 addons/
+.venv-test/

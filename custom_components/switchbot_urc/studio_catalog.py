@@ -65,12 +65,16 @@ def _button_label(key_fun: int) -> str:
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/studio/catalog/types"})
 @websocket_api.async_response
 async def ws_catalog_types(hass, connection, msg):
-    available = await hass.async_add_executor_job(ir_catalog.available)
-    connection.send_result(msg["id"], {
-        "available": available,
-        "types": [{"value": value, "label": label}
-                  for value, label in sorted(ir_catalog.REMOTE_TYPES.items(), key=lambda i: i[1])],
-    })
+    try:
+        available = await hass.async_add_executor_job(ir_catalog.available)
+        connection.send_result(msg["id"], {
+            "available": available,
+            "types": [{"value": value, "label": label}
+                      for value, label in sorted(ir_catalog.REMOTE_TYPES.items(), key=lambda i: i[1])],
+        })
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio catalog read failed")
+        connection.send_error(msg["id"], "catalog_unavailable", str(err))
 
 
 @websocket_api.require_admin
@@ -80,8 +84,12 @@ async def ws_catalog_types(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_catalog_brands(hass, connection, msg):
-    brands = await hass.async_add_executor_job(ir_catalog.brands, msg["remote_type"])
-    connection.send_result(msg["id"], {"brands": brands})
+    try:
+        brands = await hass.async_add_executor_job(ir_catalog.brands, msg["remote_type"])
+        connection.send_result(msg["id"], {"brands": brands})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio catalog read failed")
+        connection.send_error(msg["id"], "catalog_unavailable", str(err))
 
 
 @websocket_api.require_admin
@@ -92,17 +100,21 @@ async def ws_catalog_brands(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_catalog_models(hass, connection, msg):
-    models = await hass.async_add_executor_job(
-        ir_catalog.profiles, msg["remote_type"], msg["brand"]
-    )
-    connection.send_result(msg["id"], {"models": [
-        {
-            "hxd_index": item.hxd_index,
-            "label": f"{item.model} — {item.hxd_index}" if item.model != "no_model"
-                     else f"{item.brand} — {item.hxd_index}",
-        }
-        for item in models
-    ]})
+    try:
+        models = await hass.async_add_executor_job(
+            ir_catalog.profiles, msg["remote_type"], msg["brand"]
+        )
+        connection.send_result(msg["id"], {"models": [
+            {
+                "hxd_index": item.hxd_index,
+                "label": f"{item.model} — {item.hxd_index}" if item.model != "no_model"
+                         else f"{item.brand} — {item.hxd_index}",
+            }
+            for item in models
+        ]})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio catalog read failed")
+        connection.send_error(msg["id"], "catalog_unavailable", str(err))
 
 
 @websocket_api.require_admin

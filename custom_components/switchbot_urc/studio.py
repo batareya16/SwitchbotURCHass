@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.script import async_validate_actions_config
 
 from . import commands
+from .catalog import ICONS
 from .bindings import (
     LIGHT_MAPPING_DEFAULTS,
     light_mapping_from_rows,
@@ -33,7 +34,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.27.0"
+FRONTEND_VERSION = "0.35.0"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -330,6 +331,8 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "reachability": _reachability(remote),
                 "layout_editable": True,
                 "remote_slot": remote.get("index"),
+                "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
+                "icon": str(remote.get("icon", "")),
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
             }
@@ -342,6 +345,8 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         "battery": battery_state.state if battery_state else None,
         "remotes": remotes,
         "can_create_native": bool(bridges),
+        # Drawn on the remote's own screen, so the panel can show the device as it looks.
+        "icons": list(ICONS),
     }
 
 
