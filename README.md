@@ -1,4 +1,7 @@
-# SwitchBot Universal Remote — Home Assistant
+# SwitchBot Universal Remote — Home Assistant (Work in progress, contain bugs)
+
+<img width="2800" height="3142" alt="image" src="https://github.com/user-attachments/assets/873e0168-d907-4101-bd9c-f072dde912e0" />
+
 
 Two local pieces, no SwitchBot hub and no cloud dependency for anything on the BLE path:
 
