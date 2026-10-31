@@ -691,12 +691,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physical = null;
       this._physicalBaseline = null;
     }
-    // The remote's own table is read separately: it is diagnostic, so a failure here must not
-    // keep the layout editor closed.
-    try {
-      this._deviceTable = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/table`,
-        entry_id: this._entryId });
-    } catch (error) { this._deviceTable = { error: error?.message || String(error) }; }
+    // The remote's own table is NOT read here. Reading it talks to the WoRWS, which only
+    // answers on the controller it is bound to — the bridge's — so the add-on has to stop
+    // serving presses for several seconds while it happens. Doing that every time the panel
+    // opened a remote made the bridge go deaf for no reason anyone asked for. It is fetched
+    // on request instead.
     this._render();
   }
 
@@ -822,9 +821,30 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
   }
 
+  async _readDeviceTable() {
+    this._deviceTable = { loading: true };
+    this._render();
+    try {
+      this._deviceTable = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/table`,
+        entry_id: this._entryId });
+    } catch (error) { this._deviceTable = { error: error?.message || String(error) }; }
+    this._render();
+  }
+
   _renderDeviceTable() {
     const table = this._deviceTable;
-    if (!table) return "";
+    if (!table) {
+      return `<details class="device-table"><summary>Installed on the remote</summary>
+        <p class="small">Reading this asks the Universal Remote itself, and it only answers on
+          the controller the bridge owns — so the bridge stops serving presses for a few
+          seconds while it happens. That is why it is not read on its own.</p>
+        <button class="secondary compact" id="readDeviceTable">Read the device table</button>
+        </details>`;
+    }
+    if (table.loading) {
+      return `<details class="device-table" open><summary>Installed on the remote</summary>
+        <div class="loading"><span></span>Asking the remote…</div></details>`;
+    }
     if (table.error) {
       return `<details class="device-table"><summary>Installed on the remote</summary>
         <p class="small">Could not read the device table: ${escapeHtml(table.error)}</p></details>`;
@@ -1556,6 +1576,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (el) el.disabled = this._physicalBusy;
     }
     root.getElementById("refresh")?.addEventListener("click", () => this._refresh());
+    root.getElementById("readDeviceTable")?.addEventListener("click", () => this._readDeviceTable());
     root.getElementById("addKeyToPage")?.addEventListener("click", () => this._addKeyToCurrentPage());
     root.getElementById("removeThisPage")?.addEventListener("click", () => {
       const page = this._physical?.pages?.find((item) => item.index === this._page()?.index);

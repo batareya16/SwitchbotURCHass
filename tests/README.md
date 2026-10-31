@@ -6,7 +6,7 @@ Assistant, bluezero, a broker or a radio — the modules are loaded straight fro
 `conftest.py`, so the suite runs anywhere Python does.
 
 ```bash
-python3 -m venv .venv-test && .venv-test/bin/pip install pytest voluptuous
+python3 -m venv .venv-test && .venv-test/bin/pip install pytest voluptuous cryptography
 .venv-test/bin/python -m pytest tests/ -q
 ```
 
@@ -19,6 +19,7 @@ python3 -m venv .venv-test && .venv-test/bin/pip install pytest voluptuous
 | `test_bindings_multi_address.py` | a press reaching the action bound to that tile, across moves and slots |
 | `test_studio_review.py` | the defects a review of Studio's commands turned up |
 | `test_studio_actions.py` | the saved actions Studio hands back to the panel |
+| `test_bridge_sessions.py` | matching an encrypted press to the session it was encrypted with |
 
 `test_studio_actions.py` imports `studio.py` against a stub of Home Assistant, so it needs
 `voluptuous` as well as `pytest`; it skips itself if the stub falls short rather than failing.
