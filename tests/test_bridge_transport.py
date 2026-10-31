@@ -169,3 +169,17 @@ class TestCommandErrors:
         assert error.status == hci.STATUS_UNKNOWN_COMMAND
         assert isinstance(error, OSError)
         assert "0x203b" in str(error)
+
+
+class TestAddressFormatting:
+    """`set_addresses` formats every address it is given, so this must exist and be right."""
+
+    @pytest.mark.parametrize("written", [
+        "DA:71:16:E0:1F:92", "da7116e01f92", "DA-71-16-E0-1F-92", "da:71:16:e0:1f:92",
+    ])
+    def test_every_form_normalises_to_one(self, written):
+        assert hci.format_address(written) == "DA:71:16:E0:1F:92"
+
+    def test_round_trips_through_the_wire_order(self):
+        formatted = hci.format_address("da7116e01f92")
+        assert hci.address_bytes(formatted) == bytes.fromhex("921FE01671DA")

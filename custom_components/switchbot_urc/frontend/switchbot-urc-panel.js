@@ -35,6 +35,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
     this._sources = null;
+    // Which remote's tile is being edited on the screen, and the icon picked for it but
+    // not yet written.
+    this._iconPickerFor = null;
+    this._iconDraft = null;
     this._physicalStatus = "";
     this._physicalBusy = false;
   }
@@ -139,18 +143,30 @@ class SwitchBotUrcPanel extends HTMLElement {
     return this._entry()?.remotes.find((item) => item.remote_id === this._remoteId) || null;
   }
 
+  _freeIndexOnPage(index) {
+    // Which position a new button would take on this page, or null when it is full. The Main
+    // page is the physical face, so A-D that open a submenu are not free: a key cannot be both
+    // a page link and a button.
+    const page = this._physical?.pages?.find((item) => item.index === index);
+    if (!page) return null;
+    const kind = this._physical.kind;
+    const reserved = page.index === 0
+      ? this._physical.pages.filter((item) => item.index).map((item) => item.index - 1) : [];
+    const limit = page.index ? (kind === "hid" ? 15 : 18) : 19;
+    const taken = new Set(page.buttons.map((item) => item.index));
+    for (let candidate = 0; candidate < limit; candidate += 1) {
+      if (!reserved.includes(candidate) && !taken.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
   _addKeyToCurrentPage() {
     const index = this._page()?.index;
     const page = this._physical?.pages?.find((item) => item.index === index);
     if (!page) return;
     const kind = this._physical.kind;
-    // Main A-D positions that open a page are reserved: a key cannot be both a link and a button.
-    const reserved = page.index === 0
-      ? this._physical.pages.filter((item) => item.index).map((item) => item.index - 1) : [];
-    const limit = page.index ? (kind === "hid" ? 15 : 18) : 19;
-    const free = Array.from({ length: limit }, (_, i) => i).find(
-      (i) => !reserved.includes(i) && !page.buttons.some((item) => item.index === i));
-    if (free == null) {
+    const free = this._freeIndexOnPage(index);
+    if (free === null) {
       this._physicalStatus = "This page is full.";
       this._render();
       return;
@@ -223,7 +239,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!remotes.some((item) => item.remote_id === this._remoteId)) {
       this._remoteId = remotes[0]?.remote_id || null;
     }
-    const pages = this._remote()?.pages || [];
+    const pages = this._pages();
     if (!pages.some((item) => item.index === this._pageIndex)) {
       this._pageIndex = pages[0]?.index ?? 0;
     }
@@ -358,6 +374,43 @@ class SwitchBotUrcPanel extends HTMLElement {
       escapeHtml(statusLabel)} · ${escapeHtml(button.label)}</title>${body}</g>`;
   }
 
+  async _saveTile() {
+    // Renaming only changes a string on the device. Changing the icon means removing the tile
+    // and writing it again, so the name rides along with that rather than costing a second
+    // round of it.
+    const remote = this._remote();
+    if (!remote) return;
+    const input = this.shadowRoot.querySelector("[data-rename-input]");
+    const name = (input?.value || "").trim();
+    const icon = this._iconDraft ?? remote.icon;
+    const renamed = name && name !== remote.name;
+    const reiconed = icon !== remote.icon;
+    this._iconPickerFor = null;
+    this._iconDraft = null;
+    if (!renamed && !reiconed) { this._render(); return; }
+    if (!name) {
+      this._error = "Give the remote a name.";
+      this._render();
+      return;
+    }
+    this._physicalBusy = true;
+    this._render();
+    try {
+      const result = reiconed
+        ? await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
+            entry_id: this._entryId, remote_id: this._remoteId, icon, name })
+        : await this._hass.callWS({ type: `${DOMAIN}/studio/remote/rename`,
+            entry_id: this._entryId, remote_id: this._remoteId, name });
+      this._notify(result?.warning
+        || (reiconed && renamed ? `Saved as "${name}" with the ${icon} icon`
+          : reiconed ? `Icon changed to ${icon}` : `Renamed to ${name}`));
+      this._physical = null;
+      this._physicalFor = null;
+      this._error = null;
+    } catch (error) { this._error = error?.message || String(error); }
+    finally { this._physicalBusy = false; await this._load(); }
+  }
+
   _renderScreen(page) {
     // Real HTML inside the SVG screen, so the list scrolls like the device's own does instead
     // of silently cutting off whatever does not fit.
@@ -379,8 +432,31 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const remotes = this._entry()?.remotes || [];
     if (!remotes.length) return `<p class="scr-empty">No remotes yet</p>`;
+    const choices = this._entry()?.icons || [];
     return remotes.map((item) => {
       const current = item.remote_id === this._remoteId;
+      if (current && this._iconPickerFor === item.remote_id) {
+        // The row becomes the picker: the icons are already drawn here, so choosing one is
+        // seeing the result rather than reading its name in a dialogue.
+        // Both of the things drawn on the tile, edited where they are drawn. The cancel sits
+        // on the hint line: all seven icons only fit across the screen when nothing shares
+        // their row.
+        const pending = this._iconDraft ?? item.icon;
+        return `<div class="scr-row on picking">
+          <div class="ic-choices">${choices.map((name) => `
+            <button class="ic-choice${name === pending ? " on" : ""}"
+              data-pick-icon="${escapeHtml(name)}" title="${escapeHtml(name)}">
+              <svg viewBox="0 0 20 20" class="ic"><path d="${this._iconPath(name)}"/></svg>
+            </button>`).join("")}</div>
+        </div>
+        <div class="scr-row on naming">
+          <input class="scr-name" data-rename-input="1" value="${escapeHtml(item.name)}"
+            maxlength="30" spellcheck="false" aria-label="Name on the remote's screen">
+          <button class="k ic-btn" data-tile-save="1" title="Write the name and icon to the remote">✓</button>
+        </div>
+        <p class="scr-hint">The name and icon are what the remote draws on this row.
+          <button class="scr-cancel" data-icon-cancel="1">Cancel</button></p>`;
+      }
       return `<div class="scr-row${current ? " on" : ""}">
         <div class="k pick-remote" role="button" tabindex="0"
           data-remote="${escapeHtml(item.remote_id)}"
@@ -431,9 +507,20 @@ class SwitchBotUrcPanel extends HTMLElement {
         </foreignObject>
         <g class="scr-sep"><path d="M35 262h230M80 262v18M220 262v18"/></g>
 
-        ${["A", "B", "C", "D"].map((tag, index) => key(tag,
-          `<rect x="${52 + index * 52}" y="296" width="44" height="32" rx="10" class="cap"/>
-           <text x="${74 + index * 52}" y="316" class="cap-t">${tag}</text>`, tag)).join("")}
+        ${["A", "B", "C", "D"].map((tag, index) => {
+          const shape = `<rect x="${52 + index * 52}" y="296" width="44" height="32" rx="10" class="cap"/>
+            <text x="${74 + index * 52}" y="316" class="cap-t">${tag}</text>`;
+          const linked = this._pages().find((item) => item.index === index + 1);
+          // A key that opens a page has no command of its own: that is what the firmware does
+          // with it, and it is why it cannot carry a Home Assistant action.
+          if (linked && !byPos[tag]) {
+            return `<g class="k link" role="button" tabindex="0" data-page-link="${index + 1}">
+              <title>${escapeHtml(tag)} opens ${escapeHtml(linked.name)}</title>${shape}
+              <path d="M-4-4l4 4-4 4" transform="translate(${88 + index * 52} 312)" class="mark link-mark"/>
+            </g>`;
+          }
+          return key(tag, shape, tag);
+        }).join("")}
 
         ${key("ON", `${cap(88, 362, 18)}<text x="88" y="366" class="cap-t">ON</text>`, "On")}
         ${key("OFF", `${cap(212, 362, 18)}<text x="212" y="366" class="cap-t">OFF</text>`, "Off")}
@@ -526,14 +613,19 @@ class SwitchBotUrcPanel extends HTMLElement {
               <select id="remoteSelect">${(entry?.remotes || []).map((item) => `<option value="${escapeHtml(item.remote_id)}" ${item.remote_id === this._remoteId ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}</option>`).join("")}</select>
             </label>
             <div class="identity"><span>Stable ID</span><code>${escapeHtml(remote?.remote_id || "—")}</code><small>Slot ${escapeHtml(remote?.remote_slot ?? "unknown")}</small></div>
-            <div class="remote-actions">
-              <button class="secondary compact" id="addRemote">Add remote</button>
-              ${remote ? `<button class="secondary compact" id="renameRemote">Rename</button>` : ""}
-              ${remote ? `<button class="secondary compact" id="recreateRemote">Write again</button>` : ""}
-              ${remote?.can_move ? `<button class="secondary compact" id="moveRemote">Move to another address</button>` : ""}
-              ${remote ? `<button class="secondary compact" id="deleteRemote">Delete remote</button>` : ""}
-            </div>
           </section>
+          <div class="toolbar">
+            ${this._action("addRemote", "＋", "Add a remote",
+              "Install a new remote on the Universal Remote", "accent")}
+            ${remote ? this._action("renameRemote", "✎", "Rename",
+              `Change what "${remote.name}" is called on the remote's screen`) : ""}
+            ${remote ? this._action("recreateRemote", "↻", "Write again",
+              "Remove this remote from the device and write it back, unchanged") : ""}
+            ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
+              "Bind this remote to a different Bluetooth address") : ""}
+            ${remote ? this._action("deleteRemote", "🗑", "Delete",
+              `Remove "${remote.name}" from the Universal Remote for good`, "danger") : ""}
+          </div>
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
           ${this._renderApplyBar()}
@@ -547,13 +639,19 @@ class SwitchBotUrcPanel extends HTMLElement {
               <button class="secondary" id="quickBind">Apply preset</button>
             </section>
             <nav class="pages">${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
+            ${page?.index ? `<p class="small page-note">Opened by key
+              <b>${"ABCD"[page.index - 1] || page.index}</b> on Main. That is a property of the
+              layout, not a Home Assistant action: a key either opens a page or sends a command,
+              never both.</p>` : ""}
             <div class="workspace">
               <section class="remote-stage">
                 <div class="device-wrap">${this._renderFace(page)}</div>
                 ${this._physical?.pages?.some((item) => item.index === page?.index) ? `
                 <div class="stage-actions">
-                  <button class="secondary compact" id="addKeyToPage">Add a button to this page</button>
-                  ${page?.index ? `<button class="secondary compact" id="removeThisPage">Delete this page</button>` : ""}
+                  ${this._freeIndexOnPage(page?.index) !== null
+                    ? `<button class="secondary compact" id="addKeyToPage" title="Put a new button in the next free position on this page">Add a button</button>`
+                    : `<span class="small">Every position on this page is in use.</span>`}
+                  ${page?.index ? `<button class="secondary compact destructive" id="removeThisPage" title="Remove this page and every button on it">Delete this page</button>` : ""}
                 </div>` : ""}
               <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span><span><i class="none"></i>Empty</span></div>
               </section>
@@ -570,6 +668,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._ensureLayout();
     this._ensureCatalog();
     this._ensureCloud();
+    // The diagnostics table reports each controller's capacity, which comes from here.
+    this._ensureSources();
   }
 
   async _openPhysical() {
@@ -613,8 +713,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       <p class="small">${cloud.cached_remotes} saved remote${cloud.cached_remotes === 1 ? "" : "s"}
         cached${cloud.key_id ? `, communication key ${escapeHtml(cloud.key_id)}` : ""}.</p>
       <div class="key-actions">
-        <button class="secondary compact" id="cloudRefresh">Re-read my remotes</button>
-        <button class="secondary compact" id="cloudRefreshKey">Fetch a fresh communication key</button>
+        <button class="secondary compact" id="cloudRefresh" title="Fetch the remote list from your SwitchBot account again">Re-read my remotes</button>
+        <button class="secondary compact" id="cloudRefreshKey" title="The remote rotates this key; fetch the current one from the account">Fetch a fresh key</button>
       </div>
       <p class="small">Fetch the key when the remote starts answering with undecodable
         responses: it rotates on its own, and the account holds the current one.</p>
@@ -673,8 +773,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `<details class="device-table diagnostics">
       <summary>Diagnostics</summary>
       <div class="key-actions">
-        <button class="secondary compact" data-diagnostic="queries">Dump the read-only queries</button>
-        <button class="secondary compact" data-diagnostic="bridge">Check the bridge is advertising</button>
+        <button class="secondary compact" data-diagnostic="queries" title="Read every 0F63 query the remote answers; changes nothing">Read the remote's state</button>
+        <button class="secondary compact" data-diagnostic="bridge" title="Look for each bridge address on the air">Check the bridges</button>
       </div>
       ${diag?.busy ? `<p class="small">Running…</p>` : ""}
       ${diag?.error ? `<p class="small warning">${escapeHtml(diag.error)}</p>` : ""}
@@ -682,6 +782,18 @@ class SwitchBotUrcPanel extends HTMLElement {
         diag.rows.map((row) => `<tr><td><code>${escapeHtml(row.query)}</code></td>
           <td><code>${escapeHtml(row.value)}</code></td></tr>`).join("")
       }</tbody></table>` : ""}
+      ${(this._sources?.native_options?.controllers || []).length ? `
+        <table><thead><tr><th>Controller</th><th>Tiles</th><th>Advertising now</th></tr></thead>
+        <tbody>${this._sources.native_options.controllers.map((item) => `<tr>
+          <td>${escapeHtml(item.adapter)}<br><code>${escapeHtml(item.address)}</code></td>
+          <td>${item.used} of ${item.capacity}${
+            item.extended_advertising ? "" : "<br><span class=\"small\">no Bluetooth 5</span>"}</td>
+          <td>${(item.serving || []).map((a) => `<code>${escapeHtml(a)}</code>`).join("<br>")
+            || "<span class=\"small\">not reported</span>"}</td></tr>`).join("")}
+        </tbody></table>
+        <p class="small">The add-on's <b>addresses</b> option is only the starting list; Remote
+          Studio adds to it as remotes are created, and the add-on keeps those across restarts.
+          This column is what it is actually advertising.</p>` : ""}
       ${diag?.bridges ? `<table><thead><tr><th>Bridge</th><th>Address</th><th>Advertising</th></tr></thead>
         <tbody>${diag.bridges.map((row) => `<tr><td>${escapeHtml(row.name)}</td>
           <td><code>${escapeHtml(row.address)}</code></td>
@@ -728,6 +840,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${warnings}
       <p class="small">A row is identified by its slot, not by its target address.</p>
     </details>`;
+  }
+
+  _action(id, glyph, label, hint, tone = "") {
+    // One shape for every top-level action: a glyph to find it by, a short label, and the
+    // consequence on hover. The tone carries the weight, so nothing is only a word.
+    return `<button class="action ${tone}" id="${id}" title="${escapeHtml(hint)}">
+      <span class="g">${glyph}</span><span>${escapeHtml(label)}</span></button>`;
   }
 
   _renderAddRemote() {
@@ -1076,7 +1195,48 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _wireKeyEditor(root) {
     const button = this._button();
-    const found = button ? this._draftKey(button) : null;
+    if (!button || !this._physical) return;
+    const found = this._draftKey(button);
+
+    // These two work on an empty position as well as a filled one, so they are wired before
+    // the guard below: a position with no command is exactly where they are needed.
+    // Scoped to the editor: the same attribute is on the device's own keys, and wiring both
+    // here would attach a second listener to them.
+    root.querySelectorAll(".key-editor [data-page-link]").forEach((element) =>
+      element.addEventListener("click", () => {
+        this._pageIndex = Number(element.dataset.pageLink);
+        this._buttonId = null;
+        this._normalizeSelection();
+        this._render();
+      }));
+
+    root.getElementById("openCustomPage")?.addEventListener("click", () => {
+      const index = button.button_index + 1;
+      const home = this._physical.pages.find((item) => item.index === 0);
+      if (!home || this._physical.pages.some((item) => item.index === index)) return;
+      this._physical.pages.push({ index, buttons: [] });
+      this._physical.pages.sort((a, b) => a.index - b.index);
+      // The key gives up its command: the firmware will not let it both open a page and send.
+      home.buttons = home.buttons.filter((item) => item.index !== button.button_index);
+      this._pageIndex = index;
+      this._buttonId = null;
+      this._physicalStatus = "";
+      this._render();
+    });
+
+    root.getElementById("addKeyHere")?.addEventListener("click", () => {
+      const target = this._physical.pages.find((item) => item.index === button.button_page);
+      if (!target || target.buttons.some((item) => item.index === button.button_index)) return;
+      const kindNow = this._physical.kind;
+      target.buttons.push({
+        index: button.button_index,
+        transport: kindNow === "native" ? "native" : kindNow === "hid" ? "hid" : "ir",
+        function: button.default_function ?? (kindNow === "native" ? 5 : 115),
+        code_hex: "",
+      });
+      this._render();
+    });
+
     if (!found) return;
     const { page, key } = found;
     const kind = this._physical.kind;
@@ -1088,18 +1248,6 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelector('[data-key-field="function"]')?.addEventListener("change", (event) => {
       key.function = Number(event.target.value);
-      this._render();
-    });
-
-    root.getElementById("openCustomPage")?.addEventListener("click", () => {
-      // This Main key becomes the link to a new, empty page.
-      const index = key.index + 1;
-      this._physical.pages.push({ index, buttons: [] });
-      this._physical.pages.sort((a, b) => a.index - b.index);
-      page.buttons = page.buttons.filter((item) => item.index !== key.index);
-      this._pageIndex = index;
-      this._buttonId = null;
-      this._physicalStatus = "";
       this._render();
     });
 
@@ -1226,17 +1374,46 @@ class SwitchBotUrcPanel extends HTMLElement {
 
 
 
+  _pageControl(button, key) {
+    // Always rendered for a Main A-D position, because "the button is simply not there" is
+    // how this looked broken: there was nothing to read and nothing to click.
+    const index = key ? key.index : button.button_index;
+    if (button.button_page !== 0 || index > 3) return "";
+    const letter = "ABCD"[index];
+    const target = index + 1;
+    const existing = this._pages().find((item) => item.index === target);
+    if (existing) {
+      return `<p class="small">Key <b>${letter}</b> already opens <b>${escapeHtml(existing.name)}</b>.
+        <button class="link-button" data-page-link="${target}">Open it</button></p>`;
+    }
+    return `<div class="key-actions">
+        <button class="secondary compact" id="openCustomPage">Turn key ${letter} into a page</button>
+      </div>
+      <p class="small">The key stops sending a command and instead opens a new screen of its
+        own, where you can put as many buttons as fit. That is how the remote works: a key does
+        one or the other, never both.</p>`;
+  }
+
   _renderKeyEditor(button) {
     if (!this._physical) return "";
     const found = this._draftKey(button);
-    if (!found) return "";
+    if (!found) {
+      // A position with no command has no entry in the draft layout. It is still a real key on
+      // the remote, so offer the two things that can be done with it rather than nothing.
+      const page = this._physical.pages?.find((item) => item.index === button.button_page);
+      if (!page) return "";
+      return `<div class="action-box key-editor">
+        <div class="action-title"><b>On the remote</b><span>this position is empty</span></div>
+        <div class="key-actions">
+          <button class="secondary compact" id="addKeyHere" title="Start using this position, so it can send something">Give this key a command</button>
+        </div>
+        ${this._pageControl(button, null)}
+      </div>`;
+    }
     const { key } = found;
     const kind = this._physical.kind;
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
-    const usedPages = this._physical.pages.filter((page) => page.index).map((page) => page.index);
-    // Only a Main A-D position can open a page, and only if that page does not exist yet.
-    const canOpenPage = button.button_page === 0 && key.index <= 3 && !usedPages.includes(key.index + 1);
     return `<div class="action-box key-editor">
       <div class="action-title"><b>On the remote</b><span>what this key is, not what Home Assistant does</span></div>
       ${transports.length > 1 ? `<label>Command type<select data-key-field="transport">${
@@ -1256,11 +1433,12 @@ class SwitchBotUrcPanel extends HTMLElement {
           >${escapeHtml(key.code_hex || "")}</textarea></label>
         ${this._renderCatalogPicker()}` : ""}
       <div class="key-actions">
-        ${canOpenPage ? `<button class="secondary compact" id="openCustomPage">Make this a page link</button>` : ""}
-        ${button.button_page ? `<button class="secondary compact" id="removePage">Delete this page</button>` : ""}
-        <button class="secondary compact" id="addKey">Add a button to this page</button>
-        <button class="secondary compact" id="removeKey">Remove this button</button>
+        ${button.button_page ? `<button class="secondary compact destructive" id="removePage" title="Remove this page and every button on it">Delete this page</button>` : ""}
+        ${this._freeIndexOnPage(button.button_page) !== null
+          ? `<button class="secondary compact" id="addKey" title="Put a new button in the next free position on this page">Add a button</button>` : ""}
+        <button class="secondary compact destructive" id="removeKey" title="Clear this position; the key stays on the remote but sends nothing">Clear this key</button>
       </div>
+      ${this._pageControl(button, key)}
     </div>`;
   }
 
@@ -1344,10 +1522,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         <div><dt>Remote</dt><dd>${escapeHtml(remote.remote_id)}</dd></div>
       </dl>
       ${this._renderKeyEditor(button)}
-      <div class="action-box">
-        <label>Page name in Home Assistant<input id="pageLabel" maxlength="80" value="${escapeHtml(this._page()?.name)}"></label>
-        <label>Button name in Home Assistant<input id="buttonLabel" maxlength="80" value="${escapeHtml(button.label)}"></label>
-      </div>
       ${remote?.reachability?.level === "none" ? `<div class="explanation">
         <b>No Home Assistant mapping for this remote.</b><span>${escapeHtml(remote.reachability.text)}
         A mapping saved here would never run, so it is not offered — what the key is on the
@@ -1508,6 +1682,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._wirePhysical();
     root.getElementById("entrySelect")?.addEventListener("change", (event) => {
       this._entryId = event.target.value;
+      this._iconPickerFor = null;
       this._cloud = null;
       this._sources = null;
       this._physical = null;
@@ -1518,6 +1693,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
     root.getElementById("remoteSelect")?.addEventListener("change", (event) => {
       this._remoteId = event.target.value;
+      this._iconPickerFor = null;
+      this._iconDraft = null;
       this._physical = null;
       this._pageIndex = 0;
       this._buttonId = null;
@@ -1532,9 +1709,24 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._render();
       }),
     );
+    root.querySelectorAll("[data-page-link]").forEach((element) => {
+      const open = () => {
+        this._pageIndex = Number(element.dataset.pageLink);
+        this._buttonId = null;
+        this._normalizeSelection();
+        this._render();
+      };
+      element.addEventListener("click", open);
+      element.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+      });
+    });
+
     root.querySelectorAll("[data-remote]").forEach((element) => {
       const pick = () => {
         this._remoteId = element.dataset.remote;
+        this._iconPickerFor = null;
+        this._iconDraft = null;
         this._buttonId = null;
         this._physical = null;
         this._physicalFor = null;
@@ -1548,28 +1740,44 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
 
     root.querySelectorAll("[data-icon-for]").forEach((element) => {
-      element.addEventListener("click", async (event) => {
+      element.addEventListener("click", (event) => {
         event.stopPropagation();
-        const remote = this._remote();
-        const icons = this._entry()?.icons || [];
-        if (!remote || !icons.length) return;
-        // Step through the list rather than opening a dialog: there are seven, the device
-        // draws the result immediately, and picking one is a glance, not a decision.
-        const next = icons[(icons.indexOf(remote.icon) + 1) % icons.length];
-        if (!confirm(`Change the icon of "${remote.name}" to "${next}"?\n\n`
-            + "The tile is removed from the remote and written again.")) return;
-        this._physicalBusy = true;
+        this._iconPickerFor = element.dataset.iconFor;
+        this._iconDraft = null;
         this._render();
-        try {
-          await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
-            entry_id: this._entryId, remote_id: this._remoteId, icon: next });
-          this._notify(`Icon changed to ${next}`);
-          this._physical = null;
-          this._physicalFor = null;
-          this._error = null;
-        } catch (error) { this._error = error?.message || String(error); }
-        finally { this._physicalBusy = false; await this._load(); }
       });
+    });
+
+    root.querySelectorAll("[data-icon-cancel]").forEach((element) => {
+      element.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this._iconPickerFor = null;
+        this._iconDraft = null;
+        this._render();
+      });
+    });
+
+    root.querySelectorAll("[data-pick-icon]").forEach((element) => {
+      element.addEventListener("click", (event) => {
+        event.stopPropagation();
+        // Chosen, not yet written: the name may be being edited in the same breath.
+        this._iconDraft = element.dataset.pickIcon;
+        this._render();
+      });
+    });
+
+    root.querySelector("[data-rename-input]")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); this._saveTile(); }
+      if (event.key === "Escape") {
+        this._iconPickerFor = null;
+        this._iconDraft = null;
+        this._render();
+      }
+    });
+
+    root.querySelector("[data-tile-save]")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this._saveTile();
     });
 
     root.querySelectorAll("[data-button]").forEach((element) =>
@@ -1627,7 +1835,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     const selector = document.createElement("ha-selector");
     selector.hass = this._hass;
     selector.selector = { action: {} };
-    selector.value = structuredClone(this._draftActions);
     selector.label = "Actions";
     selector.addEventListener("value-changed", (event) => {
       this._draftActions = structuredClone(event.detail?.value || []);
@@ -1641,6 +1848,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._actionSelectorEl = selector;
     host.innerHTML = "";
     host.append(selector);
+    // After appending, not before: a property set on a detached element is the usual way a
+    // web component ends up showing nothing when it does have a value.
+    selector.value = structuredClone(this._draftActions);
   }
 
   async _ensureActionSelector() {
@@ -1695,18 +1905,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (save) save.disabled = true;
       if (status) status.textContent = "Saving…";
 
-      // Names first: they are local and cheap, and a later failure should not lose them.
-      if (page) {
-        const updated = await this._hass.callWS({
-          type: `${DOMAIN}/studio/save_labels`, entry_id: this._entryId, remote_id: this._remoteId,
-          labels: {
-            [`page_${page.index}`]: root.getElementById("pageLabel")?.value ?? page.name,
-            [button.button_id]: root.getElementById("buttonLabel")?.value ?? button.label,
-          },
-        });
-        this._replaceEntry(updated);
-      }
-
       // The Home Assistant mapping. An empty custom-action list is not a valid mapping, so it
       // is skipped rather than rejected: the user may only have changed the layout or a name.
       if (!(this._mode === "actions" && !this._draftActions.length)) {
@@ -1739,6 +1937,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._jsonValid = true;
       this._error = null;
       this._notify(layoutChanges ? "Saved and written to the remote" : "Saved");
+      // Keep the selection across the reload so the button just edited stays open.
+      const keepPage = this._pageIndex;
+      const keepButton = this._buttonId;
+      if (!layoutChanges) await this._load();
+      this._pageIndex = keepPage;
+      this._buttonId = keepButton;
       this._normalizeSelection();
       this._render();
     } catch (error) {
@@ -1763,6 +1967,11 @@ class SwitchBotUrcPanel extends HTMLElement {
         entity_id: entityId,
       });
       this._replaceEntry(updated);
+      const keepPage = this._pageIndex;
+      const keepButton = this._buttonId;
+      await this._load();
+      this._pageIndex = keepPage;
+      this._buttonId = keepButton;
       this._normalizeSelection();
       this._notify("Quick-bind light preset applied");
       this._render();
@@ -1803,7 +2012,29 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `
       .physical-editor{margin-top:20px;padding:22px;background:var(--card-background-color,#fff);border-radius:20px}.physical-editor fieldset{border:0;padding:0;margin:0;min-width:0}.physical-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.physical-page{margin-top:20px;padding:18px;border:1px solid var(--divider-color,#ddd);border-radius:16px}.physical-key{display:grid;grid-template-columns:150px 160px minmax(180px,1fr) auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid var(--divider-color,#ddd)}.physical-key label{display:grid;gap:6px;font-size:12px}.physical-key input,.action-box input{width:100%;min-height:40px;padding:8px;background:var(--card-background-color,#fff);color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:8px}.physical-status{padding:12px;background:var(--secondary-background-color,#eee);border-radius:10px;white-space:pre-wrap}@media(max-width:850px){.physical-key{grid-template-columns:1fr 1fr}.physical-toolbar button{height:auto;min-height:42px;padding:8px}.header-actions{flex-wrap:wrap}.layout-button{display:block!important}}
       :host{display:block;min-height:100%;background:var(--primary-background-color,#f5f6f8);color:var(--primary-text-color,#17202a);font-family:var(--paper-font-body1_-_font-family,system-ui,sans-serif)}
-      *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) auto;gap:14px;background:var(--card-background-color,#fff);padding:18px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px) auto;align-items:center;gap:14px;margin:14px 0;padding:14px 18px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:20px 0 14px;padding:4px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:22px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:24px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;margin-top:18px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.save-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:20px}.save-row span{font-size:12px;color:#e74c3c}.primary,.secondary{height:42px;padding:0 18px;border:0;border-radius:12px;font-weight:800;cursor:pointer}.primary{background:var(--primary-color,#03a9f4);color:#fff}.secondary{background:var(--secondary-background-color,#edf0f3);color:var(--primary-text-color,#17202a)}.secondary.compact{height:36px}.primary:disabled{opacity:.5}.error,.loading,.empty{padding:22px;border-radius:16px;background:var(--card-background-color,#fff);margin:16px 0}.error{background:#ee5b6613;color:#d73a46}.loading{display:flex;gap:10px;align-items:center}.loading span{width:14px;height:14px;border:2px solid #ccc;border-top-color:var(--primary-color,#03a9f4);border-radius:50%;animation:spin .7s linear infinite}.empty{text-align:center;color:var(--secondary-text-color,#68727d);line-height:1.7}.empty.small{margin:120px 0}.device-table{margin:10px 0}.device-table table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}.device-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--secondary-text-color,#68727d);padding:4px 6px}.device-table td{padding:4px 6px;border-top:1px solid var(--divider-color,#e2e5e8)}.device-table .small{font-size:11px;color:var(--secondary-text-color,#68727d);margin:4px 0}.device-table .warning{color:#d73a46}.remote-actions{display:flex;flex-direction:column;gap:8px;justify-content:center}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:10px;margin:14px 0;padding:12px 16px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{margin:16px 0;padding:16px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.button-picks{display:flex;flex-wrap:wrap;gap:6px 14px}.button-picks label{font-weight:600;font-size:11px}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}.stage-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:14px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
+      *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;background:var(--card-background-color,#fff);padding:20px 22px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px;padding-top:2px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px) auto;align-items:center;gap:16px;margin:18px 0;padding:18px 22px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:22px 0 16px;padding:5px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:26px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:26px 28px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:16px;margin-top:22px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.save-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:20px}.save-row span{font-size:12px;color:#e74c3c}.primary,.secondary{height:42px;padding:0 18px;border:1px solid transparent;border-radius:12px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background .15s,box-shadow .15s,transform .12s,border-color .15s}
+      .primary{background:var(--primary-color,#03a9f4);color:#fff}
+      .primary:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 20px color-mix(in srgb,var(--primary-color,#03a9f4) 38%,transparent)}
+      .secondary{background:var(--secondary-background-color,#edf0f3);color:var(--primary-text-color,#17202a)}
+      .secondary:hover:not(:disabled){background:var(--card-background-color,#fff);border-color:#c7ced6;box-shadow:0 5px 14px #00000014}
+      .secondary.compact{height:36px;padding:0 14px;font-size:13px}
+      .primary:focus-visible,.secondary:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+      .primary:disabled,.secondary:disabled{opacity:.45;cursor:default;transform:none;box-shadow:none}
+      /* Removing something is never the same shape as adding it. */
+      .secondary.destructive{color:#d33b47;background:#fdf2f3}
+      .secondary.destructive:hover:not(:disabled){background:#fbe8ea;border-color:#e4939b}.error,.loading,.empty{padding:22px;border-radius:16px;background:var(--card-background-color,#fff);margin:16px 0}.error{background:#ee5b6613;color:#d73a46}.loading{display:flex;gap:10px;align-items:center}.loading span{width:14px;height:14px;border:2px solid #ccc;border-top-color:var(--primary-color,#03a9f4);border-radius:50%;animation:spin .7s linear infinite}.empty{text-align:center;color:var(--secondary-text-color,#68727d);line-height:1.7}.empty.small{margin:120px 0}.device-table{margin:10px 0}.device-table table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}.device-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--secondary-text-color,#68727d);padding:4px 6px}.device-table td{padding:4px 6px;border-top:1px solid var(--divider-color,#e2e5e8)}.device-table .small{font-size:11px;color:var(--secondary-text-color,#68727d);margin:4px 0}.device-table .warning{color:#d73a46}.toolbar{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0 4px}
+      .action{display:inline-flex;align-items:center;gap:9px;height:42px;padding:0 16px;white-space:nowrap;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#17202a);font-weight:700;cursor:pointer;transition:border-color .15s,background .15s,transform .12s,box-shadow .15s}
+      .action .g{font-size:16px;line-height:1;opacity:.75}
+      .action:hover{transform:translateY(-1px);box-shadow:0 6px 16px #0000001a;border-color:#c7ced6}
+      .action:active{transform:none}
+      .action:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+      .action:disabled{opacity:.45;cursor:default;transform:none;box-shadow:none}
+      /* Weight where it matters: the one that creates, and the one that cannot be undone. */
+      .action.accent{background:var(--primary-color,#03a9f4);border-color:transparent;color:#fff}
+      .action.accent .g{opacity:1}
+      .action.accent:hover{box-shadow:0 8px 20px color-mix(in srgb,var(--primary-color,#03a9f4) 38%,transparent)}
+      .action.danger{color:#d33b47;border-color:#f0c2c6}
+      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.button-picks{display:flex;flex-wrap:wrap;gap:6px 14px}.button-picks label{font-weight:600;font-size:11px}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
       .device-wrap{width:min(100%,360px)}
       .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
       .device .shell{stroke:#e0e0e4;stroke-width:1}
@@ -1828,6 +2059,20 @@ class SwitchBotUrcPanel extends HTMLElement {
       .ic-btn{flex:none;width:24px;height:24px;margin-right:5px;border:0;border-radius:5px;
         background:#ffffff26;color:#fff;font-size:12px;cursor:pointer}
       .ic-btn:hover{background:#ffffff3d}
+      .scr-row.picking{padding:3px 4px}
+      .ic-choices{flex:1;display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+      .ic-choice{height:26px;display:grid;place-items:center;border:0;border-radius:5px;
+        background:#ffffff14;cursor:pointer;padding:0}
+      .ic-choice:hover{background:#ffffff38}
+      .ic-choice.on{background:#03a9f45c}
+      .ic-choice:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}
+      .scr-hint{margin:3px 7px 6px;font-size:10px;font-weight:500;color:#ffffff8a;line-height:1.4}
+      .scr-cancel{border:0;padding:0;background:none;color:#8fd0ff;font:inherit;cursor:pointer;
+        text-decoration:underline}
+      .scr-row.naming{padding:0 4px;gap:5px}
+      .scr-name{flex:1;min-width:0;height:26px;padding:0 8px;border:1px solid #ffffff2e;
+        border-radius:5px;background:#ffffff14;color:#fff;font:600 12px/1 system-ui,sans-serif}
+      .scr-name:focus{outline:none;border-color:#03a9f4;background:#ffffff1f}
       .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
       .device .cap{fill:#f7f7f9;stroke:#e0e0e4;stroke-width:1}
       .device .cap.ring{fill:#f4f4f7}
@@ -1841,6 +2086,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .k:focus-visible{outline:none}
       .device .k:focus-visible .cap{stroke:#03a9f4;stroke-width:2.5}
       .device .k.ghost{cursor:default;opacity:.35}
+      .page-note{margin:-6px 0 12px;color:var(--secondary-text-color,#68727d)}
+      .device .k.link .cap{fill:#f3f7ff;stroke:#c9d9f5;stroke-dasharray:3 3}
+      .device .link-mark{stroke:#6b8cc7;stroke-width:2}
       .device .k.preset .cap{stroke:#3c8cff;stroke-width:2;fill:#f0f6ff}
       .device .k.custom .cap{stroke:#25bd76;stroke-width:2;fill:#eefaf3}
       .device .k.disabled .cap{stroke:#ee5b66;stroke-width:2;fill:#fff2f3}

@@ -586,6 +586,10 @@ async def ws_remote_sources(hass, connection, msg):
                 {"adapter": bridge.adapter, "address": bridge.address,
                  "capacity": bridge.capacity,
                  "used": sum(1 for item in used if addressing._belongs_to(bridge, item)),
+                 # What the add-on reports it is advertising right now. The add-on's own
+                 # `addresses` option is only the seed: Studio adds to it at run time, so this
+                 # is the one place that tells the truth about what is reachable.
+                 "serving": list(bridge.serving),
                  "extended_advertising": bridge.extended_advertising}
                 for bridge in bridges
             ],

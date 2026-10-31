@@ -34,7 +34,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.35.0"
+FRONTEND_VERSION = "0.43.0"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -236,7 +236,9 @@ def _remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None) -> lis
                 function, positions.get(index, f"FUNCTION_{function}")
             )
             label = (native_button_label(device_type, function, fallback)
-                     if key.get("cmd") else positions.get(index, f"Position {index}"))
+                     if key.get("cmd")
+                     else positions.get(index, f"Position {index}") if page == 0
+                     else f"Row {index + 1}")
             buttons.append(
                 _button_record(
                     remote_id=remote_id,
@@ -244,7 +246,9 @@ def _remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None) -> lis
                     page=int(page),
                     index=index,
                     function=function,
-                    position=positions.get(index, f"BUTTON_{index + 1}"),
+                    # Only the Main page has physical key positions. A submenu is a list on
+                    # the screen, where index 8 is the ninth row and emphatically not "UP".
+                    position=(positions.get(index, "") if page == 0 else ""),
                     label=label,
                     binding=binding,
                 )
@@ -270,6 +274,9 @@ def remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None = None) 
                   ) for key in page["buttons"]]} for page in layout["pages"]]
     else:
         pages = _remote_pages(remote, binding)
+    # Renaming pages and buttons inside Studio was removed: the names come from the remote's
+    # own profile, and a second set that only Studio showed was one more thing to keep in step
+    # for no benefit. Still applied so a configuration written before that keeps its names.
     labels = remote.get("studio_labels", {})
     for page in pages:
         page["name"] = labels.get(f"page_{page['index']}", page["name"])
@@ -348,35 +355,6 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         # Drawn on the remote's own screen, so the panel can show the device as it looks.
         "icons": list(ICONS),
     }
-
-
-@websocket_api.require_admin
-@websocket_api.websocket_command({
-    vol.Required("type"): f"{DOMAIN}/studio/save_labels",
-    vol.Required("entry_id"): str,
-    vol.Required("remote_id"): str,
-    vol.Required("labels"): {str: str},
-})
-@callback
-def ws_studio_save_labels(hass, connection, msg):
-    """Save page and button display names for any protocol."""
-    entry = _entry(hass, msg["entry_id"])
-    remote = _remote_for(entry, msg["remote_id"]) if entry else None
-    if remote is None:
-        connection.send_error(msg["id"], "not_found", "Remote not found")
-        return
-    pages = remote_pages(remote)
-    allowed = {f"page_{page['index']}" for page in pages} | {
-        button["button_id"] for page in pages for button in page["buttons"]
-    }
-    if any(key not in allowed or not value.strip() or len(value) > 80 for key, value in msg["labels"].items()):
-        connection.send_error(msg["id"], "invalid_labels", "Use existing pages/buttons and names of 1–80 characters")
-        return
-    options = deepcopy(dict(entry.options))
-    target = next(item for item in options["remotes"] if studio_physical.remote_identity(item) == msg["remote_id"])
-    target.setdefault("studio_labels", {}).update({key: value.strip() for key, value in msg["labels"].items()})
-    hass.config_entries.async_update_entry(entry, options=options)
-    connection.send_result(msg["id"], _serialize_entry(hass, entry))
 
 
 @websocket_api.require_admin
@@ -609,7 +587,6 @@ async def async_register_studio(hass: HomeAssistant) -> None:
             studio_catalog.register(hass)
             studio_cloud.register(hass)
             studio_manage.register(hass)
-            websocket_api.async_register_command(hass, ws_studio_save_labels)
             websocket_api.async_register_command(hass, ws_studio_save_button_action)
             websocket_api.async_register_command(hass, ws_studio_quick_bind)
             websocket_api.async_register_command(hass, ws_studio_test_button)
