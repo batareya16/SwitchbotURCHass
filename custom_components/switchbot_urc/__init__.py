@@ -308,12 +308,25 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
         return
 
     async def _run_button_actions(
-        sequence: list[dict[str, object]], event: Event, event_data: dict[str, object]
+        sequence: list[dict[str, object]], event: Event, event_data: dict[str, object],
+        owner: str = "",
     ) -> None:
-        """Validate and run one user-authored HA action sequence."""
+        """Validate and run one user-authored HA action sequence.
+
+        `owner` is the remote the binding belongs to. It is logged next to the remote the press
+        came from, because "they should be the same" is exactly the kind of assumption that is
+        worth being able to check in a log rather than reason about.
+        """
         action_script: Script | None = None
         remote_id = str(event_data.get("remote_id", "unknown"))
         button_id = str(event_data.get("button_id", "unknown"))
+        if owner and owner != remote_id:
+            _LOGGER.error(
+                "a binding for remote %s answered a press from remote %s; this should be "
+                "impossible and the actions are not run",
+                owner, remote_id,
+            )
+            return
         try:
             validated = await async_validate_actions_config(hass, deepcopy(sequence))
             action_script = Script(
@@ -382,7 +395,7 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
                 if button_actions is not None:
                     if button_actions:
                         hass.async_create_task(
-                            _run_button_actions(button_actions, event, event_data)
+                            _run_button_actions(button_actions, event, event_data, owner)
                         )
                     else:
                         _LOGGER.info(
@@ -393,6 +406,13 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
                     return
                 action = resolve_binding_action(binding, event_data)
                 if action is None:
+                    continue
+                if owner != remote_id:
+                    _LOGGER.error(
+                        "a binding for remote %s matched a press from remote %s; refusing to "
+                        "drive %s",
+                        owner, remote_id, binding.get("entity_id", "its target"),
+                    )
                     continue
                 entity_id = str(binding.get("entity_id", ""))
                 if not entity_id.startswith("light."):
@@ -446,7 +466,8 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
                         "light", service, service_data, blocking=False
                     )
                     _LOGGER.info(
-                        "WoRWS binding remote_id=%s button=%s -> %s.%s target=%s",
+                        "WoRWS binding owner=%s press=%s button=%s -> %s.%s target=%s",
+                        owner,
                         remote_id,
                         event_data.get("button", event_data.get("button_id", "unknown")),
                         "light",

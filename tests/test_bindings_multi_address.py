@@ -149,3 +149,35 @@ class TestOnePressRunsOneAction:
                "button_actions": {"p0_k5": [{"action": "scene.turn_on"}]}}
         assert b.resolve_binding_action(off, press(FIRST)) is None
         assert b.resolve_button_action_sequence(off, press(FIRST)) is None
+
+
+class TestABindingOnlyAnswersItsOwnRemote:
+    """Belt and braces for the one thing that must never happen.
+
+    Both resolvers already compare remote ids, so a cross-remote match should be impossible.
+    The dispatcher now refuses one anyway and logs it, because "impossible" was the assumption
+    being debugged.
+    """
+
+    def test_the_resolvers_agree_on_who_owns_a_press(self):
+        for binding in (
+            {"remote_id": FIRST, "enabled": True, "entity_id": "light.one",
+             "mappings": {"p0_k5": "turn_on"}},
+            {"remote_id": FIRST, "enabled": True,
+             "button_actions": {"p0_k5": [{"action": "light.turn_on"}]}},
+        ):
+            assert b.resolve_binding_action(binding, press(SECOND)) is None
+            assert b.resolve_button_action_sequence(binding, press(SECOND)) is None
+
+    def test_an_empty_remote_id_matches_nothing_real(self):
+        orphan = {"remote_id": "", "enabled": True, "entity_id": "light.one",
+                  "mappings": {"p0_k5": "turn_on"}}
+        assert b.resolve_binding_action(orphan, press(FIRST)) is None
+
+    def test_a_binding_with_both_kinds_still_belongs_to_one_remote(self):
+        binding = {"remote_id": FIRST, "enabled": True, "entity_id": "light.one",
+                   "mappings": {"p0_k5": "turn_on"},
+                   "button_actions": {"p0_k5": [{"action": "scene.turn_on"}]}}
+        assert b.resolve_button_action_sequence(binding, press(FIRST)) is not None
+        assert b.resolve_button_action_sequence(binding, press(SECOND)) is None
+        assert b.resolve_binding_action(binding, press(SECOND)) is None
