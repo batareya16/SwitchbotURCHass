@@ -24,12 +24,16 @@ from .bindings import (
 )
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
 from .ir_profiles import PROFILES
+from . import studio_catalog
+from . import studio_cloud
+from . import targets
+from . import studio_manage
 from . import studio_physical
 from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.21.0"
+FRONTEND_VERSION = "0.27.0"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -63,6 +67,16 @@ def _remote_for(entry: ConfigEntry, remote_id: str) -> dict[str, Any] | None:
     )
 
 
+def _default_function(position: str, index: int) -> int:
+    """What an unassigned position should become when it is first used.
+
+    The panel no longer asks: picking a position on the mock-up is the whole interaction, and a
+    dropdown asking "and what is it?" right after was noise. A position carries its own meaning,
+    so BACK becomes the Back function without a question.
+    """
+    return int(commands.TAG.get(str(position).upper(), index))
+
+
 def _button_record(
     *,
     remote_id: str,
@@ -93,6 +107,7 @@ def _button_record(
     return {
         **event_data,
         "position": position,
+        "default_function": function or _default_function(position, index),
         "label": label.replace("_", " ").title(),
         "preset_action": resolve_binding_action(binding, event_data) if binding else None,
         "has_override": has_override,
@@ -211,14 +226,16 @@ def _remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None) -> lis
         keys = page_keys() if callable(page_keys) else page_keys
         buttons = []
         for key in keys:
-            if not key.get("cmd"):
-                continue
+            # Keys the stock profile leaves empty are real positions on the remote's screen.
+            # Skipping them made those positions unselectable, so a position like BACK could
+            # never be given a function at all.
             index = int(key["keyIndex"])
             function = int(key.get("keyFun", 0))
             fallback = function_names.get(
                 function, positions.get(index, f"FUNCTION_{function}")
             )
-            label = native_button_label(device_type, function, fallback)
+            label = (native_button_label(device_type, function, fallback)
+                     if key.get("cmd") else positions.get(index, f"Position {index}"))
             buttons.append(
                 _button_record(
                     remote_id=remote_id,
@@ -274,10 +291,14 @@ def _reachability(remote: dict[str, Any]) -> dict[str, str]:
                     "comes back, so Home Assistant never sees these presses.",
         }
     if device_type in commands.DEVTYPE:
+        # Treated like IR in the panel: a HID press goes to the paired host, and that host is
+        # normally a TV or a streaming box rather than Home Assistant. Offering a mapping that
+        # only fires in one unusual setup caused more confusion than it was worth.
         return {
-            "level": "conditional",
-            "text": "HID. Presses go to the host this remote is paired with. They reach Home "
-                    "Assistant only when that host is this machine and it is connected.",
+            "level": "none",
+            "text": "HID. Presses go to the host this remote is paired with — usually a TV or a "
+                    "set-top box, not Home Assistant. Choose the key's HID function here; the "
+                    "paired host decides what it does.",
         }
     return {
         "level": "full",
@@ -313,14 +334,14 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "pages": remote_pages(remote, binding),
             }
         )
-    target = entry.data.get("native_target") or {}
+    bridges = [item for item in targets.all_targets(entry) if item.get("target_key")]
     return {
         "entry_id": entry.entry_id,
         "title": entry.title,
         "address": entry.data[CONF_ADDRESS],
         "battery": battery_state.state if battery_state else None,
         "remotes": remotes,
-        "can_create_native": bool(target.get("device_id") and target.get("target_key")),
+        "can_create_native": bool(bridges),
     }
 
 
@@ -580,6 +601,9 @@ async def async_register_studio(hass: HomeAssistant) -> None:
             websocket_api.async_register_command(hass, ws_studio_get)
             studio_physical.register(hass)
             studio_remotes.register(hass)
+            studio_catalog.register(hass)
+            studio_cloud.register(hass)
+            studio_manage.register(hass)
             websocket_api.async_register_command(hass, ws_studio_save_labels)
             websocket_api.async_register_command(hass, ws_studio_save_button_action)
             websocket_api.async_register_command(hass, ws_studio_quick_bind)

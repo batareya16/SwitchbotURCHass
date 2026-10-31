@@ -191,6 +191,30 @@ Two further consequences:
   and so takes the key away from any other profile on that address. The integration's
   `delete_remote` re-sends `0F 20 08` afterwards for this reason.
 
+### Several addresses from one controller
+
+"Separate addresses" does not have to mean separate adapters. Proven on hardware with one
+Bluetooth 5.1 controller (4 advertising sets, extended advertising on all three PHYs):
+
+- BlueZ cannot do it. None of the kernel's advertising commands — `Add Advertising` (0x003E) or
+  `Add Extended Advertising Parameters` (0x0054) — carries an address field, so every
+  advertising instance goes out as the controller's identity address.
+- The controller can. On the HCI user channel, `LE Set Advertising Set Random Address` (0x2035)
+  gives each advertising set its own address, and `LE Advertising Set Terminated` (subevent
+  `0x12`) names the set a connection arrived on. That subevent is masked off by the usual
+  `LE Set Event Mask` values: it needs bit 17.
+- The controller's own public address cannot be assigned to a set. Keep it by giving that one set
+  `Own_Address_Type = 0x00`; the others carry static random addresses, whose top two bits must
+  be `11` (first octet `C0` or higher).
+- Taking the user channel detaches the kernel's stack, so ACL, L2CAP and ATT have to be served in
+  userspace. ATT is the only hard part and already exists: `FastAttProtocol` is a transport-free
+  `handle(pdu) -> bytes | None`. L2CAP needs nothing but B-frame framing on the fixed ATT CID
+  `0x0004`, and there is no LE pairing anywhere in this path — the remote encrypts at the
+  application layer instead.
+
+`tools/spike_multi_address.py` proves the advertising half; `tools/hci_multi_bridge.py` serves a
+complete press this way, handshake through decrypted command and acknowledgement.
+
 ## Mixed profiles
 
 | Combination | Status |
@@ -234,6 +258,43 @@ VOL+[0,15] VOL-[0,16] CH+[0,15] CH-[0,16]
 
 HID device ids are generated as `<base><typeDigit><unixSeconds>`, with the type digit 0/1/2/3 for
 Apple/Fire/Universal/Google.
+
+### What a HID key can actually send — V48
+
+A press reaches ARM as IPC subtype 6, which `1c934` posts as event `0x15` carrying the key index.
+The dispatcher at `bb6e` calls the HID executor `19580`, which reads the key's `keyFun`, turns it
+into an internal index through `15190`, and looks that index up in a 21-entry table (flash
+`0x33a4a`, RAM `0x20008e96`) of `[index][report id 2][usage16]`. Report 2 is the Consumer page,
+which the report descriptor at `0x338f2` declares with usages 1..0x3FF.
+
+| keyFun | usage | meaning |
+| --- | --- | --- |
+| 5, 105 | `0x30` | Power |
+| 6 | `0x32` | Sleep |
+| 7 / 8 | `0x44` / `0x45` | Left / Right |
+| 9 / 10 | `0x42` / `0x43` | Up / Down |
+| 11 | `0x41` | OK |
+| 12, 2002 | `0x46` | Back |
+| 13, 2104 | `0x223` | AC Home |
+| 15 / 16 | `0xe9` / `0xea` | Volume up / down |
+| 22, 2101 | `0xcd` | Play / Pause |
+| 25, 2103 | `0xb4` | Rewind |
+| 26, 2102 | `0xb3` | Fast forward |
+| 2000 | `0xe2` | Mute |
+| 2105 | `0x40` | Menu |
+| 2106 | `0x224` | AC Back |
+
+`keyFun` 14, 17, 18, 19, 20 and 2100 map to index 0 and send nothing.
+
+**Next Track (`0xb5`) and Previous Track (`0xb6`) are in the table but unreachable.** `15190` never
+returns their indexes, and the only other caller of the lookup passes the fixed release index, so
+no key function selects them on this firmware. The table is also read-only at runtime: its base
+appears in exactly one literal in the whole image, at the read in `1957c`, and it is filled by the
+startup copy from flash. So there is no route to those two entries short of changing the firmware.
+
+For a media key that must reach a player, use a native bridge button instead: its press arrives in
+Home Assistant as an event, where `media_player.media_previous_track` and anything else is
+available. That path is both reachable and more capable than the HID one.
 
 The HID profile table lives separately from the remote table: the validator keeps at most three
 HID entries in a `0x12`-byte-per-entry block, and returns `0x11` when that is exceeded.

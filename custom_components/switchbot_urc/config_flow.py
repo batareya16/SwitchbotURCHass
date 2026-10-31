@@ -26,6 +26,8 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.script import async_validate_actions_config
 
 from . import commands
+from . import install
+from . import targets
 from .bindings import (
     ACTION_LABELS,
     LIGHT_MAPPING_DEFAULTS,
@@ -34,24 +36,16 @@ from .bindings import (
     light_rows_from_mapping,
 )
 from .catalog import DEFAULT_BUTTONS, DEVICE_TYPES, ICONS, buttons_for
-from .client import (
-    UrcConnectionSetupError,
-    UrcHandshakeTimeout,
-    UrcPreflightRejected,
-    UrcPreflightQueryTimeout,
-    UrcResponseDecodeError,
-)
+from .client import UrcResponseDecodeError
 from .cloud import (
     CloudError,
     SwitchBotCloudClient,
     parse_communication_credentials,
 )
 from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
-from .const import CONF_ADDRESS, CONF_KEY, CONF_KEY_ID, DOMAIN, RESP_OK
+from .const import CONF_ADDRESS, CONF_KEY, CONF_KEY_ID, DOMAIN
 from .inventory import (
-    cloud_item_id,
     cloud_items,
-    deletion_verified,
     format_inventory,
     merge_inventory,
     stable_id_for_local,
@@ -81,11 +75,7 @@ def _searchable_select(choices: list[str] | dict[str, str]) -> selector.SelectSe
     )
 
 
-_RESP_ERR = {
-    0x02: "resp_value_err",
-    0x04: "resp_format_err",
-    0x11: "resp_hid_no_pair",
-}
+_RESP_ERR = install.RESP_ERRORS
 
 
 def _valid(data: dict[str, Any]) -> dict[str, str]:
@@ -428,124 +418,19 @@ class UrcOptionsFlow(OptionsFlow):
         client = self._client()
         if client is None:
             raise RuntimeError("not connected")
-        raw = await client.query(0x07)
-        if not raw:
-            raise RuntimeError("post-sync device table timeout")
-        entries = commands.parse_added_devices(raw)
-        present: dict[tuple[bytes, int, int], int] = {}
-        for _index, dev_type, control_type, item_id in entries:
-            signature = (item_id, dev_type, control_type)
-            present[signature] = present.get(signature, 0) + 1
-        native_target = self._entry.data.get("native_target", {})
-        for remote in sorted(
-            self.options.get("remotes", []),
-            key=lambda item: item.get("index")
-            if isinstance(item.get("index"), int) else 0x10000,
-        ):
-            device_type = str(remote.get("device_type", ""))
-            if device_type == "IR_TV" or device_type.startswith("IR_"):
-                continue
-            try:
-                expected = stable_id_for_local(str(remote["device_id"]))
-                expected_type = commands.devtype_byte(device_type)
-                expected_control = commands.control_type_for(device_type)
-            except (KeyError, ValueError):
-                continue
-            signature = (expected, expected_type, expected_control)
-            if present.get(signature, 0):
-                present[signature] -= 1
-                continue
-            index = len(entries)
-            if device_type in commands.NATIVE_DEVTYPE:
-                physical_device_id = str(
-                    remote.get("physical_device_id")
-                    or native_target.get("device_id", "")
-                )
-                if not native_target or not physical_device_id:
-                    raise RuntimeError("native recovery credentials are unavailable")
-                custom_layout = remote.get("custom_layout")
-                if custom_layout:
-                    stages = commands.build_custom_native_bind_sequence(
-                        key_id=0x01,
-                        target_key=bytes.fromhex(str(native_target["target_key"])),
-                        remote_index=index,
-                        name=str(remote.get("name", "Home Control")),
-                        device_id=str(remote["device_id"]),
-                        icon_name=str(remote.get("icon", "tv")),
-                        event_remote_id=str(remote["remote_id"]),
-                        main_buttons=commands.normalize_main_buttons(
-                            custom_layout["main_buttons"]
-                        ),
-                        page_buttons={
-                            int(page): list(actions)
-                            for page, actions in custom_layout["pages"].items()
-                        },
-                    )
-                else:
-                    stages = commands.build_native_bind_sequence(
-                        # Captured native provisioning uses the fixed selector 0x01 here. This is
-                        # not the WoRWS communication key ID (commonly 0x95) and is not a user slot.
-                        key_id=0x01,
-                        target_key=bytes.fromhex(str(native_target["target_key"])),
-                        device_type_name=device_type,
-                        remote_index=index,
-                        name=str(remote.get("name", native_target.get("name", "HASS Bridge"))),
-                        device_id=str(remote["device_id"]),
-                        icon_name=str(remote.get("icon", native_target.get("icon", "strip"))),
-                        # Native targets are direct BLE peers. Firmware only takes the
-                        # connect-and-send path for mode 0; other values can still be accepted
-                        # while binding but never cause a connection when a button is pressed.
-                        control_mode=0,
-                        event_remote_id=remote.get("remote_id"),
-                    )
-                responses = await client.send_command_sequence(
-                    tuple(command for _stage, command in stages),
-                    timeout=35.0,
-                    timeout_retries=3,
-                )
-                if len(responses) != len(stages) or any(
-                    not response or response[0] != RESP_OK for response in responses
-                ):
-                    raise RuntimeError("native remote restoration was rejected")
-            elif device_type in commands.DEVTYPE:
-                response = await client.send_command(
-                    commands.build_remote(
-                        device_type_name=device_type,
-                        remote_index=index,
-                        name=str(remote.get("name", f"Remote {index}")),
-                        device_id=str(remote["device_id"]),
-                        icon_name=str(remote.get("icon", "light")),
-                        buttons=list(remote.get("buttons", DEFAULT_BUTTONS)),
-                    )
-                )
-                if not response or response[0] != RESP_OK:
-                    raise RuntimeError("HID remote restoration was rejected")
-            else:
-                continue
-            entries.append(
-                (index, expected_type, expected_control, expected)
-            )
+        await install.restore_managed_after_sync(
+            client,
+            remotes=self.options.get("remotes", []),
+            targets=targets.all_targets(self._entry),
+        )
 
     @staticmethod
     def _resp_error(resp: bytes) -> str | None:
-        if not resp:
-            return "no_reply"
-        if resp[0] == RESP_OK:
-            return None
-        return _RESP_ERR.get(resp[0], "resp_unknown")
+        return install.resp_error(resp)
 
     @classmethod
     def _delete_resp_error(cls, resp: bytes, command: bytes) -> str | None:
-        """Preserve the firmware's real DELETE status instead of hiding it."""
-        error = cls._resp_error(resp)
-        if error:
-            _LOGGER.warning(
-                "WoRWS DELETE failed: response=%s plaintext=%s error=%s",
-                resp.hex() if resp else "timeout",
-                command.hex(),
-                error,
-            )
-        return error
+        return install.delete_resp_error(resp, command)
 
     async def _delete_and_verify(
         self,
@@ -556,125 +441,10 @@ class UrcOptionsFlow(OptionsFlow):
         control_type: int,
         device_id: str,
     ) -> str | None:
-        """Delete once, then prove completion from the table if its ACK was lost.
-
-        DELETE is destructive and compacts later slots. Retrying the same bytes after an
-        acknowledgement timeout can therefore target a different remote. Read the table before
-        the one allowed write and, on a missing ACK only, accept success when exactly one matching
-        physical row disappeared.
-        """
-        target_id = stable_id_for_local(device_id)
-        expected_index = command[4] if len(command) > 4 else -1
-        # Note: deleting a native (0x72 / control 0) row via 0F6204 is rejected with 0x04 by the
-        # firmware regardless of the control byte (hardware-tested control 0 and 1). Native tiles
-        # appear removable only via a full table rewrite or factory reset; the command here is kept
-        # correct for IR/HID remotes, which delete normally.
-
-        def _target_exists(raw: bytes) -> bool:
-            return any(
-                (index, item_type, item_control, item_id)
-                == (expected_index, int(device_type), int(control_type), target_id)
-                for index, item_type, item_control, item_id
-                in commands.parse_added_devices(raw)
-            )
-
-        # Perform the authenticated handshake first, then read the table and issue the single
-        # DELETE on that same connection.  A separate query connection immediately before the
-        # handshake made real WoRWS hardware accept GATT but withhold its random notification.
-        try:
-            before_raw, response = await client.send_command_with_preflight_query(
-                command,
-                subcommand=0x07,
-                query_timeout=20.0,
-                command_timeout=10.0,
-                prewrite_retries=3,
-                refresh_credentials=True,
-                preflight_check=_target_exists,
-            )
-        except UrcPreflightRejected:
-            _LOGGER.warning(
-                "refusing DELETE because its exact type/control/id identity is absent from "
-                "the fresh 0F6307 table: plaintext=%s",
-                command.hex(),
-            )
-            return "not_found"
-        except UrcHandshakeTimeout:
-            if getattr(client, "_bridge_pause_unacked", False):
-                _LOGGER.warning(
-                    "WoRWS DELETE was not sent: the handshake timed out and the add-on never "
-                    "acknowledged the MQTT pause, so the remote is still bonded to the fake "
-                    "device. plaintext=%s",
-                    command.hex(),
-                )
-                return "native_bridge_not_paused"
-            _LOGGER.warning(
-                "WoRWS DELETE was not sent because the pre-command handshake timed out: "
-                "plaintext=%s",
-                command.hex(),
-            )
-            return "native_handshake_timeout"
-        except UrcPreflightQueryTimeout:
-            _LOGGER.warning(
-                "WoRWS DELETE was not sent because the authenticated 0F6307 table query "
-                "timed out: plaintext=%s",
-                command.hex(),
-            )
-            return "native_table_timeout"
-        except UrcConnectionSetupError:
-            _LOGGER.warning(
-                "WoRWS DELETE was not sent because BLE setup failed: plaintext=%s",
-                command.hex(),
-            )
-            return "native_transport_error"
-        if not before_raw:
-            return "native_table_timeout"
-        before = commands.parse_added_devices(before_raw)
-        before_count = sum(
-            1
-            for _index, item_type, item_control, item_id in before
-            if (item_type, item_control, item_id)
-            == (int(device_type), int(control_type), target_id)
+        return await install.delete_and_verify(
+            client, command,
+            device_type=device_type, control_type=control_type, device_id=device_id,
         )
-        # The callback above checked this exact identity before the write on this same session.
-        assert before_count > 0
-        if response:
-            return self._delete_resp_error(response, command)
-
-        after_raw = await client.query(0x07)
-        if before_raw and after_raw:
-            after = commands.parse_added_devices(after_raw)
-            after_count = sum(
-                1
-                for _index, item_type, item_control, item_id in after
-                if (item_type, item_control, item_id)
-                == (int(device_type), int(control_type), target_id)
-            )
-            if deletion_verified(
-                before,
-                after,
-                device_type=device_type,
-                control_type=control_type,
-                device_id=target_id,
-            ):
-                _LOGGER.warning(
-                    "WoRWS DELETE acknowledgement was lost, but 0F6307 verified removal: "
-                    "plaintext=%s rows=%d->%d matching=%d->%d",
-                    command.hex(),
-                    len(before),
-                    len(after),
-                    before_count,
-                    after_count,
-                )
-                return None
-
-            _LOGGER.warning(
-                "WoRWS DELETE had no acknowledgement and 0F6307 did not prove removal: "
-                "before=%s after=%s",
-                before_raw.hex(),
-                after_raw.hex(),
-            )
-
-        return self._delete_resp_error(response, command)
 
     # -- menu --------------------------------------------------------------------------------
 
@@ -1728,104 +1498,29 @@ class UrcOptionsFlow(OptionsFlow):
         self, profile: Any, *, name: str, replace_existing: bool
     ) -> tuple[dict[str, str], int | None]:
         """Install any profile exposing the IrProfile protocol and persist its stable id."""
-        errors: dict[str, str] = {}
         client = self._client()
         if client is None:
             return {"base": "not_connected"}, None
-        try:
-            raw_table = await client.query(0x07)
-            if not raw_table:
-                return {"base": "ir_table_timeout"}, None
-            entries = commands.parse_added_devices(raw_table)
-            duplicates = [entry for entry in entries if entry[3] == profile.remote_id]
-            if duplicates and not replace_existing:
-                return {"replace_existing": "ir_duplicate_requires_replace"}, None
-            for index, dev_type, control_type, _entry_id in sorted(
-                duplicates, key=lambda entry: entry[0], reverse=True
-            ):
-                delete_command = commands.build_delete(
-                        remote_index=index,
-                        device_type=dev_type,
-                        control_type=control_type,
-                        device_id=profile.remote_id.hex(),
-                    )
-                error = await self._delete_and_verify(
-                    client,
-                    delete_command,
-                    device_type=int(dev_type),
-                    control_type=int(control_type),
-                    device_id=profile.remote_id.hex(),
-                )
-                self._ir_status = (
-                    f"delete duplicate slot {index}: "
-                    f"{'verified' if error is None else error}"
-                )
-                if error:
-                    return {"base": error}, None
-            if duplicates:
-                raw_table = await client.query(0x07)
-                if not raw_table:
-                    return {"base": "ir_table_timeout"}, None
-                entries = commands.parse_added_devices(raw_table)
-                if any(entry[3] == profile.remote_id for entry in entries):
-                    return {"base": "ir_delete_failed"}, None
 
-            remote_index = len(entries)
-            stages = profile.build_install(
-                remote_index=remote_index, name=name, remote_count=len(entries) + 1
-            )
-            responses = await client.send_command_sequence(
-                tuple(command for _stage, command, _accepted in stages),
-                timeout=45.0,
-                timeout_retries=3,
-                accepted_codes=tuple(accepted for _stage, _command, accepted in stages),
-            )
-            for (stage, _command, accepted), response in zip(stages, responses):
-                shown = response.hex() if response else "timeout"
-                self._ir_status = f"{stage}: {shown}"
-                _LOGGER.info("IR profile install stage %s -> %s", stage, shown)
-                if not response:
-                    errors["base"] = "ir_install_timeout"
-                    break
-                if response[0] not in accepted:
-                    errors["base"] = "ir_install_rejected"
-                    break
-            if len(responses) != len(stages) and not errors:
-                errors["base"] = "ir_install_rejected"
-            if errors:
-                return errors, None
+        def _status(text: str) -> None:
+            self._ir_status = text
 
-            await self._restore_managed_after_sync()
-            self.options["remotes"] = [
-                remote for remote in self.options["remotes"]
-                if remote.get("device_id") != profile.remote_id.hex()
-            ]
-            self.options["remotes"].append(
-                {
-                    "index": remote_index,
-                    "name": name,
-                    "device_type": f"IR_{profile.device_type}",
-                    "icon": "tv" if profile.device_type == 2 else "light",
-                    "device_id": profile.remote_id.hex(),
-                    "remote_id": getattr(profile, "remote_id_text", "") or profile.remote_id.hex(),
-                    "studio_pages": commands.studio_pages_from_packets(tuple(
-                        packet for stage, packet, _ in stages if stage.startswith("ir_page_")
-                    )),
-                    "physical_packets": [packet.hex() for stage, packet, _ in stages if stage.startswith("ir_page_")],
-                    "ir_code_bank": profile.code_bank.hex(),
-                    "buttons": [],
-                    "profile": profile.key,
-                }
-            )
-            await self._persist()
-            return {}, remote_index
-        except UrcResponseDecodeError:
-            self._ir_status = "encrypted response could not be decoded"
-            return {"base": "communication_key_invalid"}, None
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("IR profile install failed")
-            self._ir_status = "transport error — see Home Assistant log"
-            return {"base": "ir_transport_error"}, None
+        errors, remote_index, record = await install.install_ir_profile(
+            client, profile,
+            name=name, replace_existing=replace_existing,
+            remotes=self.options.get("remotes", []),
+            targets=targets.all_targets(self._entry),
+            status=_status,
+        )
+        if errors or record is None:
+            return errors, remote_index
+        self.options["remotes"] = [
+            remote for remote in self.options["remotes"]
+            if remote.get("device_id") != profile.remote_id.hex()
+        ]
+        self.options["remotes"].append(record)
+        await self._persist()
+        return {}, remote_index
 
     async def async_step_add_ir_remote(
         self, user_input: dict[str, Any] | None = None
@@ -2571,8 +2266,7 @@ class UrcOptionsFlow(OptionsFlow):
                     # Needed to restore this locally managed target if a future full IR sync
                     # unexpectedly removes it. Config-entry data is HA's normal credential
                     # store; never expose this value in logs or descriptions.
-                    entry_data = dict(self._entry.data)
-                    entry_data["native_target"] = {
+                    targets.remember_target(self.hass, self._entry, {
                         "name": user_input["name"],
                         "device_id": user_input["device_id"],
                         "device_type": user_input["device_type"],
@@ -2580,8 +2274,7 @@ class UrcOptionsFlow(OptionsFlow):
                         "control_mode": 0,
                         "target_key_id": "01",
                         "target_key": user_input["target_key"],
-                    }
-                    self.hass.config_entries.async_update_entry(self._entry, data=entry_data)
+                    })
                     await self._persist()
                     if user_input.get("_custom_layout"):
                         self._custom_native_draft = None

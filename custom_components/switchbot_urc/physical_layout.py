@@ -14,11 +14,37 @@ def source_packets(remote: dict) -> list[bytes]:
     return list(profile.pages) if profile else []
 
 
+# keyFun -> what the V48 firmware actually transmits, from the report table at flash 0x33a4a.
+# Useful for keys that have no matching screen position, such as media controls.
+HID_FUNCTIONS = {
+    "Power": 5,
+    "Sleep": 6,
+    "Left": 7,
+    "Right": 8,
+    "Up": 9,
+    "Down": 10,
+    "OK": 11,
+    "Back": 12,
+    "Home": 13,
+    "Volume up": 15,
+    "Volume down": 16,
+    "Play / Pause": 22,
+    "Rewind": 25,
+    "Fast forward": 26,
+    "Mute": 2000,
+    "Menu": 2105,
+}
+
+
+# Verified against V48 ARM firmware: `15190` maps a key function to an internal index and the
+# table at flash 0x33a4a turns that into a HID consumer usage. Values with no entry there send
+# nothing at all, which is why SOUNDOFF used to be silent on 0x834.
 def hid_usage(device_type: str, position: str) -> int:
     common = {"ON": 105, "OFF": 105, "UP": 9, "DOWN": 10, "LEFT": 7,
               "RIGHT": 8, "OK": 11, "BACK": 12, "HOME": 0x838,
-              "SOUNDOFF": 0x834, "VOLADD": 15, "VOLDEL": 16, "CHUP": 15, "CHDOWN": 16,
+              "SOUNDOFF": 2000, "VOLADD": 15, "VOLDEL": 16, "CHUP": 15, "CHDOWN": 16,
               "A": 0x837, "B": 0x835, "C": 0x836, "D": 0x839}
+
     if device_type == "GOOGLE_TV":
         common.update(dict.fromkeys("ABCD", 0x7D3))
         common["BACK"] = 0x83A
@@ -122,9 +148,12 @@ def validate(remote: dict, draft: dict) -> dict:
                 if type(function) is not int or not 0 <= function <= 65535:
                     raise ValueError("Function must be a number from 0 to 65535")
             elif transport == "ir":
-                code = bytes.fromhex(str(key.get("code_hex", "")))
+                try:
+                    code = bytes.fromhex(str(key.get("code_hex", "")))
+                except ValueError:
+                    raise ValueError("The IR code must be hex, two characters per byte") from None
                 if not code or len(code) > 65536:
-                    raise ValueError("Choose an IR code of 1–65536 bytes")
+                    raise ValueError("Enter an IR code of 1–65536 bytes")
                 key["code_hex"] = code.hex()
             else:
                 record = bytes.fromhex(str(key.get("record", "")))

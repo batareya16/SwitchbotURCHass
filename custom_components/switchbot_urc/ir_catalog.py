@@ -70,6 +70,20 @@ def brands(remote_type: int) -> list[str]:
         ]
 
 
+def profile_by_index(hxd_index: str) -> CatalogProfile | None:
+    """Return the one catalog row behind an hxd_index, for callers that kept only that."""
+    if not available():
+        return None
+    with _connect() as db:
+        row = db.execute(
+            """SELECT remote_type, brand, brand_cn, model, hxd_index, serial,
+                      ac_type, code_type, priority
+               FROM profiles WHERE hxd_index = ? LIMIT 1""",
+            (str(hxd_index),),
+        ).fetchone()
+    return CatalogProfile(**dict(row)) if row else None
+
+
 def profiles(remote_type: int, brand: str) -> list[CatalogProfile]:
     """Return all catalog models for a type and exact brand, or nothing without a catalog."""
     if not available():

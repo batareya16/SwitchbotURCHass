@@ -12,6 +12,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from . import commands as c
 from . import physical_layout as physical
+from . import targets
 from .const import DOMAIN
 from .ir_profiles import PROFILES
 from .cloud import SwitchBotCloudClient
@@ -69,6 +70,44 @@ def persist(hass, entry, identity, **changes):
     hass.config_entries.async_update_entry(entry, options=options)
 
 
+def _functions_for(device_type: str, remote: dict) -> list[dict]:
+    """The functions a key of this remote can actually carry.
+
+    Offering the whole generic action list put "Climate - Auto" on a light, which is not a key
+    the profile has. A native remote is narrowed to the functions its own stock profile uses,
+    with the generic list kept behind them so nothing becomes unreachable.
+    """
+    if device_type in c.DEVTYPE:
+        # Start from what the firmware can really transmit — it includes media keys that have no
+        # matching position on the screen — then add the positions themselves.
+        offered = [{"value": value, "label": label}
+                   for label, value in physical.HID_FUNCTIONS.items()]
+        seen = {item["value"] for item in offered}
+        for position in c.TAG:
+            value = physical.hid_usage(device_type, position)
+            if value not in seen:
+                seen.add(value)
+                offered.append({"value": value, "label": position})
+        return offered
+    generic = {
+        value: c.custom_action_label(name) for name, value in c.CUSTOM_ACTION_FUNCTIONS.items()
+    }
+    profile_name = c.NATIVE_PROFILE_ALIASES.get(str(remote.get("device_type", "")).upper())
+    profile = c.NATIVE_PROFILE_LAYOUTS.get(profile_name or "")
+    own: list[dict] = []
+    seen: set[int] = set()
+    if profile:
+        for keys in profile["pages"].values():
+            for key in (keys() if callable(keys) else keys):
+                function = int(key.get("keyFun", 0))
+                if not function or function in seen:
+                    continue
+                seen.add(function)
+                own.append({"value": function, "label": generic.get(function, f"Function {function}")})
+    rest = [{"value": value, "label": label} for value, label in generic.items() if value not in seen]
+    return own + rest
+
+
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/studio/physical/import",
                                 vol.Required("entry_id"): str})
@@ -115,8 +154,9 @@ async def ws_physical_import(hass, connection, msg):
             imported += 1
         imported += await _adopt_ir_remotes(cloud, table, remotes)
         imported += _adopt_native_remotes(table, remotes, metadata)
+        dropped = _drop_absent_remotes(table, remotes)
         hass.config_entries.async_update_entry(entry, options=options)
-        connection.send_result(msg["id"], {"imported": imported})
+        connection.send_result(msg["id"], {"imported": imported, "dropped": dropped})
     except Exception as err:
         connection.send_error(msg["id"], "physical_import_failed", str(err))
 
@@ -202,9 +242,7 @@ def ws_physical_get(hass, connection, msg):
     try:
         entry, remote = resolve(hass, msg)
         device_type = str(remote["device_type"]).upper()
-        functions = ([{"value": physical.hid_usage(device_type, position), "label": position}
-                      for position in c.TAG] if device_type in c.DEVTYPE else
-                     [{"value": value, "label": c.custom_action_label(name)} for name, value in c.CUSTOM_ACTION_FUNCTIONS.items()])
+        functions = _functions_for(device_type, remote)
         connection.send_result(msg["id"], {"layout": physical.draft_for(remote), "ir_sources": ir_sources(entry),
                                           "functions": functions,
                                           "status": remote.get("physical_status", ""),
@@ -311,7 +349,7 @@ async def ws_physical_apply(hass, connection, msg):
             uploads, pages = physical.compile_pages(remote, draft, slot)
             stored_changes = {}
             if draft["kind"] == "native":
-                target = entry.data.get("native_target", {})
+                target = targets.target_for(entry, remote)
                 key = bytes.fromhex(target.get("target_key", ""))
                 if len(key) != 16:
                     raise ValueError("The native target key is missing")
@@ -426,3 +464,32 @@ def _adopt_native_remotes(table, remotes, catalogue) -> int:
         })
         adopted += 1
     return adopted
+
+
+def _drop_absent_remotes(table, remotes) -> int:
+    """Forget local records whose row is no longer on the device.
+
+    Refresh used to only ever add. A remote deleted elsewhere — in the app, by another tool, or
+    by a factory reset — stayed in Studio for ever with no way to clear it, so the panel and the
+    device disagreed and the only honest reading was "the cache is broken".
+    """
+    present = {row[3] for row in table}
+    kept, dropped = [], 0
+    for item in remotes:
+        identity = item.get("device_id")
+        if not identity:
+            kept.append(item)
+            continue
+        try:
+            stored = c.id_to_bytes(str(identity)) if len(str(identity)) in (12, 17) \
+                else bytes.fromhex(str(identity))
+        except ValueError:
+            kept.append(item)
+            continue
+        if stored in present:
+            kept.append(item)
+        else:
+            _LOGGER.info("dropping %s: no longer in the device table", item.get("name") or identity)
+            dropped += 1
+    remotes[:] = kept
+    return dropped
