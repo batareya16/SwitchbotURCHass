@@ -363,9 +363,21 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
                 str(config_entry.data.get(CONF_ADDRESS, "")), event_data
             ):
                 continue
+            # A remote should have exactly one binding, but older versions and the options
+            # flow could leave a second behind. Keeping the first is what the rest of this
+            # function assumes, so make that true rather than acting on every one of them.
+            seen_remotes: set[str] = set()
             for binding in config_entry.options.get("bindings", []):
                 if not isinstance(binding, dict):
                     continue
+                owner = str(binding.get("remote_id", ""))
+                if owner in seen_remotes:
+                    _LOGGER.warning(
+                        "remote %s has more than one stored binding; ignoring the extra one",
+                        owner,
+                    )
+                    continue
+                seen_remotes.add(owner)
                 button_actions = resolve_button_action_sequence(binding, event_data)
                 if button_actions is not None:
                     if button_actions:
@@ -447,6 +459,10 @@ def _register_binding_dispatcher(hass: HomeAssistant) -> None:
                         remote_id,
                         entity_id,
                     )
+                # One press, one action. The exact-override branch above already stops here;
+                # this one fell through and let every further binding that matched act too, so
+                # a remote with more than one stored binding drove all of their targets at once.
+                return
 
     store["_binding_unsub"] = hass.bus.async_listen(EVENT_BUTTON, _handle_event)
 

@@ -325,13 +325,7 @@ async def ws_remote_create(hass, connection, msg):
             control_mode=0,
             event_remote_id=remote_id,
         )
-        responses = await client.send_command_sequence(
-            tuple(packet for _stage, packet in stages), timeout=35.0, timeout_retries=1,
-        )
-        for (stage, _), response in zip(stages, responses):
-            if not response or response[0] != RESP_OK:
-                code = f"0x{response[0]:02X}" if response else "no reply"
-                raise ValueError(f"{stage}: {code}")
+        await install.bind_native_once(client, stages, device_id=str(target["device_id"]))
 
         remotes = list(entry.options.get("remotes", []))
         remotes.append({

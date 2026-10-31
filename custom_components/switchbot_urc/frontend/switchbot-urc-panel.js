@@ -144,18 +144,18 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _freeIndexOnPage(index) {
-    // Which position a new button would take on this page, or null when it is full. The Main
-    // page is the physical face, so A-D that open a submenu are not free: a key cannot be both
-    // a page link and a button.
+    // Which row a new button would take on this page, or null when there is no room.
+    //
+    // Only a submenu has rows to add: the Main page is the physical face, where every key
+    // already exists on the device whether or not it carries a command. "Adding" one there
+    // meant nothing — the key is already in your hand; what it needs is a command, which is
+    // what selecting it offers.
     const page = this._physical?.pages?.find((item) => item.index === index);
-    if (!page) return null;
-    const kind = this._physical.kind;
-    const reserved = page.index === 0
-      ? this._physical.pages.filter((item) => item.index).map((item) => item.index - 1) : [];
-    const limit = page.index ? (kind === "hid" ? 15 : 18) : 19;
+    if (!page || !page.index) return null;
+    const limit = this._physical.kind === "hid" ? 15 : 18;
     const taken = new Set(page.buttons.map((item) => item.index));
     for (let candidate = 0; candidate < limit; candidate += 1) {
-      if (!reserved.includes(candidate) && !taken.has(candidate)) return candidate;
+      if (!taken.has(candidate)) return candidate;
     }
     return null;
   }
@@ -167,7 +167,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const kind = this._physical.kind;
     const free = this._freeIndexOnPage(index);
     if (free === null) {
-      this._physicalStatus = "This page is full.";
+      this._physicalStatus = "This page has no room for another row.";
       this._render();
       return;
     }
@@ -648,9 +648,11 @@ class SwitchBotUrcPanel extends HTMLElement {
                 <div class="device-wrap">${this._renderFace(page)}</div>
                 ${this._physical?.pages?.some((item) => item.index === page?.index) ? `
                 <div class="stage-actions">
-                  ${this._freeIndexOnPage(page?.index) !== null
-                    ? `<button class="secondary compact" id="addKeyToPage" title="Put a new button in the next free position on this page">Add a button</button>`
-                    : `<span class="small">Every position on this page is in use.</span>`}
+                  ${!page?.index
+                    ? `<span class="small">Pick a key above to give it a command.</span>`
+                    : this._freeIndexOnPage(page.index) !== null
+                      ? `<button class="secondary compact" id="addKeyToPage" title="Put a new row on this page's screen list">Add a row</button>`
+                      : `<span class="small">This page is full.</span>`}
                   ${page?.index ? `<button class="secondary compact destructive" id="removeThisPage" title="Remove this page and every button on it">Delete this page</button>` : ""}
                 </div>` : ""}
               <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span><span><i class="none"></i>Empty</span></div>
@@ -1415,7 +1417,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
     return `<div class="action-box key-editor">
-      <div class="action-title"><b>On the remote</b><span>what this key is, not what Home Assistant does</span></div>
+      <div class="action-title"><b>On the remote</b><span>what this key sends when pressed</span></div>
       ${transports.length > 1 ? `<label>Command type<select data-key-field="transport">${
         transports.map((item) => `<option value="${item}" ${key.transport === item ? "selected" : ""}>${label[item]}</option>`).join("")
       }</select></label>` : ""}
@@ -1435,8 +1437,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       <div class="key-actions">
         ${button.button_page ? `<button class="secondary compact destructive" id="removePage" title="Remove this page and every button on it">Delete this page</button>` : ""}
         ${this._freeIndexOnPage(button.button_page) !== null
-          ? `<button class="secondary compact" id="addKey" title="Put a new button in the next free position on this page">Add a button</button>` : ""}
-        <button class="secondary compact destructive" id="removeKey" title="Clear this position; the key stays on the remote but sends nothing">Clear this key</button>
+          ? `<button class="secondary compact" id="addKey" title="Put a new row on this page's screen list">Add a row</button>` : ""}
+        ${button.button_page
+          ? `<button class="secondary compact destructive" id="removeKey"
+              title="Take this row off the page; the rows below it move up">Delete this row</button>`
+          : `<button class="secondary compact destructive" id="removeKey"
+              title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`}
       </div>
       ${this._pageControl(button, key)}
     </div>`;

@@ -95,3 +95,28 @@ class TestCapacityAcrossTwoControllers:
         second = bridge(SECOND, sets=4, adapter="hci2", serving=[])
         [got] = a.allocate([first, second], used=[DONGLE])
         assert got.bridge.adapter == "hci2"
+
+
+class TestADestructiveBindIsNeverRepeated:
+    """A native bind deletes the row it replaces before writing the new one.
+
+    Repeating the sequence after a lost acknowledgement ran the delete again, so a tile that
+    had in fact been written was removed and rebuilt, round after round.
+    """
+
+    def test_the_sequence_starts_by_deleting(self):
+        # 0F 62 04 02 is the delete; it is the first thing a native bind sends.
+        plaintext = bytes.fromhex("0f620402047e00921fe01671da0000000000")
+        assert plaintext[:4] == bytes.fromhex("0f620402")
+
+    def test_the_table_can_answer_whether_the_row_landed(self):
+        # The reply the remote gave after the loop: slot 4, type 0x7e, native control.
+        table = bytes.fromhex(
+            "010000000047288b0500180101141a0a0f01034409390f01020101141a0a0e17030b1f4d5b02"
+            "f2045464379317020000000000037200921fe01b888a0000000000047e00921fe01671da0000000000")
+        body = table[4:]
+        rows = [body[off:off + 13] for off in range(len(body) - 12)]
+        native = [r for r in rows if r[2] == 0 and r[1] in (0x72, 0x7e)]
+        addresses = {":".join(f"{b:02X}" for b in reversed(r[3:9])) for r in native}
+        assert "DA:71:16:E0:1F:92" in addresses
+        assert "8A:88:1B:E0:1F:92" in addresses

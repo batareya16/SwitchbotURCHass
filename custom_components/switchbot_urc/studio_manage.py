@@ -23,7 +23,7 @@ from .catalog import DEFAULT_BUTTONS, DEVICE_TYPES, ICONS, buttons_for
 from .client import UrcResponseDecodeError
 from .cloud import CloudError
 from .cloud_ir import find_cloud_items, profile_from_cloud
-from .const import DOMAIN, RESP_OK
+from .const import DOMAIN
 from .inventory import merge_inventory, stable_id_for_local
 from . import addressing
 from . import studio_remotes
@@ -339,13 +339,7 @@ async def ws_remote_recreate(hass, connection, msg):
                 control_mode=0,
                 event_remote_id=managed.get("remote_id"),
             )
-            responses = await client.send_command_sequence(
-                tuple(packet for _stage, packet in stages), timeout=35.0, timeout_retries=1,
-            )
-            for (stage, _packet), response in zip(stages, responses):
-                if not response or response[0] != RESP_OK:
-                    code = f"0x{response[0]:02X}" if response else "no reply"
-                    raise ValueError(f"{stage}: {code}")
+            await install.bind_native_once(client, stages, device_id=device_id)
             # The bind sequence rewrote the key for this address; siblings on the same address
             # were released by the delete above and are covered by the same association.
             await install.reassociate_shared_target(client, device_id)

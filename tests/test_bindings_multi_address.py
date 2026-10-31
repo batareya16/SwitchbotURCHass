@@ -107,3 +107,45 @@ class TestIdentityIsUnique:
         clash = press(FIRST)          # a different tile that happened to get the same id
         clash["remote_slot"] = 4
         assert b.resolve_button_action_sequence(bound, clash) is not None
+
+
+class TestOnePressRunsOneAction:
+    """Two lights came on from one press: the preset branch acted and kept looking.
+
+    The dispatcher is Home Assistant code, so what is pinned here is the decision it makes for
+    each binding — that only the binding belonging to the pressed remote answers, and that a
+    second binding for the same remote is an extra, not a second action.
+    """
+
+    def test_a_press_matches_only_its_own_remote_s_preset(self):
+        first = {"remote_id": FIRST, "enabled": True, "entity_id": "light.one",
+                 "mappings": {"p0_k5": "turn_on"}}
+        second = {"remote_id": SECOND, "enabled": True, "entity_id": "light.two",
+                  "mappings": {"p0_k5": "turn_on"}}
+        assert b.resolve_binding_action(second, press(SECOND)) == "turn_on"
+        assert b.resolve_binding_action(first, press(SECOND)) is None
+
+    def test_two_bindings_for_one_remote_both_claim_the_press(self):
+        # Why the dispatcher keeps only the first: on their own, both say yes.
+        one = {"remote_id": FIRST, "enabled": True, "entity_id": "light.one",
+               "mappings": {"p0_k5": "turn_on"}}
+        two = {"remote_id": FIRST, "enabled": True, "entity_id": "light.two",
+               "mappings": {"p0_k5": "turn_on"}}
+        assert b.resolve_binding_action(one, press(FIRST)) == "turn_on"
+        assert b.resolve_binding_action(two, press(FIRST)) == "turn_on"
+
+    def test_an_override_wins_over_the_preset_on_the_same_remote(self):
+        binding_with_both = {
+            "remote_id": FIRST, "enabled": True, "entity_id": "light.one",
+            "mappings": {"p0_k5": "turn_on"},
+            "button_actions": {"p0_k5": [{"action": "scene.turn_on"}]},
+        }
+        assert b.resolve_button_action_sequence(binding_with_both, press(FIRST)) == [
+            {"action": "scene.turn_on"}]
+
+    def test_a_disabled_binding_claims_nothing_either_way(self):
+        off = {"remote_id": FIRST, "enabled": False, "entity_id": "light.one",
+               "mappings": {"p0_k5": "turn_on"},
+               "button_actions": {"p0_k5": [{"action": "scene.turn_on"}]}}
+        assert b.resolve_binding_action(off, press(FIRST)) is None
+        assert b.resolve_button_action_sequence(off, press(FIRST)) is None

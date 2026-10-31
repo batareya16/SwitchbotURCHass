@@ -284,6 +284,50 @@ async def restore_managed_after_sync(
         entries.append((index, expected_type, expected_control, expected))
 
 
+async def native_row_present(client: Any, device_id: str) -> bool:
+    """Whether a native row for this address is in the device table right now."""
+    raw = await client.query(0x07)
+    if not raw:
+        raise TimeoutError("the remote did not answer with its device table")
+    wanted = commands.id_to_bytes(device_id)[:6]
+    return any(row[2] == commands.CTRL_NATIVE and row[3][:6] == wanted
+               for row in commands.parse_added_devices(raw))
+
+
+async def bind_native_once(
+    client: Any, stages: tuple, *, device_id: str
+) -> None:
+    """Run a bind sequence without ever repeating it, and prove the result from the table.
+
+    A native bind starts by deleting the row it is replacing. Repeating that after a lost
+    acknowledgement deletes and recreates the tile again — observed as the same destructive
+    sequence running round after round, each one undoing a tile that had in fact been written.
+    So: send once, and when the answer goes missing ask the device what actually happened.
+    """
+    try:
+        responses = await client.send_command_sequence(
+            tuple(packet for _stage, packet in stages), timeout=35.0, timeout_retries=0,
+        )
+    except (TimeoutError, OSError) as err:
+        if await native_row_present(client, device_id):
+            _LOGGER.warning(
+                "the bind lost its acknowledgement, but the device table shows the row, so it "
+                "is treated as written rather than sent again (%s)", err)
+            return
+        raise ValueError(f"the bind did not complete: {err}") from None
+    for (stage, _packet), response in zip(stages, responses):
+        if response and response[0] == RESP_OK:
+            continue
+        # A missing answer is not a failure on its own; the table is the truth.
+        if not response and await native_row_present(client, device_id):
+            _LOGGER.warning("%s had no answer, but the row is in the table", stage)
+            return
+        code = f"0x{response[0]:02X}" if response else "no reply"
+        raise ValueError(f"{stage}: {code}")
+    if len(responses) != len(stages) and not await native_row_present(client, device_id):
+        raise ValueError("the bind stopped part way and left no row behind")
+
+
 async def install_ir_profile(
     client: Any,
     profile: Any,
