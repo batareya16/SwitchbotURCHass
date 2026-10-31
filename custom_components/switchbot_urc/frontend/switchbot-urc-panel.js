@@ -776,6 +776,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       <div class="key-actions">
         <button class="secondary compact" data-diagnostic="queries" title="Read every 0F63 query the remote answers; changes nothing">Read the remote's state</button>
         <button class="secondary compact" data-diagnostic="bridge" title="Look for each bridge address on the air">Check the bridges</button>
+        <button class="secondary compact" data-diagnostic="bindings" title="Which remote each saved action belongs to; reads nothing from the device">Why did that action run?</button>
       </div>
       ${diag?.busy ? `<p class="small">Running…</p>` : ""}
       ${diag?.error ? `<p class="small warning">${escapeHtml(diag.error)}</p>` : ""}
@@ -801,6 +802,28 @@ class SwitchBotUrcPanel extends HTMLElement {
           <td class="${row.found ? "" : "warning"}">${row.found ? "yes" : "not seen"}</td></tr>`).join("")}
         </tbody></table>` : ""}
       ${diag?.detail ? `<p class="small">${escapeHtml(diag.detail)}</p>` : ""}
+      ${diag?.problems?.length ? `<div class="explanation danger"><b>Found a reason actions
+        can run for the wrong remote.</b>${diag.problems.map(
+          (text) => `<span>${escapeHtml(text)}</span>`).join("")}</div>` : ""}
+      ${diag?.remotes ? `<table><thead><tr><th>Remote</th><th>Matched on</th><th>Bound to</th>
+        </tr></thead><tbody>${diag.remotes.map((item) => {
+          const own = diag.bindings.filter((b) => b.remote_id === item.identity);
+          return `<tr><td>${escapeHtml(item.name)}<br><span class="small">${
+            escapeHtml(item.device_type)}</span></td>
+          <td><code>${escapeHtml(item.identity)}</code>${item.has_remote_id ? ""
+            : `<br><span class="small warning">no remote_id of its own, so its address is
+               used</span>`}</td>
+          <td>${own.length ? own.map((b) => `${escapeHtml(b.entity_id || "custom actions")}${
+            b.buttons.length ? ` <span class="small">(${b.buttons.length} button${
+              b.buttons.length === 1 ? "" : "s"})</span>` : ""}`).join("<br>")
+            : `<span class="small">nothing</span>`}</td></tr>`;
+        }).join("")}</tbody></table>
+        ${diag.bindings.filter((b) => b.orphan).length
+          ? `<p class="small warning">${diag.bindings.filter((b) => b.orphan).length} saved
+             binding(s) belong to no remote listed here.</p>` : ""}
+        ${!diag.problems.length
+          ? `<p class="small">Each remote is matched on its own identity; nothing here explains
+             one remote driving another's target.</p>` : ""}` : ""}
     </details>`;
   }
 
@@ -1558,9 +1581,17 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button data-mode="disabled" class="${this._mode === "disabled" ? "selected" : ""}">Disabled</button>
       </div>
       <div class="mode-content">
-        ${this._mode === "preset" ? `<div class="explanation"><b>Use the whole-remote preset.</b><span>${button.preset_action ? `This button will ${escapeHtml(button.preset_action.replaceAll("_", " "))}.` : "No Quick-bind action currently matches this button."}</span></div>` : ""}
+        ${this._mode === "preset" ? `<div class="explanation"><b>Use the whole-remote preset.</b><span>${
+          button.preset_action
+            ? `This button will ${escapeHtml(button.preset_action.replaceAll("_", " "))}${
+                remote.binding?.entity_id ? ` ${escapeHtml(remote.binding.entity_id)}` : ""}.`
+            : "No Quick-bind action currently matches this button."
+        }${remote.binding?.entity_id
+          ? ` Every button on this remote that has no actions of its own drives
+             ${escapeHtml(remote.binding.entity_id)}.` : ""}</span></div>` : ""}
         ${this._mode === "disabled" ? `<div class="explanation danger"><b>Ignore this button.</b><span>Physical presses will be received but no Home Assistant action will run.</span></div>` : ""}
-        ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span>${escapeHtml(actionSummary)}</span></div><div id="visualActionEditor"></div><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false">${escapeHtml(JSON.stringify(this._draftActions, null, 2))}</textarea><div class="json-help">This uses standard Home Assistant script action syntax.</div></details></div>` : ""}
+        ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span>${escapeHtml(actionSummary)}${
+          this._draftActions.length > 1 ? ", all of them on one press" : ""}</span></div><div id="visualActionEditor"></div><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false">${escapeHtml(JSON.stringify(this._draftActions, null, 2))}</textarea><div class="json-help">This uses standard Home Assistant script action syntax.</div></details></div>` : ""}
       </div>
       `}
       <div class="save-row"><span id="saveStatus"></span><button class="primary" id="saveButton" ${

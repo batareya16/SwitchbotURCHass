@@ -34,7 +34,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.46.1"
+FRONTEND_VERSION = "0.49.0"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -315,7 +315,24 @@ def _reachability(remote: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _repair_identities(hass, entry) -> None:
+    """Make sure no two remotes can answer to the same identity, once per entry.
+
+    Done here because this is what every Studio read goes through, so a configuration written
+    before remotes had ids of their own is repaired the first time the panel is opened.
+    """
+    store = hass.data.setdefault(DOMAIN, {}).setdefault("_identity_repair", set())
+    if entry.entry_id in store:
+        return
+    store.add(entry.entry_id)
+    try:
+        studio_remotes.ensure_distinct_identities(hass, entry)
+    except Exception:  # noqa: BLE001 - a repair must never stop the panel from opening
+        _LOGGER.exception("could not give every remote its own identity")
+
+
 def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
+    _repair_identities(hass, entry)
     registry = er.async_get(hass)
     unique_id = f"{str(entry.data[CONF_ADDRESS]).replace(':', '').lower()}_battery"
     battery_entity = registry.async_get_entity_id("sensor", DOMAIN, unique_id)

@@ -462,17 +462,79 @@ async def ws_create_hid(hass, connection, msg):
         connection.send_error(msg["id"], "hid_create_failed", str(err))
 
 
+def _binding_report(entry) -> dict[str, Any]:
+    """Every remote identity next to every binding, with anything inconsistent called out.
+
+    A press is matched to its actions by `remote_id` alone, so if one remote's button drives
+    another's light the cause is in these two columns. Showing them beats reasoning about them.
+    """
+    remotes = []
+    identities: dict[str, list[str]] = {}
+    for remote in entry.options.get("remotes", []):
+        if not isinstance(remote, dict):
+            continue
+        identity = str(remote.get("remote_id") or remote.get("device_id") or "")
+        identities.setdefault(identity, []).append(str(remote.get("name", "")))
+        remotes.append({
+            "name": str(remote.get("name", "")),
+            "identity": identity,
+            "has_remote_id": bool(remote.get("remote_id")),
+            "device_id": str(remote.get("device_id", "")),
+            "physical_device_id": str(remote.get("physical_device_id", "")),
+            "device_type": str(remote.get("device_type", "")),
+        })
+
+    bindings = []
+    owners: dict[str, int] = {}
+    for binding in entry.options.get("bindings", []):
+        if not isinstance(binding, dict):
+            continue
+        owner = str(binding.get("remote_id", ""))
+        owners[owner] = owners.get(owner, 0) + 1
+        actions = binding.get("button_actions")
+        bindings.append({
+            "remote_id": owner,
+            "remote_name": str(binding.get("remote_name", "")),
+            "entity_id": str(binding.get("entity_id", "")),
+            "enabled": bool(binding.get("enabled", True)),
+            "preset": bool(binding.get("mappings")),
+            "buttons": sorted(actions) if isinstance(actions, dict) else [],
+            "orphan": owner not in identities,
+        })
+
+    problems = []
+    for identity, names in identities.items():
+        if len(names) > 1:
+            problems.append(
+                f"{len(names)} remotes share the identity {identity or '(empty)'}: "
+                f"{', '.join(names)}. A press from any of them matches all of their bindings."
+            )
+    for owner, count in owners.items():
+        if count > 1:
+            problems.append(f"{count} bindings are stored for remote {owner}; only the first runs.")
+    for binding in bindings:
+        if binding["orphan"]:
+            problems.append(
+                f"a binding for {binding['remote_id'] or '(empty)'} belongs to no remote that "
+                "exists here"
+            )
+    return {"remotes": remotes, "bindings": bindings, "problems": problems}
+
+
 @websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/diagnostics",
     vol.Required("entry_id"): str,
-    vol.Required("what"): vol.In(("queries", "bridge")),
+    vol.Required("what"): vol.In(("queries", "bridge", "bindings")),
 })
 @websocket_api.async_response
 async def ws_diagnostics(hass, connection, msg):
     """Read-only checks: the 0F 63 query namespace, and whether the bridge is advertising."""
     try:
         entry = _entry(hass, msg)
+        if msg["what"] == "bindings":
+            connection.send_result(msg["id"], _binding_report(entry))
+            return
         if msg["what"] == "queries":
             client = _client(hass, entry)
             rows = []

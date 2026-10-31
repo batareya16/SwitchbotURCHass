@@ -65,6 +65,102 @@ def _save_remotes(hass, entry, remotes: list[dict[str, Any]]) -> None:
     hass.config_entries.async_update_entry(entry, options=options)
 
 
+def ensure_distinct_identities(hass, entry) -> int:
+    """Give every remote an identity nothing else can answer to.
+
+    A remote with no `remote_id` is matched by its address, and several native tiles used to
+    share one bridge address — so a press on either ran both of their actions. Each such remote
+    gets an id of its own; its bindings follow only when exactly one remote held that identity,
+    because splitting shared ones is a guess nobody asked us to make.
+    """
+    remotes = [item for item in entry.options.get("remotes", []) if isinstance(item, dict)]
+    holders: dict[str, list[dict]] = {}
+    for remote in remotes:
+        if remote.get("remote_id"):
+            continue
+        holders.setdefault(str(remote.get("device_id", "")), []).append(remote)
+    if not holders:
+        return 0
+    options = deepcopy(dict(entry.options))
+    stored = [item for item in options.get("remotes", []) if isinstance(item, dict)]
+    bindings = [item for item in options.get("bindings", []) if isinstance(item, dict)]
+    taken = {str(item.get("remote_id", "")) for item in stored if item.get("remote_id")}
+    changed = 0
+    for address, sharing in holders.items():
+        for remote in sharing:
+            target = next(
+                (item for item in stored
+                 if item is remote or (
+                     not item.get("remote_id")
+                     and str(item.get("device_id", "")) == address
+                     and item.get("name") == remote.get("name"))),
+                None,
+            )
+            if target is None:
+                continue
+            new_id = uuid.uuid4().hex[:8]
+            while new_id in taken:
+                new_id = uuid.uuid4().hex[:8]
+            taken.add(new_id)
+            target["remote_id"] = new_id
+            changed += 1
+            if len(sharing) == 1:
+                for binding in bindings:
+                    if str(binding.get("remote_id", "")) == address:
+                        binding["remote_id"] = new_id
+            else:
+                _LOGGER.warning(
+                    "%s was shared by %d remotes; %r now has its own id but its actions must "
+                    "be set again, because which of them owned each one is not recorded",
+                    address, len(sharing), remote.get("name", ""),
+                )
+    if not changed:
+        return 0
+    options["remotes"] = stored
+    options["bindings"] = bindings
+    hass.config_entries.async_update_entry(entry, options=options)
+    _LOGGER.warning("gave %d remote(s) an identity of their own", changed)
+    return changed
+
+
+def _forget_remote(hass, entry, identity: str) -> int:
+    """Remove a remote and the actions bound to it, in one write.
+
+    A binding outlives its remote otherwise. That is not merely untidy: a remote is matched by
+    `remote_id or device_id`, so an orphan left over from a deleted remote starts answering for
+    whichever remaining remote shares that identity — which is how one remote's button came to
+    switch on another's light.
+    """
+    options = deepcopy(dict(entry.options))
+    # One remote, not every remote that answers to this identity: two can share one, and
+    # deleting the tile of one is not a reason to forget the other's record as well.
+    kept_remotes = []
+    removed = False
+    for item in options.get("remotes", []):
+        matches = str(item.get("remote_id") or item.get("device_id") or "") == identity
+        if matches and not removed:
+            removed = True
+            continue
+        kept_remotes.append(item)
+    options["remotes"] = kept_remotes
+    bindings = [item for item in options.get("bindings", []) if isinstance(item, dict)]
+    kept = [item for item in bindings if str(item.get("remote_id", "")) != identity]
+    dropped = len(bindings) - len(kept)
+    # Only when nothing else answers to that identity: two remotes can share one, and the
+    # survivor's actions are not ours to delete.
+    still_used = any(
+        str(item.get("remote_id") or item.get("device_id") or "") == identity
+        for item in options["remotes"]
+    )
+    if dropped and not still_used:
+        options["bindings"] = kept
+        _LOGGER.info("removed %d binding(s) that belonged to %s", dropped, identity)
+    else:
+        dropped = 0
+    hass.config_entries.async_update_entry(entry, options=options)
+    return dropped
+
+
 def _bridges(hass, entry) -> list:
     """What Remote Studio can plan against: one entry per controller, with its real capacity.
 
@@ -161,13 +257,10 @@ async def ws_remote_delete(hass, connection, msg):
             # Nothing to delete on the device — it was removed elsewhere, or the remote was
             # factory reset. Dropping the local record is then the whole job, and refusing
             # would leave Studio showing a remote that does not exist.
-            remotes = [
-                item for item in entry.options.get("remotes", [])
-                if str(item.get("remote_id") or item.get("device_id") or "") != msg["remote_id"]
-            ]
-            _save_remotes(hass, entry, remotes)
+            dropped = _forget_remote(hass, entry, msg["remote_id"])
             connection.send_result(msg["id"], {
                 "deleted": msg["remote_id"], "rows": len(table), "device_untouched": True,
+                "bindings_removed": dropped,
             })
             return
         if len(matches) != 1:
@@ -210,12 +303,9 @@ async def ws_remote_delete(hass, connection, msg):
             key_restored = await install.reassociate_shared_target(
                 client, bound_address) is not None
 
-        remotes = [
-            item for item in entry.options.get("remotes", [])
-            if str(item.get("remote_id") or item.get("device_id") or "") != msg["remote_id"]
-        ]
-        _save_remotes(hass, entry, remotes)
+        dropped = _forget_remote(hass, entry, msg["remote_id"])
         connection.send_result(msg["id"], {
+            "bindings_removed": dropped,
             "deleted": msg["remote_id"], "rows": len(after), "key_restored": key_restored,
         })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
