@@ -123,3 +123,61 @@ class TestGivingEveryRemoteItsOwnIdentity:
         ensure_distinct(Hass, entry)
         ids = [r["remote_id"] for r in entry.options["remotes"]]
         assert len(set(ids)) == len(ids)
+
+
+def _cleanup(entry):
+    """The rule `ws_bindings_cleanup` applies, lifted out of its Home Assistant wrapper."""
+    import copy
+    options = copy.deepcopy(dict(entry.options))
+    identities = {
+        str(item.get("remote_id") or item.get("device_id") or "")
+        for item in options.get("remotes", []) if isinstance(item, dict)
+    }
+    bindings = [item for item in options.get("bindings", []) if isinstance(item, dict)]
+    kept = [item for item in bindings if str(item.get("remote_id", "")) in identities]
+    removed = [item for item in bindings if item not in kept]
+    options["bindings"] = kept
+    return removed, options
+
+
+class TestRemovingLeftoverActions:
+    """What the "Remove them" button does, for a configuration that did not repair itself."""
+
+    def test_a_binding_whose_remote_is_gone_is_removed(self):
+        removed, options = _cleanup(Entry({
+            "remotes": [dict(STRIP)],
+            "bindings": [
+                {"remote_id": "bb30e0eb", "entity_id": "light.hall"},
+                {"remote_id": "aa11bb22", "remote_name": "Desk lamp", "entity_id": "light.desk"},
+            ],
+        }))
+        assert [r["entity_id"] for r in removed] == ["light.desk"]
+        assert [b["entity_id"] for b in options["bindings"]] == ["light.hall"]
+
+    def test_a_remote_matched_by_its_address_still_counts_as_existing(self):
+        removed, _ = _cleanup(Entry({
+            "remotes": [{"name": "Strip", "device_id": "8A881BE01F92"}],
+            "bindings": [{"remote_id": "8A881BE01F92", "entity_id": "light.hall"}],
+        }))
+        assert removed == []
+
+    def test_nothing_is_removed_when_every_binding_has_its_remote(self):
+        removed, _ = _cleanup(Entry({
+            "remotes": [dict(DESK), dict(STRIP)],
+            "bindings": [
+                {"remote_id": "aa11bb22", "entity_id": "light.desk"},
+                {"remote_id": "bb30e0eb", "entity_id": "light.hall"},
+            ],
+        }))
+        assert removed == []
+
+    def test_a_binding_with_no_remote_id_at_all_is_removed(self):
+        removed, _ = _cleanup(Entry({
+            "remotes": [dict(STRIP)],
+            "bindings": [{"entity_id": "light.mystery"}],
+        }))
+        assert len(removed) == 1
+
+    def test_an_empty_configuration_is_left_alone(self):
+        removed, options = _cleanup(Entry({})) 
+        assert removed == [] and options["bindings"] == []

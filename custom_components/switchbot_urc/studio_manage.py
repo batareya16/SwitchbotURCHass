@@ -582,9 +582,54 @@ async def ws_diagnostics(hass, connection, msg):
         connection.send_error(msg["id"], "diagnostics_failed", str(err))
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/bindings/cleanup",
+    vol.Required("entry_id"): str,
+})
+@websocket_api.async_response
+async def ws_bindings_cleanup(hass, connection, msg):
+    """Delete saved actions that belong to no remote that exists here.
+
+    A binding used to outlive the remote it was made for. Because a remote is matched by
+    `remote_id or device_id`, such a leftover starts answering for whichever remote shares that
+    identity — one remote's button switching on another's light. Removing them is safe: nothing
+    that still has a remote is touched.
+    """
+    try:
+        entry = _entry(hass, msg)
+        options = deepcopy(dict(entry.options))
+        identities = {
+            str(item.get("remote_id") or item.get("device_id") or "")
+            for item in options.get("remotes", []) if isinstance(item, dict)
+        }
+        bindings = [item for item in options.get("bindings", []) if isinstance(item, dict)]
+        kept = [item for item in bindings
+                if str(item.get("remote_id", "")) in identities]
+        removed = [
+            {"remote_id": str(item.get("remote_id", "")),
+             "remote_name": str(item.get("remote_name", "")),
+             "entity_id": str(item.get("entity_id", ""))}
+            for item in bindings if item not in kept
+        ]
+        if removed:
+            options["bindings"] = kept
+            hass.config_entries.async_update_entry(entry, options=options)
+            _LOGGER.warning(
+                "removed %d saved action set(s) belonging to no remote: %s",
+                len(removed),
+                ", ".join(f"{item['remote_name'] or item['remote_id']}" for item in removed),
+            )
+        connection.send_result(msg["id"], {"removed": removed})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio binding cleanup failed")
+        connection.send_error(msg["id"], "cleanup_failed", str(err))
+
+
 def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_rename)
     websocket_api.async_register_command(hass, ws_remote_recreate)
     websocket_api.async_register_command(hass, ws_pair_host)
     websocket_api.async_register_command(hass, ws_create_hid)
     websocket_api.async_register_command(hass, ws_diagnostics)
+    websocket_api.async_register_command(hass, ws_bindings_cleanup)

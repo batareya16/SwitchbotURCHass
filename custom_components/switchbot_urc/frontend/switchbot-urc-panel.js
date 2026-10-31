@@ -818,9 +818,17 @@ class SwitchBotUrcPanel extends HTMLElement {
               b.buttons.length === 1 ? "" : "s"})</span>` : ""}`).join("<br>")
             : `<span class="small">nothing</span>`}</td></tr>`;
         }).join("")}</tbody></table>
-        ${diag.bindings.filter((b) => b.orphan).length
-          ? `<p class="small warning">${diag.bindings.filter((b) => b.orphan).length} saved
-             binding(s) belong to no remote listed here.</p>` : ""}
+        ${diag.bindings.filter((b) => b.orphan).length ? `
+          <p class="small warning">${diag.bindings.filter((b) => b.orphan).length} saved action
+            set(s) belong to no remote listed here. A leftover like this answers for whichever
+            remote shares its identity — which is one remote's button driving another's light.</p>
+          <ul class="small">${diag.bindings.filter((b) => b.orphan).map((b) => `<li>
+            <code>${escapeHtml(b.remote_id || "(no id)")}</code>
+            ${escapeHtml(b.remote_name || "")} ${escapeHtml(b.entity_id || "custom actions")}
+            </li>`).join("")}</ul>
+          <button class="secondary compact destructive" id="cleanupBindings"
+            title="Delete these; nothing that still has a remote is touched">Remove them</button>`
+          : ""}
         ${!diag.problems.length
           ? `<p class="small">Each remote is matched on its own identity; nothing here explains
              one remote driving another's target.</p>` : ""}` : ""}
@@ -1608,6 +1616,17 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     root.getElementById("refresh")?.addEventListener("click", () => this._refresh());
     root.getElementById("readDeviceTable")?.addEventListener("click", () => this._readDeviceTable());
+    root.getElementById("cleanupBindings")?.addEventListener("click", async () => {
+      try {
+        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/bindings/cleanup`,
+          entry_id: this._entryId });
+        this._notify(result.removed.length
+          ? `Removed ${result.removed.length} leftover action set(s)`
+          : "Nothing to remove");
+        this._diagnostics = null;
+        await this._load();
+      } catch (error) { this._error = error?.message || String(error); this._render(); }
+    });
     root.getElementById("addKeyToPage")?.addEventListener("click", () => this._addKeyToCurrentPage());
     root.getElementById("removeThisPage")?.addEventListener("click", () => {
       const page = this._physical?.pages?.find((item) => item.index === this._page()?.index);
