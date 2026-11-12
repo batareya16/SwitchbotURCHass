@@ -191,6 +191,30 @@ Two further consequences:
   and so takes the key away from any other profile on that address. The integration's
   `delete_remote` re-sends `0F 20 08` afterwards for this reason.
 
+### Inventory reads through the user-channel bridge — hardware validation pending
+
+Add-on 0.30.0 implements a central ATT client alongside its peripheral server. For an isolated
+`0F6307` query it opens a public-address LE connection, exchanges MTU, discovers characteristics
+and the notification descriptor, enables notifications, and sends the unencrypted query. It
+does not establish a crypto session or change installed profiles. Existing peripheral links
+remain in the event loop. Since 0.30.1, a failed read returns its raw-HCI error without falling
+back to BlueZ or pausing the bridge. Protocol errors and confirmed physical disconnections are
+tracked separately; a new inventory attempt cannot replace a connection still being closed.
+Since 0.31.0 the multi-address bridge also runs all encrypted management steps over this ATT
+client: handshake, key association, bind pages, delete, rename and mixed query/write sequences.
+The get-random frame uses Write Command, matching the existing working management path; its
+16-byte IV encrypts subsequent frames with AES-CTR. Commands are chunked at ATT MTU minus three,
+and acknowledgements must match the key ID and IV prefix. Periodic status records are filtered
+unless the command itself is a status poll. Transactions with accepted response codes stop on
+rejection. Failure after any command write is classified as a command failure, even if a later
+query or disconnect fails, so the integration cannot treat it as a safe pre-command retry.
+There is no BlueZ fallback in this multi-address management path. The older single-address
+transport remains separate.
+
+This implementation has scripted ATT/HCI tests; simultaneous central/peripheral behaviour on
+the user's controller is not yet verified. HCI connection parameter layout follows
+[BlueZ's public HCI definitions](https://github.com/bluez/bluez/blob/master/lib/bluetooth/hci.h).
+
 ### Several addresses from one controller
 
 "Separate addresses" does not have to mean separate adapters. Proven on hardware with one

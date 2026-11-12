@@ -5,7 +5,9 @@ IV is often not the right one. Keeping only the newest dropped real presses; kee
 them published noise as a button press. Both were observed on hardware.
 """
 import os
+import json
 import sys
+import threading
 import types
 
 import pytest
@@ -153,3 +155,54 @@ class TestTheSessionLabelIsOnlyAHint:
         named = list(dev._sessions.values())[2]
         dev.on_write(frame(bridge, dev, named))
         assert seen["notifies"][-1][2:4] == named[:2]
+
+
+@pytest.mark.parametrize("mode", ["raw", "timeout", "invalid", "rejected", "command", "empty"])
+def test_mqtt_all_management_stays_on_raw_hci(bridge, monkeypatch, mode):
+    published = []
+    ready = threading.Event()
+    actions = []
+    raw_calls = []
+    bluez_calls = []
+    class Client:
+        def subscribe(self, *args, **kwargs):
+            pass
+        def publish(self, topic, payload, **kwargs):
+            if topic.endswith("/manage_result"):
+                published.append(json.loads(payload))
+                ready.set()
+    mqtt = object.__new__(bridge.Mqtt)
+    mqtt._client = Client()
+    def reader(address, key_hex, key_id, steps):
+        raw_calls.append((address, steps))
+        if mode == "timeout":
+            raise TimeoutError("raw connection failed")
+        if mode == "invalid":
+            return None
+        if mode == "rejected":
+            return {"ok": False, "failed_stage": "inventory", "error": "ATT rejected"}
+        return {"ok": True, "responses": ["0100000000000000"], "transport": "raw_hci"}
+    def bluez(*args):
+        bluez_calls.append(args)
+        return {"ok": True, "responses": ["01"]}
+    monkeypatch.setattr(bridge, "run_remote_management", bluez)
+    monkeypatch.setattr(bridge.time, "sleep", lambda _: None)
+    mqtt.set_control_handler(lambda action: actions.append(action) or True,
+                             adapter_name="hci0", adapter_address="8A:88:1B:E0:1F:92",
+                             management_runner=reader)
+    payload = {"request_id": "read-1", "address": "B0:E9:FE:53:11:45", "key": KEY.hex(),
+               "key_id": 0x95, "steps": [{"kind": "query", "subcmd": 7}]}
+    if mode == "command":
+        payload["steps"] = [{"kind": "command", "plaintext": "02"}]
+    if mode == "empty":
+        payload["steps"] = []
+    message = types.SimpleNamespace(topic="switchbot_urc/bridge/manage", payload=json.dumps(payload))
+    mqtt._client.on_message(mqtt._client, None, message)
+    assert ready.wait(2)
+    assert published[0]["ok"] == (mode in {"raw", "command", "empty"})
+    if mode in {"timeout", "invalid"}:
+        assert published[0]["failed_stage"] == "bridge"
+        assert published[0]["transport"] == "raw_hci"
+    assert len(raw_calls) == 1
+    assert not bluez_calls
+    assert not actions

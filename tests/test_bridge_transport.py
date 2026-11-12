@@ -5,6 +5,7 @@ fragmentation, L2CAP framing and session handling became this add-on's problem. 
 exercised by a real remote otherwise, which makes them exactly the parts worth pinning down.
 """
 import struct
+import threading
 
 import pytest
 
@@ -102,16 +103,207 @@ class TestAclFragmentation:
         writer = hci.AclWriter(FakeChannel(), 27, 2)
         writer.send(0x18, b"\x13")
         assert writer.inflight == 1
-        writer.completed(1)
+        writer.completed(0x18, 1)
         assert writer.inflight == 0
 
     def test_completed_never_goes_below_zero(self):
         writer = hci.AclWriter(FakeChannel(), 27, 2)
-        writer.completed(5)
+        writer.completed(0x18, 5)
         assert writer.inflight == 0
 
     def test_a_tiny_payload_size_is_raised_to_the_le_minimum(self):
         assert hci.AclWriter(FakeChannel(), 1, 1).payload_size == 27
+
+    def test_buffer_exhaustion_queues_fragments_until_completion(self):
+        writer = hci.AclWriter(FakeChannel(), 27, 1)
+        writer.send(0x18, bytes(range(60)))
+        assert len(writer.channel.sock.sent) == 1
+        assert len(writer.pending) == 2
+        writer.completed(0x18, 1)
+        assert len(writer.channel.sock.sent) == 2
+        writer.completed(0x18, 1)
+        assert len(writer.channel.sock.sent) == 3
+        assert writer.inflight == 1
+
+    def test_disconnect_discards_old_fragments_and_releases_buffers(self):
+        writer = hci.AclWriter(FakeChannel(), 27, 1)
+        writer.send(0x18, bytes(range(60)))
+        writer.send(0x19, b"\x13")
+        writer.disconnected(0x18)
+        assert writer.inflight == 1
+        assert not writer.pending
+        last_header = struct.unpack_from("<H", writer.channel.sock.sent[-1], 1)[0]
+        assert last_header & 0xFFF == 0x19
+
+    def test_late_completion_from_disconnected_handle_cannot_free_another_s_buffers(self):
+        writer = hci.AclWriter(FakeChannel(), 27, 1)
+        writer.send(0x18, b"old")
+        writer.disconnected(0x18)
+        writer.send(0x19, b"first")
+        writer.send(0x19, b"second")
+        writer.completed(0x18, 8)
+        assert len(writer.channel.sock.sent) == 2
+        assert len(writer.pending) == 1
+
+
+def event_packet(code, params):
+    return hci.HCI_EVENT_PKT, bytes([code, len(params)]) + params
+
+
+class TestCommandInterleaving:
+    def test_acl_and_connection_events_survive_a_command(self):
+        channel = object.__new__(hci.UserChannel)
+        channel.sock = FakeSocket()
+        channel.spare = []
+        opcode = hci.OP_LE_SET_EXT_ADV_ENABLE
+        acl = (hci.HCI_ACL_PKT, b"queued press")
+        connected = event_packet(hci.EV_LE_META, bytes([1, 0, 24, 0, 1, 0]) + bytes(12))
+        disconnected = event_packet(hci.EV_DISCONN_COMPLETE, bytes([0, 25, 0, 0x13]))
+        credits = event_packet(hci.EV_NUM_COMPLETED_PACKETS, bytes([1, 24, 0, 1, 0]))
+        reply = event_packet(hci.EV_CMD_COMPLETE, struct.pack("<BHB", 1, opcode, 0))
+        packets = iter([acl, connected, disconnected, credits, reply])
+        channel._receive = lambda timeout: next(packets)
+        assert channel.command(opcode) == b""
+        assert [channel.read(0) for _ in range(4)] == [acl, connected, disconnected, credits]
+
+    def test_error_reply_does_not_discard_a_press(self):
+        channel = object.__new__(hci.UserChannel)
+        channel.sock = FakeSocket()
+        channel.spare = []
+        opcode = hci.OP_LE_SET_EXT_ADV_ENABLE
+        acl = (hci.HCI_ACL_PKT, b"press")
+        reply = event_packet(hci.EV_CMD_STATUS, struct.pack("<BBH", 0x0C, 1, opcode))
+        packets = iter([acl, reply])
+        channel._receive = lambda timeout: next(packets)
+        with pytest.raises(hci.HciCommandError):
+            channel.command(opcode)
+        assert channel.read(0) == acl
+
+
+@pytest.fixture
+def server(monkeypatch):
+    monkeypatch.setattr(hci, "resolve_adapter", lambda _: ("hci0", 0, "8A:88:1B:E0:1F:92"))
+    class Protocol:
+        def __init__(self, callback):
+            pass
+        def begin_session(self):
+            pass
+        def notify(self, data):
+            pass
+        def session_summary(self):
+            return "test"
+    result = hci.MultiAddressServer(
+        "hci0", ["8A:88:1B:E0:1F:92", "DA:71:16:E0:1F:92"],
+        protocol_factory=Protocol, device_factory=lambda *_: None, conn_min=6, conn_max=12)
+    result.writer = hci.AclWriter(FakeChannel(), 27, 8)
+    result.own_public = result.addresses[0]
+    result.advertising_sets = 4
+    return result
+
+
+def connected(server, handle):
+    server._on_event(hci.EV_LE_META, bytes([1, 0]) + struct.pack("<H", handle)
+                     + bytes([1, 0]) + bytes(12))
+
+
+def named_set(server, handle, adv_handle):
+    server._on_event(hci.EV_LE_META, bytes([0x12, 0, adv_handle])
+                     + struct.pack("<H", handle) + b"\x00")
+
+
+class TestConnectionIdentity:
+    def test_interleaved_events_name_only_their_own_connection(self, server):
+        named_set(server, 24, 0)
+        connected(server, 25)
+        assert server.links[25].address == "?"
+        connected(server, 24)
+        named_set(server, 25, 1)
+        assert server.links[24].address == server.addresses[0]
+        assert server.links[25].address == server.addresses[1]
+
+    def test_reused_handle_does_not_inherit_an_old_target(self, server):
+        connected(server, 24)
+        named_set(server, 24, 1)
+        server._on_event(hci.EV_DISCONN_COMPLETE, bytes([0, 24, 0, 0x13]))
+        connected(server, 24)
+        assert server.links[24].address == "?"
+
+    def test_appending_a_target_does_not_reconfigure_connected_sets(self, server):
+        connected(server, 24)
+        named_set(server, 24, 0)
+        configured = []
+        server._configure_set = lambda handle, address: configured.append((handle, address))
+        class Channel:
+            spare = []
+            def command(self, *args):
+                return b""
+        server.channel = Channel()
+        added = "DA:71:17:E0:1F:92"
+        server.set_addresses([*server.addresses, added])
+        assert configured == [(2, added)]
+
+    def test_connected_target_cannot_be_reordered(self, server):
+        connected(server, 24)
+        named_set(server, 24, 0)
+        class Channel:
+            spare = []
+        server.channel = Channel()
+        with pytest.raises(RuntimeError, match="connected target"):
+            server.set_addresses(list(reversed(server.addresses)))
+
+
+class TestControllerOwnership:
+    def test_failed_initialisation_returns_controller_to_bluez(self, server, monkeypatch):
+        powered = []
+        monkeypatch.setattr(hci, "set_powered", lambda index, value: powered.append(value) or "ok")
+        class Channel:
+            closed = False
+            def command(self, opcode, *args, **kwargs):
+                if opcode == hci.OP_RESET:
+                    raise TimeoutError("reset failed")
+            def close(self):
+                self.closed = True
+        channel = Channel()
+        monkeypatch.setattr(hci, "UserChannel", lambda _: channel)
+        with pytest.raises(TimeoutError, match="reset failed"):
+            server._claim()
+        assert powered == [False, True]
+        assert channel.closed
+        assert server.channel is None
+
+    def test_pause_waits_until_the_event_loop_finishes_reading(self, server, monkeypatch):
+        reading, allow_read, pausing, powered = (threading.Event() for _ in range(4))
+        monkeypatch.setattr(hci, "set_powered", lambda *_: powered.set() or "ok")
+        class Channel:
+            def read(self, timeout):
+                reading.set()
+                assert allow_read.wait(2)
+            def command(self, *args, **kwargs):
+                pass
+            def close(self):
+                pass
+        server.channel = Channel()
+        def read():
+            with server._io_lock:
+                server._serve_once()
+        def pause():
+            pausing.set()
+            server.pause()
+        reader = threading.Thread(target=read)
+        control = threading.Thread(target=pause)
+        reader.start()
+        assert reading.wait(2)
+        control.start()
+        assert pausing.wait(2)
+        try:
+            assert not powered.wait(0.03), "controller released while another thread was reading it"
+        finally:
+            allow_read.set()
+            reader.join(2)
+            control.join(2)
+        assert not reader.is_alive() and not control.is_alive()
+        assert powered.is_set()
+        assert server.channel is None
 
 
 class TestReassembly:
