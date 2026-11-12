@@ -337,6 +337,8 @@ async def install_ir_profile(
     remotes: list[dict[str, Any]],
     targets: list[dict[str, Any]],
     status: Any = None,
+    icon_name: str | None = None,
+    icon_code: int | None = None,
 ) -> tuple[dict[str, str], int | None, dict[str, Any] | None]:
     """Install any profile exposing the IrProfile protocol.
 
@@ -350,6 +352,12 @@ async def install_ir_profile(
 
     errors: dict[str, str] = {}
     try:
+        if icon_name is not None and icon_code is not None:
+            raise ValueError("Specify either an icon name or an icon code")
+        if icon_name is not None:
+            icon_code = commands.ICON[icon_name.lower()]
+        if icon_code is not None and not 0 <= icon_code <= 0xFF:
+            raise ValueError("Icon code must fit in one byte")
         raw_table = await client.query(0x07)
         if not raw_table:
             return {"base": "ir_table_timeout"}, None, None
@@ -383,9 +391,11 @@ async def install_ir_profile(
                 return {"base": "ir_delete_failed"}, None, None
 
         remote_index = len(entries)
-        stages = profile.build_install(
-            remote_index=remote_index, name=name, remote_count=len(entries) + 1
-        )
+        install_kwargs = {"remote_index": remote_index, "name": name,
+                          "remote_count": len(entries) + 1}
+        if icon_code is not None:
+            install_kwargs["icon"] = icon_code
+        stages = profile.build_install(**install_kwargs)
         responses = await client.send_command_sequence(
             tuple(command for _stage, command, _accepted in stages),
             timeout=45.0,
@@ -412,7 +422,8 @@ async def install_ir_profile(
             "index": remote_index,
             "name": name,
             "device_type": f"IR_{profile.device_type}",
-            "icon": "tv" if profile.device_type == 2 else "light",
+            "icon": icon_name or ("tv" if profile.device_type == 2 else "light"),
+            "icon_code": profile.icon if icon_code is None else icon_code,
             "device_id": profile.remote_id.hex(),
             "remote_id": getattr(profile, "remote_id_text", "") or profile.remote_id.hex(),
             "studio_pages": commands.studio_pages_from_packets(tuple(

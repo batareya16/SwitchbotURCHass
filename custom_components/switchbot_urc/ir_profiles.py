@@ -30,7 +30,8 @@ class IrProfile:
         return tuple(bytes.fromhex(value) for value in self.pages_hex)
 
     def build_install(
-        self, *, remote_index: int, name: str, remote_count: int
+        self, *, remote_index: int, name: str, remote_count: int,
+        icon: int | None = None,
     ) -> tuple[tuple[str, bytes, frozenset[int]], ...]:
         """Return the complete official add/sync transaction and accepted ACK codes."""
         result: list[tuple[str, bytes, frozenset[int]]] = [
@@ -41,7 +42,7 @@ class IrProfile:
                     device_type=self.device_type,
                     remote_id=self.remote_id,
                     name=name,
-                    icon=self.icon,
+                    icon=self.icon if icon is None else icon,
                 ),
                 frozenset({0x01}),
             ),
@@ -55,7 +56,10 @@ class IrProfile:
         result.extend(
             (
                 f"ir_page_{page_number}",
-                commands.rewrite_ir_page(page, remote_index=remote_index, name=name),
+                commands.rewrite_ir_page(
+                    page, remote_index=remote_index, name=name,
+                    icon=icon,
+                ),
                 frozenset({0x01}),
             )
             for page_number, page in enumerate(self.pages)

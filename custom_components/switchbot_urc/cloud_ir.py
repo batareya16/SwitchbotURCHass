@@ -163,7 +163,8 @@ class CloudIrProfile:
         object.__setattr__(self, "key_map", valid[:90])
 
     def build_install(
-        self, *, remote_index: int, name: str, remote_count: int
+        self, *, remote_index: int, name: str, remote_count: int,
+        icon: int | None = None,
     ) -> tuple[tuple[str, bytes, frozenset[int]], ...]:
         """Build the official header/sync/transfers/pages/sync transaction."""
         result: list[tuple[str, bytes, frozenset[int]]] = [
@@ -174,7 +175,7 @@ class CloudIrProfile:
                     device_type=self.device_type,
                     remote_id=self.remote_id,
                     name=name,
-                    icon=self.icon,
+                    icon=self.icon if icon is None else icon,
                 ),
                 frozenset({0x01}),
             ),
@@ -214,7 +215,7 @@ class CloudIrProfile:
                     remote_id=self.remote_id,
                     name=name,
                     key_map=list(self.key_map),
-                    icon=self.icon,
+                    icon=self.icon if icon is None else icon,
                 )
             )
         )

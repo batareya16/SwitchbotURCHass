@@ -202,6 +202,15 @@ async def ws_remote_recreate(hass, connection, msg):
         # its own that would have to delete and rebuild anyway.
         icon = str(msg.get("icon") or managed.get("icon") or "")
 
+        # Physical Studio can replace individual IR/HID key records and upload named IR
+        # codes. A catalogue reinstall cannot reconstruct those edits yet. Refuse before
+        # deleting the tile rather than silently replacing its buttons with defaults.
+        if item["control_type"] in (c.CTRL_IR, c.CTRL_HID) and managed.get("physical_layout"):
+            raise ValueError(
+                "This remote has a saved physical button layout. Changing its icon here would "
+                "replace those buttons, so the remote was left unchanged."
+            )
+
         if item["control_type"] == c.CTRL_IR:
             profile_key = managed.get("profile")
             if profile_key and profile_key in PROFILES:
@@ -220,13 +229,19 @@ async def ws_remote_recreate(hass, connection, msg):
                     raise ValueError("The account holds no IR record for that remote")
                 profile = profile_from_cloud(
                     downloaded[0], remote_id=str(remote_id), name=name, metadata=cloud_item)
+            requested_icon = msg.get("icon")
+            previous_icon_code = managed.get("icon_code")
             errors, slot, record = await install.install_ir_profile(
                 client, profile, name=name, replace_existing=True,
                 remotes=entry.options.get("remotes", []),
                 targets=targets.all_targets(entry),
+                icon_name=requested_icon,
+                icon_code=(previous_icon_code if requested_icon is None else None),
             )
             if errors or record is None:
                 raise ValueError("; ".join(errors.values()) or "the rebuild failed")
+            if requested_icon is None and managed.get("icon"):
+                record["icon"] = managed["icon"]
             remotes = [other for other in entry.options.get("remotes", [])
                        if other.get("device_id") != profile.remote_id.hex()]
             remotes.append(record)
@@ -328,17 +343,34 @@ async def ws_remote_recreate(hass, connection, msg):
             if not raw:
                 raise ValueError("The remote did not answer with its device table")
             slot = len(c.parse_added_devices(raw))
-            stages = c.build_native_bind_sequence(
-                key_id=0x01,
-                target_key=bytes.fromhex(str(target["target_key"])),
-                device_type_name=str(managed["device_type"]),
-                remote_index=slot,
-                name=name,
-                device_id=device_id,
-                icon_name=icon or "strip",
-                control_mode=0,
-                event_remote_id=managed.get("remote_id"),
-            )
+            custom_layout = managed.get("custom_layout")
+            if custom_layout:
+                stages = c.build_custom_native_bind_sequence(
+                    key_id=0x01,
+                    target_key=bytes.fromhex(str(target["target_key"])),
+                    remote_index=slot,
+                    name=name,
+                    device_id=device_id,
+                    icon_name=icon or "strip",
+                    event_remote_id=str(managed["remote_id"]),
+                    main_buttons=c.normalize_main_buttons(custom_layout["main_buttons"]),
+                    page_buttons={
+                        int(page): list(actions)
+                        for page, actions in custom_layout["pages"].items()
+                    },
+                )
+            else:
+                stages = c.build_native_bind_sequence(
+                    key_id=0x01,
+                    target_key=bytes.fromhex(str(target["target_key"])),
+                    device_type_name=str(managed["device_type"]),
+                    remote_index=slot,
+                    name=name,
+                    device_id=device_id,
+                    icon_name=icon or "strip",
+                    control_mode=0,
+                    event_remote_id=managed.get("remote_id"),
+                )
             await install.bind_native_once(client, stages, device_id=device_id)
             # The bind sequence rewrote the key for this address; siblings on the same address
             # were released by the delete above and are covered by the same association.

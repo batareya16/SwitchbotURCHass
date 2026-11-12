@@ -935,8 +935,10 @@ def studio_pages_from_packets(packets: tuple[bytes, ...]) -> list[dict]:
     return pages
 
 
-def rewrite_ir_page(packet: bytes, *, remote_index: int, name: str) -> bytes:
-    """Validate a captured 0F6206 IR page and rewrite its slot/name with a fresh CRC."""
+def rewrite_ir_page(
+    packet: bytes, *, remote_index: int, name: str, icon: int | None = None
+) -> bytes:
+    """Validate an IR page and rewrite its slot, name and optional icon with a fresh CRC."""
     if len(packet) < 90 or packet[:3] != b"\x0f\x62\x06":
         raise ValueError("invalid IR page packet")
     body_len = int.from_bytes(packet[3:5], "big")
@@ -946,6 +948,8 @@ def rewrite_ir_page(packet: bytes, *, remote_index: int, name: str) -> bytes:
     if body[2] != CTRL_IR or len(body) != 83 + 36 * body[82]:
         raise ValueError("IR page body layout is invalid")
     body[0] = remote_index & 0xFF
+    if icon is not None:
+        body[4] = icon & 0xFF
     name_bytes = bytearray(pad(name.encode("utf-8"), 64))
     name_bytes[63] = 0
     body[16:80] = name_bytes
