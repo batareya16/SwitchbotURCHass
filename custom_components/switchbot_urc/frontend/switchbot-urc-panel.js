@@ -1528,7 +1528,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ? `${conflicts.length} item${conflicts.length === 1 ? "" : "s"} need a new position`
       : "Layout fits this profile";
     const draftPageCount = this._physical.pages.filter((page) => page.index).length;
-    const profilePageCount = targetPages.filter((page) => page.link_index != null).length;
+    const profilePageCount = (profile.subpages || []).filter((page) => page.link_index != null).length;
     const pageCapacityExceeded = draftPageCount > profilePageCount;
     return `<section class="native-profile-layout">
       <div class="profile-layout-heading"><div><h2>Screen layout</h2><p>${escapeHtml(profile.label)} · ${escapeHtml(mainTitle)}</p></div>
