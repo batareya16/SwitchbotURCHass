@@ -629,7 +629,7 @@ def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | No
 })
 @websocket_api.async_response
 async def ws_native_icon_variant_test(hass, connection, msg):
-    """Temporarily switch one native Main page between built-in icon variants."""
+    """Temporarily switch one native Main page to the recovered washer profile."""
     try:
         entry = _entry(hass, msg)
         remote = next((item for item in entry.options.get("remotes", [])
@@ -665,9 +665,11 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             mode_offset = 1 + type_length + 1
             source_mode = body[mode_offset]
             source_icon = body[icon_offset]
-            current_icon = body[icon_offset]
-            packet = c.rewrite_native_page_icon(
-                original_packet, 1 if current_icon != 1 else 2)
+            # controlMode selects the firmware artwork profile.  The icon byte only
+            # selects that profile's normal/alternate rendering variant.
+            packet = c.rewrite_native_page_control_mode(
+                original_packet, c.NATIVE_WASHER_CONTROL_MODE)
+            packet = c.rewrite_native_page_icon(packet, 1)
 
         packet_body = packet[7:]
         packet_type_length = 4 if packet_body[1] == 0 and len(packet_body) >= 5 else 1
@@ -677,7 +679,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         target_icon = packet_body[icon_offset]
 
         _LOGGER.warning(
-            "Native icon variant command prepared: remote_id=%s slot=%s restore=%s "
+            "Native screen profile command prepared: remote_id=%s slot=%s restore=%s "
             "source_mode=%s source_icon=%s target_mode=%s target_icon=%s bytes=%s prefix=%s",
             msg["remote_id"], slot, msg["restore"],
             None if source_mode is None else f"0x{source_mode:02x}",
@@ -711,7 +713,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         if error:
             raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
         _LOGGER.info(
-            "Native icon variant test acknowledged: remote_id=%s slot=%s restore=%s "
+            "Native screen profile test acknowledged: remote_id=%s slot=%s restore=%s "
             "mode=0x%02x icon=0x%02x response=%s",
             msg["remote_id"], slot, msg["restore"],
             target_mode, target_icon,

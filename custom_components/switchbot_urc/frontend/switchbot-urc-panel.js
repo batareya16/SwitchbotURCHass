@@ -747,7 +747,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_test_native_icon ? `<button class="secondary" id="nativeIconVariantTest"
-              title="Switch the Main page to the other built-in icon variant; the original page is kept">Test alternate icon</button>
+              title="Switch the Main page to the firmware washing-machine artwork; the original page is kept">Test washing-machine screen</button>
               ${remote.native_icon_test_active ? `<button class="secondary" id="nativeIconVariantRestore"
                 title="Restore the saved original Main page">Restore original</button>` : ""}` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
