@@ -643,6 +643,8 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         slot = int(remote["index"])
         backup_hex = (remote.get("icon_variant_backup_packet")
                       or remote.get("washer_artwork_backup_packet"))
+        source_mode = None
+        source_icon = None
         if msg["restore"]:
             if not backup_hex:
                 raise ValueError("There is no saved artwork test to restore")
@@ -660,6 +662,9 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             body = original_packet[7:]
             type_length = 4 if body[1] == 0 and len(body) >= 5 else 1
             icon_offset = 1 + type_length + 2
+            mode_offset = 1 + type_length + 1
+            source_mode = body[mode_offset]
+            source_icon = body[icon_offset]
             current_icon = body[icon_offset]
             packet = c.rewrite_native_page_icon(
                 original_packet, 1 if current_icon != 1 else 2)
@@ -667,10 +672,17 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         packet_body = packet[7:]
         packet_type_length = 4 if packet_body[1] == 0 and len(packet_body) >= 5 else 1
         icon_offset = 1 + packet_type_length + 2
+        mode_offset = 1 + packet_type_length + 1
+        target_mode = packet_body[mode_offset]
+        target_icon = packet_body[icon_offset]
 
         _LOGGER.info(
-            "Native icon variant command prepared: remote_id=%s slot=%s restore=%s bytes=%s",
-            msg["remote_id"], slot, msg["restore"], len(packet),
+            "Native icon variant command prepared: remote_id=%s slot=%s restore=%s "
+            "source_mode=%s source_icon=%s target_mode=%s target_icon=%s bytes=%s prefix=%s",
+            msg["remote_id"], slot, msg["restore"],
+            None if source_mode is None else f"0x{source_mode:02x}",
+            None if source_icon is None else f"0x{source_icon:02x}",
+            f"0x{target_mode:02x}", f"0x{target_icon:02x}", len(packet), packet[:16].hex(),
         )
         before_raw, response = await client.send_command_with_preflight_query(
             packet,
@@ -699,9 +711,10 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         if error:
             raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
         _LOGGER.info(
-            "Native icon variant test acknowledged: remote_id=%s slot=%s restore=%s icon=%s response=%s",
+            "Native icon variant test acknowledged: remote_id=%s slot=%s restore=%s "
+            "mode=0x%02x icon=0x%02x response=%s",
             msg["remote_id"], slot, msg["restore"],
-            packet[7 + icon_offset],
+            target_mode, target_icon,
             response.hex(),
         )
         if msg["restore"]:
