@@ -27,6 +27,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._dirty = false;
     this._jsonValid = true;
     this._physical = null;
+    this._nativeProfiles = [];
+    this._physicalOrigins = {};
+    this._lastIdentityMigrations = [];
     this._physicalSources = [];
     // Catalog picker state. `available` stays null until the first lookup answers, so the
     // picker can say "loading" once instead of asking on every render.
@@ -177,11 +180,125 @@ class SwitchBotUrcPanel extends HTMLElement {
       function: kind === "native" ? 5 : 115,
       code_hex: "",
     });
-    this._buttonId = `draft:${page.index}:${free}`;
+    this._buttonId = `p${page.index}_k${free}`;
     this._render();
   }
 
+  _pageKeyEntries(page) {
+    return [...(page?.buttons || [])].sort((a, b) => a.index - b.index).map((key) => ({
+      key,
+      origin: this._physicalOrigins[`p${page.index}_k${key.index}`]
+        || `p${page.index}_k${key.index}`,
+    }));
+  }
+
+  _replacePageKeyOrder(page, entries) {
+    for (const key of page.buttons) delete this._physicalOrigins[`p${page.index}_k${key.index}`];
+    page.buttons = entries.map(({ key, origin }, index) => {
+      key.index = index;
+      this._physicalOrigins[`p${page.index}_k${index}`] = origin;
+      return key;
+    });
+  }
+
+  _movePageKey(pageIndex, keyIndex, direction) {
+    const page = this._physical?.pages?.find((item) => item.index === pageIndex);
+    const entries = this._pageKeyEntries(page);
+    const index = entries.findIndex(({ key }) => key.index === keyIndex);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= entries.length) return;
+    [entries[index], entries[target]] = [entries[target], entries[index]];
+    this._replacePageKeyOrder(page, entries);
+    this._physicalStatus = "";
+    this._render();
+  }
+
+  _availablePageIndexes() {
+    const current = new Set((this._physical?.pages || []).map((page) => page.index));
+    const profile = this._nativeProfiles.find((item) => item.value === this._physical?.template);
+    const mainButtons = this._physical?.pages?.find((page) => page.index === 0)?.buttons || [];
+    const supported = this._physical?.kind === "native"
+      ? (profile?.subpages || []).filter((page) => page.link_index != null)
+        .map((page) => ({ index: page.index, link: page.link_index }))
+      : [1, 2, 3, 4].map((index) => ({ index, link: index - 1 }));
+    return supported.filter(({ index, link }) => !current.has(index)
+      && !mainButtons.some((key) => key.index === link)).map(({ index }) => index);
+  }
+
+  _identityRemovals() {
+    const baseline = new Set((this._physicalBaseline?.pages || []).flatMap((page) =>
+      (page.buttons || []).map((key) => `p${page.index}_k${key.index}`)));
+    const present = new Set((this._physical?.pages || []).flatMap((page) =>
+      (page.buttons || []).map((key) => `p${page.index}_k${key.index}`)));
+    const survivingOrigins = new Set(Object.entries(this._physicalOrigins || {})
+      .filter(([current]) => present.has(current)).map(([, origin]) => origin));
+    return [...baseline].filter((identity) => !survivingOrigins.has(identity));
+  }
+
+  _layoutState(key) {
+    const current = `p${key.button_page}_k${key.button_index}`;
+    const original = this._physicalOrigins[current] || current;
+    const existed = (this._physicalBaseline?.pages || []).some((page) => page.buttons
+      .some((item) => `p${page.index}_k${item.index}` === original));
+    if (!existed) return "new";
+    if (current !== original) return "moved";
+    const before = (this._physicalBaseline?.pages || []).flatMap((page) => page.buttons
+      .map((item) => ({ id: `p${page.index}_k${item.index}`, item })))
+      .find((item) => item.id === original)?.item;
+    const now = this._physical.pages.find((page) => page.index === key.button_page)
+      ?.buttons.find((item) => item.index === key.button_index);
+    if (before && now && (before.transport !== now.transport || before.function !== now.function
+        || before.code_hex !== now.code_hex)) return "edited";
+    return "unchanged";
+  }
+
   _pages() {
+    if (this._physical) {
+      const remotePages = this._remote()?.pages || [];
+      const nativeProfile = this._nativeProfiles.find((item) => item.value === this._physical.template);
+      const positions = ["A", "B", "C", "D", "ON", "OFF", "LEFT", "RIGHT", "UP",
+        "DOWN", "OK", "BACK", "HOME", "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN"];
+      return this._physical.pages.map((page) => {
+        const linkedPositions = new Set(this._physical.pages.filter((item) => item.index)
+          .map((item) => item.index - 1));
+        const visibleMainPositions = page.index === 0
+          ? Array.from({ length: 19 }, (_, index) => index).filter((index) => {
+            if (linkedPositions.has(index)) return false;
+            if (this._physical.kind !== "native") return true;
+            return nativeProfile?.main_positions?.includes(index);
+          }) : [];
+        const physicalKeys = page.index === 0
+          ? visibleMainPositions.map((index) => page.buttons.find((item) => item.index === index)
+            || { index }) : page.buttons;
+        const buttons = physicalKeys.map((key) => {
+          const currentId = `p${page.index}_k${key.index}`;
+          const identity = this._physicalOrigins[currentId] || currentId;
+          const source = remotePages.flatMap((item) => item.buttons || [])
+            .find((item) => item.button_id === identity);
+          const profileKey = page.index === 0
+            ? nativeProfile?.main_keys?.find((item) => item.index === key.index) : null;
+          const functionLabel = this._profileFunctionLabel(key.function);
+          return {
+            ...source,
+            button_id: identity,
+            button_page: page.index,
+            button_index: key.index,
+            button_function: key.function ?? source?.button_function ?? profileKey?.function ?? 0,
+            default_function: source?.default_function ?? profileKey?.function,
+            can_add_command: this._physical.kind !== "native" || !!profileKey?.actionable,
+            layout_state: page.buttons.includes(key)
+              ? this._layoutState({ button_page: page.index, button_index: key.index }) : "unchanged",
+            position: page.index === 0 ? positions[key.index] || "" : "",
+            label: page.index === 0 ? positions[key.index] || functionLabel
+              : source?.label || functionLabel,
+            actions: source?.actions || [],
+            mode: source?.mode || "preset",
+            has_override: source?.has_override || false,
+          };
+        });
+        return { index: page.index, name: page.index === 0 ? "Main" : `Page ${"ABCD"[page.index - 1]}`, buttons };
+      });
+    }
     const pages = [...(this._remote()?.pages || [])];
     for (const page of this._physical?.pages || []) {
       if (pages.some((item) => item.index === page.index)) continue;
@@ -347,13 +464,13 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   // The icons the remote itself can draw, as single paths on a 20x20 grid.
   static ICON_PATHS = {
-    light: "M10 2a6 6 0 0 0-3.5 10.9V15h7v-2.1A6 6 0 0 0 10 2Zm-2.5 15h5M8 19h4",
-    desklamp: "M4 18h8M8 18V9m0 0L4 5l5-3 4 4-5 3Z",
-    floorlamp: "M10 18v-8m-4 0h8l-2-7H8l-2 7Zm-3 8h6",
-    ceilinglamp: "M10 2v4m-5 4h10l-2.5-4h-5L5 10Zm1 0v2a4 4 0 0 0 8 0v-2",
-    strip: "M3 8h14v4H3zM6 12v3M10 12v3M14 12v3",
-    switch: "M4 6h12v8H4zM7 10h6",
-    tv: "M3 5h14v9H3zM7 17h6M10 14v3",
+    light: "M10 2a5.5 5.5 0 0 0-3.3 9.9c.6.5.9 1.1.9 1.8V14h4.8v-.3c0-.7.3-1.3.9-1.8A5.5 5.5 0 0 0 10 2ZM7.7 16.5h4.6M8.5 18.5h3",
+    desklamp: "M4 18h12M10 18v-6l3-4M6.5 3.5l7 1.5-1 5.5-7-1.5 1-5.5Z",
+    floorlamp: "M10 17V10M6 10l1.5-7h5L14 10H6ZM6 18h8",
+    ceilinglamp: "M10 2v4M5.5 10l2-4h5l2 4h-9ZM6.5 10v2a3.5 3.5 0 0 0 7 0v-2",
+    strip: "M3 7h14v5H3V7ZM6 12v2M10 12v2M14 12v2",
+    switch: "M4 5h12v10H4V5ZM7 10h6",
+    tv: "M3 4.5h14v10H3v-10ZM10 14.5V18M7 18h6",
   };
 
   _iconPath(name) {
@@ -369,9 +486,12 @@ class SwitchBotUrcPanel extends HTMLElement {
     const [status, statusLabel] = this._status(button);
     const selected = button.button_id === this._buttonId ? " selected" : "";
     const pressed = this._isActiveButton(button) ? " pressed" : "";
-    return `<g class="k ${status}${selected}${pressed}" role="button" tabindex="0"
+    const draft = button.layout_state && button.layout_state !== "unchanged"
+      ? ` draft-${button.layout_state}` : "";
+    return `<g class="k ${status}${selected}${pressed}${draft}" role="button" tabindex="0"
       data-button="${escapeHtml(button.button_id)}"><title>${escapeHtml(label || tag)} · ${
-      escapeHtml(statusLabel)} · ${escapeHtml(button.label)}</title>${body}</g>`;
+      escapeHtml(statusLabel)} · ${escapeHtml(button.label)}${button.layout_state && button.layout_state !== "unchanged"
+        ? ` · ${button.layout_state} in draft` : ""}</title>${body}</g>`;
   }
 
   async _saveTile() {
@@ -424,10 +544,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       return keys.map((item) => {
         const [status] = this._status(item);
         const on = item.button_id === this._buttonId;
-        return `<div class="scr-row k ${status}${on ? " on" : ""}" role="button" tabindex="0"
+        const layoutState = item.layout_state && item.layout_state !== "unchanged"
+          ? `<span class="draft-tag ${item.layout_state}">${item.layout_state}</span>` : "";
+        const draftClass = item.layout_state && item.layout_state !== "unchanged"
+          ? ` draft-${item.layout_state}` : "";
+        return `<div class="scr-row k ${status}${on ? " on" : ""}${draftClass}" role="button" tabindex="0"
           data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}">
-          <span class="pos">${escapeHtml(item.position || "")}</span>
-          <span class="nm">${escapeHtml(item.label)}</span></div>`;
+          <span class="pos">${escapeHtml(item.position || `#${item.button_index + 1}`)}</span>
+          <span class="nm">${escapeHtml(item.label)}</span>${layoutState}</div>`;
       }).join("");
     }
     const remotes = this._entry()?.remotes || [];
@@ -495,11 +619,12 @@ class SwitchBotUrcPanel extends HTMLElement {
             <stop offset="100%" stop-color="#800"/>
           </radialGradient>
           <clipPath id="screenClip">
-            <path d="M 35,65 A 45,45 0 0,1 265,65 L 265,262 L 35,262 Z"/>
+            <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V262 H35 Z"/>
           </clipPath>
         </defs>
         <rect x="35" y="20" width="230" height="640" rx="45" fill="url(#body)" class="shell"/>
-        <path d="M 35,65 A 45,45 0 0,1 265,65 L 265,280 L 35,280 Z" class="glass"/>
+        <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V280 H35 Z" class="glass"/>
+        <path d="M48 58 C50 43 63 32 80 32 H220 C237 32 250 43 252 58" class="glass-edge"/>
         <foreignObject x="35" y="65" width="230" height="197" clip-path="url(#screenClip)">
           <div xmlns="http://www.w3.org/1999/xhtml" class="scr-scroll">
             ${this._renderScreen(page)}
@@ -629,6 +754,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
           ${this._renderApplyBar()}
+          ${this._renderNativeProfileLayout()}
           ${this._renderCloud()}
           ${this._renderDeviceTable()}
           ${this._renderDiagnostics()}
@@ -653,9 +779,9 @@ class SwitchBotUrcPanel extends HTMLElement {
                     : this._freeIndexOnPage(page.index) !== null
                       ? `<button class="secondary compact" id="addKeyToPage" title="Put a new row on this page's screen list">Add a row</button>`
                       : `<span class="small">This page is full.</span>`}
-                  ${page?.index ? `<button class="secondary compact destructive" id="removeThisPage" title="Remove this page and every button on it">Delete this page</button>` : ""}
+                  ${page?.index ? `${this._availablePageIndexes().length ? `<label class="page-move">Move page<select id="moveCurrentPage"><option value="">Choose letter…</option>${this._availablePageIndexes().map((index) => `<option value="${index}">Page ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : `<span class="small page-capacity">No free page letter</span>`}<button class="secondary compact destructive" id="removeThisPage" title="Remove this page and every button on it">Delete page</button>` : ""}
                 </div>` : ""}
-              <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span><span><i class="none"></i>Empty</span></div>
+              <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span><span><i class="none"></i>Empty</span>${this._physical ? `<span><i class="draft-new"></i>Added</span><span><i class="draft-moved"></i>Moved</span><span><i class="draft-edited"></i>Edited</span>` : ""}</div>
               </section>
               <aside class="editor">${button ? this._editor(button, remote) : `<div class="empty small">Choose a button.</div>`}</aside>
             </div>
@@ -683,7 +809,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalBackup = result.backup;
       this._physicalSources = result.ir_sources;
       this._physicalFunctions = result.functions || [];
+      this._nativeProfiles = result.native_profiles || [];
       this._physicalBaseline = structuredClone(result.layout);
+      this._resetPhysicalOrigins(result.layout);
       this._physicalStatus = result.status || "";
       this._error = null;
     } catch (error) {
@@ -960,10 +1088,11 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${!sources.native_options?.free ? `<p class="small warning">Every address on every
           controller is in use. Add another Bluetooth adapter with its own add-on instance to
           go further.</p>` : ""}
-        <label>Device type<select data-add-field="device_type">${
-          (sources.native_options?.device_types || []).map(
-            (item) => option(item, item, item === add.deviceType)).join("")
+        <label>Screen profile<select data-add-field="device_type">${
+          (sources.native_options?.screen_profiles || []).map(
+            (item) => option(item.value, item.label, item.value === add.deviceType)).join("")
         }</select></label>
+        <p class="small">The profile controls the screen and available pages. The icon below only changes the remote tile.</p>
         <label>Icon on the screen<select data-add-field="icon">${
           (sources.native_options?.icons || []).map(
             (item) => option(item, item, item === add.icon)).join("")
@@ -1033,7 +1162,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         // Device types and icons differ per kind; carrying one tab's choice into another
         // would offer a value the backend rejects.
         add.deviceType = (add.kind === "native"
-          ? kinds.native_options?.default_device_type
+          ? kinds.native_options?.default_screen_profile
           : (kinds.hid?.device_types || [])[0]) || "";
         add.icon = (add.kind === "native"
           ? kinds.native_options?.default_icon
@@ -1222,8 +1351,15 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderApplyBar() {
     if (!this._physical) return "";
     const changes = this._physicalChanges();
-    if (!changes && !this._physicalStatus) return "";
+    const profileSelector = this._physical.kind === "native" ? `
+      <label class="profile-select">Screen profile<select data-native-profile ${this._physicalBusy ? "disabled" : ""}>${
+        this._nativeProfiles.map((profile) => `<option value="${escapeHtml(profile.value)}" ${
+          profile.value === this._physical.template ? "selected" : ""}>${escapeHtml(profile.label)}</option>`).join("")
+      }</select></label>
+      <span class="small">Changing the profile keeps this layout. Unsupported pages block the write without deleting the draft.</span>` : "";
+    if (!changes && !this._physicalStatus && !profileSelector) return "";
     return `<div class="apply-bar ${changes ? "dirty" : ""}">
+      ${profileSelector}
       <span>${changes
         ? `${changes} change${changes === 1 ? "" : "s"} to the remote itself. Save writes them.`
         : escapeHtml(this._physicalStatus)}</span>
@@ -1234,16 +1370,174 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _physicalChanges() {
-    // A cheap structural comparison is enough to know whether anything still has to be
-    // written; the apply call sends the whole layout anyway.
     if (!this._physical || !this._physicalBaseline) return 0;
-    const flat = (draft) => draft.pages.flatMap((page) => page.buttons.map(
-      (key) => `${page.index}:${key.index}:${key.transport}:${key.function ?? ""}:${key.code_hex ?? ""}`));
-    const before = flat(this._physicalBaseline);
-    const after = flat(this._physical);
-    const removed = before.filter((item) => !after.includes(item)).length;
-    const added = after.filter((item) => !before.includes(item)).length;
-    return Math.max(removed, added);
+    const canonical = (draft) => JSON.stringify({
+      kind: draft.kind,
+      template: draft.template || "",
+      pages: [...draft.pages].sort((a, b) => a.index - b.index).map((page) => ({
+        index: page.index,
+        buttons: [...page.buttons].sort((a, b) => a.index - b.index).map((key) => ({
+          index: key.index, transport: key.transport, function: key.function ?? null,
+          code_hex: key.code_hex || "", record: key.record || "",
+        })),
+      })),
+    });
+    return Number(canonical(this._physical) !== canonical(this._physicalBaseline)
+      || this._identityMigrations().length > 0 || this._identityRemovals().length > 0);
+  }
+
+  _resetPhysicalOrigins(layout) {
+    this._physicalOrigins = {};
+    for (const page of layout?.pages || []) {
+      for (const key of page.buttons || []) {
+        const id = `p${page.index}_k${key.index}`;
+        this._physicalOrigins[id] = id;
+      }
+    }
+  }
+
+  _identityMigrations() {
+    const present = new Set((this._physical?.pages || []).flatMap((page) =>
+      (page.buttons || []).map((key) => `p${page.index}_k${key.index}`)));
+    return Object.entries(this._physicalOrigins || {})
+      .filter(([current, original]) => current !== original && present.has(current))
+      .map(([to, from]) => ({ from, to }));
+  }
+
+  _moveMainButton(from, to) {
+    const page = this._physical?.pages?.find((item) => item.index === 0);
+    const button = page?.buttons?.find((item) => item.index === from);
+    if (!button || page.buttons.some((item) => item.index === to)) return;
+    const oldId = `p0_k${from}`;
+    const newId = `p0_k${to}`;
+    const origin = this._physicalOrigins[oldId] || oldId;
+    delete this._physicalOrigins[oldId];
+    button.index = to;
+    this._physicalOrigins[newId] = origin;
+    this._physicalStatus = "";
+    this._render();
+  }
+
+  _moveSubpage(from, to) {
+    if (this._physical.pages.some((page) => page.index === to)) return;
+    const page = this._physical.pages.find((item) => item.index === from);
+    if (!page || !from || !to) return;
+    for (const key of page.buttons) {
+      const oldId = `p${from}_k${key.index}`;
+      const newId = `p${to}_k${key.index}`;
+      const origin = this._physicalOrigins[oldId] || oldId;
+      delete this._physicalOrigins[oldId];
+      this._physicalOrigins[newId] = origin;
+    }
+    page.index = to;
+    this._physical.pages.sort((a, b) => a.index - b.index);
+    if (this._pageIndex === from) this._pageIndex = to;
+    this._physicalStatus = "";
+    this._render();
+  }
+
+  _nativeProfileConflicts(profile) {
+    if (!profile || this._physical?.kind !== "native") return [];
+    const pages = this._physical.pages || [];
+    const main = pages.find((page) => page.index === 0)?.buttons || [];
+    const targetPages = profile.subpages || [];
+    const supportedPageIds = new Set(targetPages.filter((page) => page.link_index != null)
+      .map((page) => page.index));
+    const supportedExistingPages = new Set(pages.filter((page) => page.index
+      && supportedPageIds.has(page.index)).map((page) => page.index));
+    const reserved = new Set([...supportedExistingPages].map((index) => index - 1));
+    const usedPages = new Set(pages.filter((page) => page.index).map((page) => page.index));
+    const actionableMain = new Set((profile.main_keys || [])
+      .filter((slot) => slot.actionable).map((slot) => slot.index));
+    const availableMain = (profile.main_positions || []).filter((index) =>
+      actionableMain.has(index) &&
+      !main.some((key) => key.index === index) && !reserved.has(index));
+    const availablePages = targetPages.filter((page) => page.link_index != null
+      && !usedPages.has(page.index)
+      && !main.some((key) => key.index === page.link_index));
+    const conflicts = [];
+    for (const page of pages) {
+      if (page.index && !supportedPageIds.has(page.index)) {
+        conflicts.push({ type: "page", page, targets: availablePages });
+      }
+    }
+    for (const key of main) {
+      if (!(profile.main_positions || []).includes(key.index) || reserved.has(key.index)) {
+        conflicts.push({ type: "main", key, targets: availableMain });
+      }
+    }
+    return conflicts;
+  }
+
+  _profileFunctionLabel(value) {
+    return this._physicalFunctions.find((item) => item.value === value)?.label
+      || `Function ${value}`;
+  }
+
+  _renderNativeProfileLayout() {
+    if (this._physical?.kind !== "native") return "";
+    const profile = this._nativeProfiles.find((item) => item.value === this._physical.template);
+    if (!profile) return "";
+    const conflicts = this._nativeProfileConflicts(profile);
+    const mainPage = this._physical.pages.find((page) => page.index === 0);
+    const mainKeys = profile.main_keys || [];
+    const targetPageIds = new Set((profile.subpages || [])
+      .filter((page) => page.link_index != null).map((page) => page.index));
+    const pageLinkByIndex = new Map((this._physical.pages || [])
+      .filter((page) => page.index && targetPageIds.has(page.index))
+      .map((page) => [page.index - 1, page.index]));
+    const renderCell = (slot, button, isLink = false) => {
+      const action = button ? this._profileFunctionLabel(button.function)
+        : slot.label || `Position ${slot.index}`;
+      const linkPage = pageLinkByIndex.get(slot.index);
+      const conflict = conflicts.some((item) => item.type === "main" && item.key.index === slot.index);
+      const current = button ? this._layoutState({ button_page: 0, button_index: button.index }) : "unchanged";
+      return `<div class="profile-cell${button ? " occupied" : ""}${isLink || linkPage ? " linked" : ""}${conflict ? " conflict" : ""}${current !== "unchanged" ? ` draft-${current}` : ""}">
+        <span>${escapeHtml(slot.position || `#${slot.index + 1}`)}</span>
+        <strong>${escapeHtml(linkPage ? `Page ${"ABCD"[linkPage - 1]}` : action)}</strong>
+      </div>`;
+    };
+    const mainCells = mainKeys.map((slot) => renderCell(slot,
+      mainPage?.buttons?.find((key) => key.index === slot.index), pageLinkByIndex.has(slot.index))).join("");
+    const subpages = (profile.subpages || []).map((page) => {
+      const draftPage = this._physical.pages.find((item) => item.index === page.index);
+      const keys = draftPage
+        ? draftPage.buttons.map((key, index) => ({
+          index,
+          label: this._profileFunctionLabel(key.function),
+          actionable: true,
+        }))
+        : page.keys;
+      return `<article class="profile-screen">
+        <div class="profile-screen-head"><b>Page ${"ABCD"[page.index - 1]}</b><span>${page.link_position || "No link key"}</span></div>
+        <div class="profile-row-grid">${keys.map((key) => `<span class="profile-row${draftPage ? " occupied" : ""}">${escapeHtml(key.label)}</span>`).join("")}</div>
+      </article>`;
+    }).join("");
+    const conflictRows = conflicts.map((item) => {
+      if (item.type === "main") {
+        const label = this._profileFunctionLabel(item.key.function);
+        return `<div class="profile-conflict-row"><span><b>${escapeHtml(label)}</b><small>Main · position ${item.key.index + 1} is unavailable in this profile</small></span>
+          ${item.targets.length ? `<label>Move to<select data-move-main="${item.key.index}"><option value="">Choose position…</option>${item.targets.map((index) => `<option value="${index}">${escapeHtml((mainKeys.find((slot) => slot.index === index)?.position || `Position ${index + 1}`))}</option>`).join("")}</select></label>` : `<small>No free Main position</small>`}</div>`;
+      }
+      return `<div class="profile-conflict-row"><span><b>Page ${"ABCD"[item.page.index - 1]}</b><small>${item.page.buttons.length} button${item.page.buttons.length === 1 ? "" : "s"} · unavailable in this profile</small></span>
+        ${item.targets.length ? `<label>Move to<select data-move-page="${item.page.index}"><option value="">Choose page…</option>${item.targets.map((page) => `<option value="${page.index}">Page ${"ABCD"[page.index - 1]} · ${page.link_position}</option>`).join("")}</select></label>` : `<small>No free page link</small>`}</div>`;
+    }).join("");
+    const mainTitle = conflicts.length
+      ? `${conflicts.length} item${conflicts.length === 1 ? "" : "s"} need a new position`
+      : "Layout fits this profile";
+    const draftPageCount = this._physical.pages.filter((page) => page.index).length;
+    const profilePageCount = targetPages.filter((page) => page.link_index != null).length;
+    const pageCapacityExceeded = draftPageCount > profilePageCount;
+    return `<section class="native-profile-layout">
+      <div class="profile-layout-heading"><div><h2>Screen layout</h2><p>${escapeHtml(profile.label)} · ${escapeHtml(mainTitle)}</p></div>
+        <span class="profile-fit ${conflicts.length ? "has-conflicts" : ""}">${conflicts.length ? "Needs placement" : "Compatible"}</span></div>
+      ${pageCapacityExceeded ? `<div class="profile-capacity-warning"><b>This profile has room for ${profilePageCount} submenu page${profilePageCount === 1 ? "" : "s"}; the draft has ${draftPageCount}.</b><span>All current pages cannot be saved together. Remove a page or choose a profile with more page slots.</span></div>` : ""}
+      <div class="profile-screen-grid">
+        <article class="profile-screen main-profile-screen"><div class="profile-screen-head"><b>Main screen</b><span>${mainKeys.length} positions</span></div><div class="profile-main-grid">${mainCells}</div></article>
+        ${subpages}
+      </div>
+      ${conflicts.length ? `<div class="profile-conflicts"><div class="profile-conflict-heading"><b>Resolve before writing</b><span>Buttons and their saved Home Assistant actions move together.</span></div>${conflictRows}</div>` : ""}
+    </section>`;
   }
 
   _wireKeyEditor(root) {
@@ -1265,12 +1559,16 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.getElementById("openCustomPage")?.addEventListener("click", () => {
       const index = button.button_index + 1;
+      const nativeProfile = this._nativeProfiles.find(
+        (item) => item.value === this._physical?.template);
+      if (this._physical.kind === "native" && !nativeProfile?.pages?.includes(index)) return;
       const home = this._physical.pages.find((item) => item.index === 0);
       if (!home || this._physical.pages.some((item) => item.index === index)) return;
       this._physical.pages.push({ index, buttons: [] });
       this._physical.pages.sort((a, b) => a.index - b.index);
       // The key gives up its command: the firmware will not let it both open a page and send.
       home.buttons = home.buttons.filter((item) => item.index !== button.button_index);
+      delete this._physicalOrigins[`p0_k${button.button_index}`];
       this._pageIndex = index;
       this._buttonId = null;
       this._physicalStatus = "";
@@ -1293,6 +1591,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!found) return;
     const { page, key } = found;
     const kind = this._physical.kind;
+    const rowPosition = page.index ? this._pageKeyEntries(page).findIndex((item) => item.key === key) : -1;
+    const lastRowPosition = page.index ? page.buttons.length - 1 : -1;
 
     root.querySelector('[data-key-field="transport"]')?.addEventListener("change", (event) => {
       key.transport = event.target.value;
@@ -1370,11 +1670,21 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
 
     root.getElementById("removeKey")?.addEventListener("click", () => {
-      page.buttons = page.buttons.filter((item) => item !== key);
-      if (page.index && kind === "native") page.buttons.forEach((item, index) => { item.index = index; });
+      if (page.index) {
+        const entries = this._pageKeyEntries(page).filter((item) => item.key !== key);
+        this._replacePageKeyOrder(page, entries);
+      } else {
+        page.buttons = page.buttons.filter((item) => item !== key);
+        delete this._physicalOrigins[`p${page.index}_k${key.index}`];
+      }
       this._buttonId = null;
       this._render();
     });
+
+    root.getElementById("moveRowUp")?.addEventListener("click", () =>
+      this._movePageKey(page.index, key.index, -1));
+    root.getElementById("moveRowDown")?.addEventListener("click", () =>
+      this._movePageKey(page.index, key.index, 1));
 
     root.getElementById("addKey")?.addEventListener("click", () => {
       const reserved = page.index === 0
@@ -1391,28 +1701,55 @@ class SwitchBotUrcPanel extends HTMLElement {
           function: kind === "native" ? 5 : 115,
           code_hex: "",
         });
+        this._buttonId = `p${page.index}_k${index}`;
       }
       this._render();
     });
 
     root.getElementById("removePage")?.addEventListener("click", () => {
+      for (const key of page.buttons) delete this._physicalOrigins[`p${page.index}_k${key.index}`];
       this._physical.pages = this._physical.pages.filter((item) => item !== page);
       this._pageIndex = 0;
       this._buttonId = null;
       this._render();
     });
+
   }
 
   _wirePhysical() {
     const root = this.shadowRoot;
     this._wireKeyEditor(root);
+    root.querySelector("[data-native-profile]")?.addEventListener("change", (event) => {
+      this._physical.template = event.target.value;
+      this._physicalStatus = "";
+      this._render();
+    });
+    root.querySelectorAll("[data-move-main]").forEach((select) => {
+      select.addEventListener("change", () => {
+        if (!select.value) return;
+        const target = Number(select.value);
+        if (Number.isInteger(target)) this._moveMainButton(Number(select.dataset.moveMain), target);
+      });
+    });
+    root.querySelectorAll("[data-move-page]").forEach((select) => {
+      select.addEventListener("change", () => {
+        if (!select.value) return;
+        const target = Number(select.value);
+        if (Number.isInteger(target)) this._moveSubpage(Number(select.dataset.movePage), target);
+      });
+    });
     root.getElementById("physicalDiscard")?.addEventListener("click", () => {
       this._physical = structuredClone(this._physicalBaseline);
+      this._resetPhysicalOrigins(this._physical);
       this._physicalStatus = "";
       this._render();
     });
     root.getElementById("physicalRestore")?.addEventListener("click", () => {
       this._physical = structuredClone(this._physicalBackup.layout);
+      this._resetPhysicalOrigins(this._physical);
+      for (const item of this._lastIdentityMigrations) {
+        this._physicalOrigins[item.from] = item.to;
+      }
       this._physicalStatus = "Previous layout loaded. Apply it to restore the physical remote.";
       this._render();
     });
@@ -1434,6 +1771,12 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (button.button_page !== 0 || index > 3) return "";
     const letter = "ABCD"[index];
     const target = index + 1;
+    const nativeProfile = this._nativeProfiles.find(
+      (item) => item.value === this._physical?.template);
+    if (this._physical.kind === "native" && !nativeProfile?.subpages?.some(
+      (item) => item.index === target && item.link_index != null)) {
+      return `<p class="small">${escapeHtml(this._physical.template)} does not provide page ${letter}.</p>`;
+    }
     const existing = this._pages().find((item) => item.index === target);
     if (existing) {
       return `<p class="small">Key <b>${letter}</b> already opens <b>${escapeHtml(existing.name)}</b>.
@@ -1458,12 +1801,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<div class="action-box key-editor">
         <div class="action-title"><b>On the remote</b><span>this position is empty</span></div>
         <div class="key-actions">
-          <button class="secondary compact" id="addKeyHere" title="Start using this position, so it can send something">Give this key a command</button>
+          ${button.can_add_command === false ? `<span class="small">This position opens a page and cannot also send a command.</span>` : `<button class="secondary compact" id="addKeyHere" title="Start using this position, so it can send something">Give this key a command</button>`}
         </div>
         ${this._pageControl(button, null)}
       </div>`;
     }
-    const { key } = found;
+    const { page, key } = found;
     const kind = this._physical.kind;
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
@@ -1489,6 +1832,9 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${button.button_page ? `<button class="secondary compact destructive" id="removePage" title="Remove this page and every button on it">Delete this page</button>` : ""}
         ${this._freeIndexOnPage(button.button_page) !== null
           ? `<button class="secondary compact" id="addKey" title="Put a new row on this page's screen list">Add a row</button>` : ""}
+        ${button.button_page ? `<div class="row-order"><span>Screen order</span>
+          <button class="secondary compact" id="moveRowUp" ${rowPosition <= 0 ? "disabled" : ""} title="Move this row up">↑</button>
+          <button class="secondary compact" id="moveRowDown" ${rowPosition >= lastRowPosition ? "disabled" : ""} title="Move this row down">↓</button></div>` : ""}
         ${button.button_page
           ? `<button class="secondary compact destructive" id="removeKey"
               title="Take this row off the page; the rows below it move up">Delete this row</button>`
@@ -1631,10 +1977,15 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("removeThisPage")?.addEventListener("click", () => {
       const page = this._physical?.pages?.find((item) => item.index === this._page()?.index);
       if (!page) return;
+      for (const key of page.buttons) delete this._physicalOrigins[`p${page.index}_k${key.index}`];
       this._physical.pages = this._physical.pages.filter((item) => item !== page);
       this._pageIndex = 0;
       this._buttonId = null;
       this._render();
+    });
+    root.getElementById("moveCurrentPage")?.addEventListener("change", (event) => {
+      if (!event.target.value) return;
+      this._moveSubpage(this._page()?.index, Number(event.target.value));
     });
 
     root.getElementById("addRemote")?.addEventListener("click", async () => {
@@ -1649,7 +2000,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         remoteId: (sources.cloud_remotes || [])[0]?.remote_id || "",
         profileKey: (sources.profiles || [])[0]?.key || "",
         deviceType: (kind === "native"
-          ? sources.native_options?.default_device_type
+          ? sources.native_options?.default_screen_profile
           : (sources.hid?.device_types || [])[0]) || "",
         icon: (kind === "native"
           ? sources.native_options?.default_icon
@@ -2001,11 +2352,16 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._physicalBusy = true;
         if (status) status.textContent = "Writing the layout to the remote…";
         this._render();
+        const identityMigrations = this._identityMigrations();
+        const identityRemovals = this._identityRemovals();
         const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/apply`,
-          entry_id: this._entryId, remote_id: this._remoteId, layout: this._physical });
+          entry_id: this._entryId, remote_id: this._remoteId, layout: this._physical,
+          identity_migrations: identityMigrations, identity_removals: identityRemovals });
         this._physicalStatus = result.status;
         this._physicalBackup = result.backup;
+        this._lastIdentityMigrations = identityMigrations;
         this._physicalBaseline = structuredClone(this._physical);
+        this._resetPhysicalOrigins(this._physical);
         this._physicalBusy = false;
         await this._load();
       }
@@ -2087,8 +2443,27 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _styles() {
     return `
+      .native-profile-layout{margin:18px 0 24px;padding:20px;background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#e2e5e8);border-radius:14px}
+      .profile-layout-heading,.profile-screen-head,.profile-conflict-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+      .profile-layout-heading h2{margin:0;font-size:20px;line-height:1.25}
+      .profile-layout-heading p{margin:5px 0 0;color:var(--secondary-text-color,#68727d);font-size:13px}
+      .profile-fit{padding:6px 10px;border-radius:6px;background:#237e5120;color:#176b43;font-size:12px;font-weight:700;white-space:nowrap}
+      .profile-fit.has-conflicts{background:#bd6a0f20;color:#94500a}
+      .profile-capacity-warning{display:grid;gap:3px;margin-top:14px;padding:11px 13px;border-left:3px solid #bd6a0f;border-radius:5px;background:#bd6a0f12;font-size:12px}.profile-capacity-warning span{color:var(--secondary-text-color,#68727d)}
+      .profile-screen-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:16px}
+      .profile-screen{min-width:0;padding:14px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--secondary-background-color,#f4f6f7)}
+      .profile-screen-head{font-size:12px}.profile-screen-head span{color:var(--secondary-text-color,#68727d);font-size:11px}
+      .profile-main-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:11px}
+      .profile-cell{min-height:58px;display:grid;align-content:center;gap:3px;padding:7px;border:1px solid var(--divider-color,#dfe3e8);border-radius:7px;background:var(--card-background-color,#fff);text-align:center}
+      .profile-cell>span{font-size:10px;color:var(--secondary-text-color,#68727d)}.profile-cell strong{overflow-wrap:anywhere;font-size:11px;line-height:1.25}
+      .profile-cell.occupied{border-color:#33836c80;background:#e9f5f0}.profile-cell.linked{border-color:#4585b880;background:#edf4fa}.profile-cell.conflict{border-color:#c47a2b;background:#fff3e2;color:#78420a}.profile-cell.draft-new,.profile-cell.draft-edited{box-shadow:inset 0 -3px #36866a}.profile-cell.draft-moved{box-shadow:inset 0 -3px #397da4}
+      .profile-row-grid{display:grid;gap:5px;margin-top:11px}.profile-row{padding:7px 9px;border:1px solid var(--divider-color,#dfe3e8);border-radius:6px;background:var(--card-background-color,#fff);font-size:11px;color:var(--secondary-text-color,#68727d)}.profile-row.occupied{border-color:#33836c80;background:#e9f5f0;color:var(--primary-text-color,#17202a)}
+      .profile-conflicts{margin-top:16px;border-top:1px solid var(--divider-color,#e2e5e8);padding-top:14px}.profile-conflict-heading{align-items:flex-start;margin-bottom:6px}.profile-conflict-heading span,.profile-conflict-row small{color:var(--secondary-text-color,#68727d);font-size:12px}
+      .profile-conflict-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,260px);align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--divider-color,#e2e5e8)}.profile-conflict-row>span{display:grid;gap:3px}.profile-conflict-row label{display:grid;gap:3px;font-size:11px;font-weight:700;color:var(--secondary-text-color,#68727d)}.profile-conflict-row select{height:38px;margin:0;border-radius:7px}
       .physical-editor{margin-top:20px;padding:22px;background:var(--card-background-color,#fff);border-radius:20px}.physical-editor fieldset{border:0;padding:0;margin:0;min-width:0}.physical-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.physical-page{margin-top:20px;padding:18px;border:1px solid var(--divider-color,#ddd);border-radius:16px}.physical-key{display:grid;grid-template-columns:150px 160px minmax(180px,1fr) auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid var(--divider-color,#ddd)}.physical-key label{display:grid;gap:6px;font-size:12px}.physical-key input,.action-box input{width:100%;min-height:40px;padding:8px;background:var(--card-background-color,#fff);color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:8px}.physical-status{padding:12px;background:var(--secondary-background-color,#eee);border-radius:10px;white-space:pre-wrap}@media(max-width:850px){.physical-key{grid-template-columns:1fr 1fr}.physical-toolbar button{height:auto;min-height:42px;padding:8px}.header-actions{flex-wrap:wrap}.layout-button{display:block!important}}
+      @media(max-width:600px){.native-profile-layout{padding:14px}.profile-layout-heading{align-items:flex-start;flex-direction:column}.profile-conflict-row{grid-template-columns:1fr}.profile-screen-grid{grid-template-columns:1fr}}
       :host{display:block;min-height:100%;background:var(--primary-background-color,#f5f6f8);color:var(--primary-text-color,#17202a);font-family:var(--paper-font-body1_-_font-family,system-ui,sans-serif)}
+      .apply-bar{flex-wrap:wrap}.apply-bar .profile-select{display:grid;gap:4px;min-width:min(100%,260px);font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.apply-bar .profile-select select{margin:0}.apply-bar>.small{flex:1 1 260px}
       *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;background:var(--card-background-color,#fff);padding:20px 22px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px;padding-top:2px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px) auto;align-items:center;gap:16px;margin:18px 0;padding:18px 22px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:22px 0 16px;padding:5px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:26px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:26px 28px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:16px;margin-top:22px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.save-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:20px}.save-row span{font-size:12px;color:#e74c3c}.primary,.secondary{height:42px;padding:0 18px;border:1px solid transparent;border-radius:12px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background .15s,box-shadow .15s,transform .12s,border-color .15s}
       .primary{background:var(--primary-color,#03a9f4);color:#fff}
       .primary:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 20px color-mix(in srgb,var(--primary-color,#03a9f4) 38%,transparent)}
@@ -2114,14 +2489,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.button-picks{display:flex;flex-wrap:wrap;gap:6px 14px}.button-picks label{font-weight:600;font-size:11px}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
       .device-wrap{width:min(100%,360px)}
       .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
-      .device .shell{stroke:#e0e0e4;stroke-width:1}
+      .device .shell{stroke:#d2d5da;stroke-width:1.2}
       .device .glass{fill:#090a0c}
+      .device .glass-edge{fill:none;stroke:#ffffff29;stroke-width:1.2;stroke-linecap:round}
       .scr-scroll{height:197px;overflow-y:auto;padding:12px 13px;scrollbar-width:thin;
         scrollbar-color:#ffffff40 transparent;font:600 12px/1.2 system-ui,sans-serif;color:#fff}
       .scr-scroll::-webkit-scrollbar{width:4px}
       .scr-scroll::-webkit-scrollbar-thumb{background:#ffffff40;border-radius:2px}
       .scr-empty{color:#ffffff66;font-weight:500;text-align:center;margin:60px 0}
-      .scr-row{display:flex;align-items:center;gap:4px;border-radius:5px;margin-bottom:2px}
+      .scr-row{display:flex;align-items:center;gap:4px;min-height:30px;border-radius:5px;margin-bottom:3px}
       .scr-row.on{background:#ffffff1f}
       .scr-row>.k{flex:1;display:flex;align-items:center;gap:9px;padding:6px 7px;cursor:pointer;
         border-radius:5px;min-width:0}
@@ -2131,17 +2507,21 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row .pos{font-size:10px;font-weight:800;color:#ffffff7a;min-width:28px}
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
-      .scr-scroll .ic{width:17px;height:17px;flex:none;fill:none;stroke:#fff;stroke-width:1.6;
+      .scr-row.draft-new,.scr-row.draft-edited{background:#267b6026}.scr-row.draft-moved{background:#32729a26}
+      .draft-tag{margin-left:auto;padding:2px 5px;border:1px solid currentColor;border-radius:4px;font-size:9px;font-weight:700;text-transform:uppercase;line-height:1.2}
+      .draft-tag.new,.draft-tag.edited{color:#83dfb2}.draft-tag.moved{color:#91cbea}
+      .scr-scroll .ic{width:18px;height:18px;flex:none;fill:none;stroke:#f6f8f9;stroke-width:1.65;
         stroke-linejoin:round;stroke-linecap:round}
-      .ic-btn{flex:none;width:24px;height:24px;margin-right:5px;border:0;border-radius:5px;
-        background:#ffffff26;color:#fff;font-size:12px;cursor:pointer}
+      .ic-btn{flex:none;width:26px;height:26px;margin-right:4px;border:0;border-radius:5px;
+        background:#ffffff26;color:#fff;font-size:13px;line-height:1;cursor:pointer}
       .ic-btn:hover{background:#ffffff3d}
       .scr-row.picking{padding:3px 4px}
       .ic-choices{flex:1;display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
-      .ic-choice{height:26px;display:grid;place-items:center;border:0;border-radius:5px;
+      .ic-choice{height:28px;display:grid;place-items:center;border:1px solid transparent;border-radius:5px;
         background:#ffffff14;cursor:pointer;padding:0}
       .ic-choice:hover{background:#ffffff38}
-      .ic-choice.on{background:#03a9f45c}
+      .ic-choice.on{background:#03a9f45c;border-color:#94d9fb}
+      .ic-choice .ic{width:16px;height:16px}
       .ic-choice:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}
       .scr-hint{margin:3px 7px 6px;font-size:10px;font-weight:500;color:#ffffff8a;line-height:1.4}
       .scr-cancel{border:0;padding:0;background:none;color:#8fd0ff;font:inherit;cursor:pointer;
@@ -2151,11 +2531,11 @@ class SwitchBotUrcPanel extends HTMLElement {
         border-radius:5px;background:#ffffff14;color:#fff;font:600 12px/1 system-ui,sans-serif}
       .scr-name:focus{outline:none;border-color:#03a9f4;background:#ffffff1f}
       .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
-      .device .cap{fill:#f7f7f9;stroke:#e0e0e4;stroke-width:1}
+      .device .cap{fill:#f7f7f9;stroke:#dadddf;stroke-width:1}
       .device .cap.ring{fill:#f4f4f7}
       .device .cap.seg{fill:#f4f4f7;stroke:#e6e6ea}
-      .device text.cap-t{fill:#333;font:700 11px/1 system-ui,sans-serif;text-anchor:middle}
-      .device .mark{fill:none;stroke:#444;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+      .device text.cap-t{fill:#30343a;font:700 11px/1 system-ui,sans-serif;text-anchor:middle}
+      .device .mark{fill:none;stroke:#41464d;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
       .device .logo{stroke:#a00;stroke-width:1}.device .logo-mark{fill:#fff;stroke:none}
       /* One rule for every key: the state colours the outline, never the glyph. */
       .device .k{cursor:pointer;transition:opacity .15s}
@@ -2170,9 +2550,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .k.custom .cap{stroke:#25bd76;stroke-width:2;fill:#eefaf3}
       .device .k.disabled .cap{stroke:#ee5b66;stroke-width:2;fill:#fff2f3}
       .device .k.selected .cap{stroke:#03a9f4;stroke-width:3;fill:#e6f5fe}
+      .device .k.draft-new .cap,.device .k.draft-edited .cap{stroke:#218b65;stroke-dasharray:2 2}
+      .device .k.draft-moved .cap{stroke:#397da4;stroke-dasharray:2 2}
+      .legend i.draft-new,.legend i.draft-edited{background:#36866a}.legend i.draft-moved{background:#397da4}
       .device .k.pressed .cap{animation:keypress .85s ease}
       @keyframes keypress{0%,100%{fill:#f7f7f9}20%{fill:#c9f6dc}}
       .screen-keys{margin-top:16px}.sk-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--secondary-text-color,#68727d);margin-bottom:8px}
+      .stage-actions{width:100%;justify-content:flex-start}.page-move{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--secondary-text-color,#68727d);font-size:12px;font-weight:700}.page-move select{width:auto;min-width:125px;height:36px;margin:0;border-radius:7px}.page-capacity{margin-left:auto}
+      .row-order{display:flex;align-items:center;gap:6px}.row-order span{margin-right:auto;color:var(--secondary-text-color,#68727d);font-size:12px;font-weight:700}.row-order .secondary.compact{width:36px;padding:0;font-size:17px}
+      .row-order .secondary.compact:disabled{opacity:.35}
       @media(max-width:900px){.workspace{grid-template-columns:1fr}.device-wrap{margin:auto}}
       @media(max-width:430px){header{align-items:center}.live{padding:0 10px}.device-wrap{width:100%}
       .button-grid{gap:7px}.remote-button{min-height:72px;border-radius:15px}dl{grid-template-columns:1fr}

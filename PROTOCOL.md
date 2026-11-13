@@ -7,6 +7,8 @@ earlier conclusion was later disproved, the correction is stated rather than qui
 Companion documents:
 
 - `README.md` — the Home Assistant integration.
+- [`docs/native-screen-capabilities.md`](docs/native-screen-capabilities.md) — V48 screen,
+  page, glyph, and Remote Studio constraints, with unresolved device experiments.
 - [switchbot-urc-addon](https://github.com/batareya16/switchbot-urc-addon) — the
   fake-target bridge add-on, published separately.
 

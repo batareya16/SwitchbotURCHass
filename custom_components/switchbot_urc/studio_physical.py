@@ -10,6 +10,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from . import bindings as binding_utils
 from . import commands as c
 from . import physical_layout as physical
 from . import targets
@@ -70,6 +71,23 @@ def persist(hass, entry, identity, **changes):
     hass.config_entries.async_update_entry(entry, options=options)
 
 
+def _migrate_button_actions(hass, entry, remote_id, migrations, removals=()):
+    if not migrations and not removals:
+        return
+    options = deepcopy(dict(entry.options))
+    bindings = options.get("bindings", [])
+    updated = False
+    for index, binding in enumerate(bindings):
+        if not isinstance(binding, dict) or str(binding.get("remote_id", "")) != str(remote_id):
+            continue
+        bindings[index] = binding_utils.migrate_button_action_identities(
+            binding, migrations, removals)
+        updated = True
+    if updated:
+        options["bindings"] = bindings
+        hass.config_entries.async_update_entry(entry, options=options)
+
+
 def _functions_for(device_type: str, remote: dict) -> list[dict]:
     """The functions a key of this remote can actually carry.
 
@@ -106,6 +124,21 @@ def _functions_for(device_type: str, remote: dict) -> list[dict]:
                 own.append({"value": function, "label": generic.get(function, f"Function {function}")})
     rest = [{"value": value, "label": label} for value, label in generic.items() if value not in seen]
     return own + rest
+
+
+def _native_profiles() -> list[dict]:
+    profiles = []
+    for name, profile in c.NATIVE_PROFILE_LAYOUTS.items():
+        if c.native_profile_device_type(name) is None:
+            continue
+        item = c.native_profile_metadata(name)
+        item["label"] = f"{name.replace('_', ' ').title()} · " + (
+            "main page only" if len(profile["pages"]) == 1 else
+            "pages " + ", ".join("Main" if int(page) == 0 else "ABCD"[int(page) - 1]
+                                 for page in sorted(profile["pages"]))
+        )
+        profiles.append(item)
+    return profiles
 
 
 @websocket_api.require_admin
@@ -245,6 +278,7 @@ def ws_physical_get(hass, connection, msg):
         functions = _functions_for(device_type, remote)
         connection.send_result(msg["id"], {"layout": physical.draft_for(remote), "ir_sources": ir_sources(entry),
                                           "functions": functions,
+                                          "native_profiles": _native_profiles(),
                                           "status": remote.get("physical_status", ""),
                                           "backup": remote.get("physical_backup")})
     except (ValueError, KeyError, TypeError) as err:
@@ -303,7 +337,10 @@ async def ws_physical_table(hass, connection, msg):
 
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/studio/physical/apply",
-    vol.Required("entry_id"): str, vol.Required("remote_id"): str, vol.Required("layout"): dict})
+    vol.Required("entry_id"): str, vol.Required("remote_id"): str, vol.Required("layout"): dict,
+    vol.Optional("identity_migrations", default=[]): [
+        {vol.Required("from"): str, vol.Required("to"): str}
+    ], vol.Optional("identity_removals", default=[]): [str]})
 @websocket_api.async_response
 async def ws_physical_apply(hass, connection, msg):
     store = hass.data.setdefault(DOMAIN, {})
@@ -315,6 +352,12 @@ async def ws_physical_apply(hass, connection, msg):
             entry, remote = resolve(hass, msg)
             identity = msg["remote_id"]
             draft = physical.validate(remote, msg["layout"])
+            current_binding = next((item for item in entry.options.get("bindings", [])
+                                    if isinstance(item, dict)
+                                    and str(item.get("remote_id", "")) == str(identity)), None)
+            identity_migrations = binding_utils.plan_button_identity_migrations(
+                current_binding, msg.get("identity_migrations", []),
+                msg.get("identity_removals", []))
             client = store.get(entry.entry_id, {}).get("client")
             if client is None:
                 raise ValueError("WoRWS is not connected")
@@ -361,12 +404,15 @@ async def ws_physical_apply(hass, connection, msg):
                     device_id=remote["device_id"], icon_name=remote.get("icon", "tv"),
                     event_remote_id=identity, main_buttons=layout["main_buttons"],
                     page_buttons={int(p): values for p, values in layout["pages"].items()},
+                    template=layout["template"],
                 )
                 delete = c.build_delete(slot, device_type, control_type, remote["device_id"])
                 stages = ([] if recovering_native else [("delete native remote", delete, frozenset({1}))]) + [
                     (name, packet, frozenset({1})) for name, packet in bind]
                 pages = [packet for _, packet in bind if packet[:3] == b"\x0f\x62\x06"]
-                stored_changes = {"device_type": "FAN", "custom_layout": layout, "index": new_slot}
+                stored_changes = {"device_type": c.native_profile_device_type(layout["template"]),
+                                  "custom_layout": layout,
+                                  "index": new_slot}
             else:
                 # Deleting keys leaves the physical remote and its existing HID bond in place.
                 delete = bytes([15, 98, 4, 1, slot]) + c.device_type_bytes(device_type) + bytes([control_type]) + expected_id + b"\xff\xff"
@@ -404,6 +450,8 @@ async def ws_physical_apply(hass, connection, msg):
                     physical_packets=[packet.hex() for packet in pages],
                     physical_pending=None,
                     physical_status="Device acknowledged all pages", **stored_changes)
+            _migrate_button_actions(hass, entry, identity, identity_migrations,
+                                    msg.get("identity_removals", []))
             _, updated = resolve(hass, msg)
             connection.send_result(msg["id"], {"status": "Device acknowledged all pages. Test the physical buttons now.",
                                               "backup": updated.get("physical_backup")})

@@ -80,7 +80,13 @@ def hid_draft_from_cloud(device_type: str, items: list[dict]) -> dict:
 
 def draft_for(remote: dict) -> dict:
     if remote.get("physical_layout"):
-        return deepcopy(remote["physical_layout"])
+        draft = deepcopy(remote["physical_layout"])
+        if draft.get("kind") == "native" and not draft.get("template"):
+            stored_template = (remote.get("custom_layout") or {}).get("template")
+            device_type = str(remote.get("device_type", "")).upper()
+            draft["template"] = c.NATIVE_PROFILE_ALIASES.get(
+                str(stored_template or device_type).upper(), "FAN")
+        return draft
     device_type = str(remote.get("device_type", "")).upper()
     if device_type in c.DEVTYPE:
         return {"kind": "hid", "pages": [{"index": 0, "buttons": [
@@ -90,7 +96,9 @@ def draft_for(remote: dict) -> dict:
     if device_type in c.NATIVE_DEVTYPE:
         layout = remote.get("custom_layout") or c.editable_layout_from_native_profile(device_type)
         main = c.normalize_main_buttons(layout.get("main_buttons", {}))
-        return {"kind": "native", "pages": [{"index": 0, "buttons": [
+        template = str(layout.get("template") or c.NATIVE_PROFILE_ALIASES.get(device_type, "FAN"))
+        template = c.NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
+        return {"kind": "native", "template": template, "pages": [{"index": 0, "buttons": [
             {"index": c.TAG[position], "transport": "native", "function": c.custom_action_function(action)}
             for position, action in main.items()
         ]}] + [{"index": int(page), "buttons": [
@@ -119,6 +127,12 @@ def validate(remote: dict, draft: dict) -> dict:
     expected = draft_for({key: value for key, value in remote.items() if key != "physical_layout"})["kind"]
     if result.get("kind") != expected:
         raise ValueError("The remote transport cannot be changed")
+    if expected == "native":
+        template = str(result.get("template") or draft_for(remote).get("template") or "FAN").upper()
+        template = c.NATIVE_PROFILE_ALIASES.get(template, template)
+        if template not in c.NATIVE_PROFILE_LAYOUTS or c.native_profile_device_type(template) is None:
+            raise ValueError(f"Unsupported native screen profile: {template}")
+        result["template"] = template
     pages = result.get("pages")
     if not isinstance(pages, list) or not 1 <= len(pages) <= 5:
         raise ValueError("Use Main and up to four pages A–D")
@@ -166,6 +180,36 @@ def validate(remote: dict, draft: dict) -> dict:
             raise ValueError("Native submenu positions must be consecutive starting at zero")
     if 0 not in seen_pages:
         raise ValueError("The Main page is required")
+    if expected == "native":
+        profile = c.NATIVE_PROFILE_LAYOUTS[result["template"]]
+        supported_pages = {int(page) for page in profile["pages"]}
+        main_keys = profile["pages"][0]
+        main_keys = main_keys() if callable(main_keys) else main_keys
+        supported_positions = {int(key["keyIndex"]) for key in main_keys}
+        main = next((page for page in pages if page["index"] == 0), {"buttons": []})
+        positions = {index: name for name, index in c.TAG.items()}
+        unsupported_positions = sorted({key["index"] for key in main["buttons"]} - supported_positions)
+        if unsupported_positions:
+            labels = ", ".join(positions.get(index, f"position {index}")
+                                for index in unsupported_positions)
+            raise ValueError(
+                f"{result['template']} has no Main-page position for {labels}. "
+                "Move those buttons to an available position; the saved layout is still intact."
+            )
+        unsupported = sorted(seen_pages - supported_pages)
+        if unsupported:
+            raise ValueError(
+                f"{result['template']} does not support page(s) {', '.join(map(str, unsupported))}. "
+                "The saved layout is still intact; remove those pages or choose a profile that supports them."
+            )
+        for page_number in seen_pages - {0}:
+            nav_index = page_number - 1
+            if not any(int(key.get("keyIndex", -1)) == nav_index and not key.get("cmd")
+                       for key in main_keys):
+                raise ValueError(
+                    f"{result['template']} has no screen key for page {page_number}; "
+                    "the saved layout is still intact."
+                )
     if expected in ("native", "hid", "ir"):
         main = next(page for page in pages if page["index"] == 0)
         reserved = {number - 1 for number in seen_pages if number}
@@ -177,9 +221,29 @@ def validate(remote: dict, draft: dict) -> dict:
     return result
 
 
-def compile_pages(remote: dict, draft: dict, slot: int) -> tuple[list[tuple[str, bytes, frozenset]], list[bytes]]:
+def _icon_code(remote: dict, icon_name: str | None) -> int:
+    if icon_name:
+        return c.ICON[icon_name.lower()]
+    stored = remote.get("icon_code")
+    if isinstance(stored, int) and 0 <= stored <= 0xFF:
+        return stored
+    packets = source_packets(remote)
+    if packets and len(packets[0]) > 11:
+        return packets[0][11]
+    name = str(remote.get("icon", "")).lower()
+    if name in c.ICON:
+        return c.ICON[name]
+    return 0
+
+
+def compile_pages(
+    remote: dict, draft: dict, slot: int, *, name: str | None = None,
+    icon_name: str | None = None,
+) -> tuple[list[tuple[str, bytes, frozenset]], list[bytes]]:
     """Compile all commands before any device mutation. Named IR uploads precede page deletion."""
     draft = validate(remote, draft)
+    display_name = name if name is not None else str(remote.get("name", "Remote"))
+    icon_code = _icon_code(remote, icon_name)
     uploads = []
     packets = []
     device_type = str(remote["device_type"]).upper()
@@ -210,7 +274,8 @@ def compile_pages(remote: dict, draft: dict, slot: int) -> tuple[list[tuple[str,
                 keys.extend({"index": p["index"] - 1, "hid_usage": hid_usage(device_type, "ABCD"[p["index"] - 1]).to_bytes(2, "big")}
                             for p in draft["pages"] if p["index"])
             packets.append(c.build_hid_edit_page(remote_index=slot, device_type_name=device_type,
-                device_id=remote["device_id"], name=remote["name"], page_index=number, keys=keys))
+                device_id=remote["device_id"], name=display_name, page_index=number,
+                keys=keys, icon=icon_code))
         elif draft["kind"] == "ir":
             records = []
             for key in keys:
@@ -229,15 +294,52 @@ def compile_pages(remote: dict, draft: dict, slot: int) -> tuple[list[tuple[str,
             source = source_packets(remote)[0]
             header = bytearray(source[7:90])
             header[0] = slot
+            header[4] = icon_code
+            name_bytes = bytearray(c.pad(display_name.encode("utf-8"), 64))
+            name_bytes[63] = 0
+            header[16:80] = name_bytes
             header[81:83] = bytes([number, len(records)])
             body = bytes(header) + b"".join(records)
             packets.append(b"\x0f\x62\x06" + c.s16(len(body)) + c.s16(c.crc16_modbus(body)) + body)
     return uploads, packets
 
 
+def compile_recreate(
+    remote: dict, *, slot: int, device_type: int, control_type: int,
+    name: str, icon_name: str | None,
+) -> tuple[list[tuple[str, bytes, frozenset[int]]], list[bytes], dict]:
+    """Compile a key-only replacement that preserves the installed IR/HID remote row."""
+    draft = validate(remote, draft_for(remote))
+    uploads, pages = compile_pages(
+        remote, draft, slot, name=name, icon_name=icon_name,
+    )
+    device_id = str(remote["device_id"])
+    if draft["kind"] == "hid":
+        device_type_name = str(remote["device_type"]).upper()
+        delete = c.build_delete_hid_keys(
+            remote_index=slot, device_type_name=device_type_name, device_id=device_id,
+        )
+    elif draft["kind"] == "ir":
+        delete = (
+            bytes([0x0F, 0x62, 0x04, 0x01, slot & 0xFF])
+            + c.device_type_bytes(device_type)
+            + bytes([control_type & 0xFF])
+            + c.id_to_bytes(device_id)
+            + b"\xff\xff"
+        )
+    else:
+        raise ValueError("Only IR and HID layouts can be rebuilt as key pages")
+    stages = uploads + [("delete old key pages", delete, frozenset({1}))]
+    stages.extend(
+        (f"write page {packet[88]}", packet, frozenset({1}))
+        for packet in pages
+    )
+    return stages, pages, draft
+
+
 def native_layout(draft: dict) -> dict:
     positions = {value: name for name, value in c.TAG.items()}
-    return {"layout_version": 2, "main_buttons": {
+    return {"layout_version": 2, "template": draft.get("template", "FAN"), "main_buttons": {
         positions[key["index"]]: c.custom_action_name(key["function"])
         for page in draft["pages"] if page["index"] == 0 for key in page["buttons"]
     }, "pages": {str(page["index"]): [c.custom_action_name(key["function"]) for key in sorted(page["buttons"], key=lambda k: k["index"])]

@@ -298,6 +298,59 @@ def native_device_type_supported(device_type_name: str) -> bool:
     """True when this remote firmware accepts the native type over a local bind (single-byte)."""
     return NATIVE_DEVTYPE.get(device_type_name.upper(), 0x10000) <= 0xFF
 
+
+def native_profile_device_type(profile_name: str) -> str | None:
+    """Pick a supported device type that uses the requested native screen profile."""
+    profile_name = NATIVE_PROFILE_ALIASES.get(profile_name.upper(), profile_name.upper())
+    if profile_name not in NATIVE_PROFILE_LAYOUTS:
+        return None
+    if native_device_type_supported(profile_name):
+        return profile_name
+    return next((name for name, template in NATIVE_PROFILE_ALIASES.items()
+                 if template == profile_name and native_device_type_supported(name)), None)
+
+
+def native_profile_metadata(profile_name: str) -> dict:
+    """Describe the visible Main/A-D positions for Remote Studio's layout preview."""
+    profile_name = NATIVE_PROFILE_ALIASES.get(profile_name.upper(), profile_name.upper())
+    profile = NATIVE_PROFILE_LAYOUTS[profile_name]
+    positions = {index: name for name, index in TAG.items()}
+
+    def describe(keys):
+        keys = keys() if callable(keys) else keys
+        return [{
+            "index": int(item["keyIndex"]),
+            "position": positions.get(int(item["keyIndex"]), ""),
+            "function": int(item.get("keyFun", 0)),
+            "label": (positions.get(int(item["keyIndex"]), f"Position {item['keyIndex']}")
+                      if not item.get("cmd") else
+                      custom_action_label(custom_action_name(int(item.get("keyFun", 0))))),
+            "actionable": bool(item.get("cmd")),
+        } for item in keys]
+
+    main_keys = describe(profile["pages"][0])
+    subpages = []
+    for raw_index, raw_keys in profile["pages"].items():
+        page_index = int(raw_index)
+        if not page_index:
+            continue
+        link_index = page_index - 1
+        link = next((item for item in main_keys
+                     if item["index"] == link_index and not item["actionable"]), None)
+        subpages.append({
+            "index": page_index,
+            "link_index": link_index if link else None,
+            "link_position": link["position"] if link else "",
+            "keys": describe(raw_keys),
+        })
+    return {
+        "value": profile_name,
+        "pages": [0, *(item["index"] for item in subpages)],
+        "main_positions": sorted({item["index"] for item in main_keys}),
+        "main_keys": main_keys,
+        "subpages": subpages,
+    }
+
 # User-facing building blocks for custom bridge remotes.  The main page uses the physical
 # WoRWS key positions; submenu pages are compact lists whose keyIndex is assigned in display
 # order.  Values are the official keyFun numbers, so the screen keeps native SwitchBot icons
@@ -490,10 +543,40 @@ def custom_action_ha_icon(name: str) -> str:
 
 def custom_native_layout(
     main_buttons: list[str] | dict[str, str], page_buttons: dict[int, list[str]],
+    *, template: str | None = None,
 ) -> dict[int, list[dict]]:
-    """Build a validated editable Main/A/B/C/D page map for the fake bridge."""
+    """Build an editable layout using the selected stock screen profile."""
+    # Older callers built the generic four-page layout without naming a profile. Keep that
+    # behaviour for them; Remote Studio always passes a concrete profile and gets strict checks.
+    legacy_layout = template is None
+    template = template or "FAN"
+    template = NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
+    profile = NATIVE_PROFILE_LAYOUTS.get(template)
+    if profile is None or native_profile_device_type(template) is None:
+        raise ValueError(f"unsupported native screen profile {template!r}")
     normalized_main = normalize_main_buttons(main_buttons)
     enabled_pages = {int(page) for page, actions in page_buttons.items() if actions}
+    profile_main = profile["pages"][0]
+    profile_main = profile_main() if callable(profile_main) else profile_main
+    profile_positions = {name for name, index in TAG.items()
+                         if any(int(item.get("keyIndex", -1)) == index for item in profile_main)}
+    page_positions = {"ABCD"[page - 1] for page in enabled_pages if 1 <= page <= 4}
+    hidden_positions = sorted(set(normalized_main) - profile_positions - page_positions)
+    if hidden_positions and not legacy_layout:
+        raise ValueError(
+            f"{template} has no screen position for {', '.join(hidden_positions)}; "
+            "the saved buttons are still intact."
+        )
+    page_links = {}
+    for page_index in enabled_pages:
+        if page_index not in profile["pages"]:
+            raise ValueError(f"{template} does not support page {page_index}")
+        key_index = page_index - 1
+        link = next((item for item in profile_main
+                     if int(item.get("keyIndex", -1)) == key_index and not item.get("cmd")), None)
+        if link is None:
+            raise ValueError(f"{template} has no screen key for page {page_index}")
+        page_links[page_index] = int(link.get("keyFun", 0))
     pages: dict[int, list[dict]] = {
         0: [
             _button(TAG[position], custom_action_function(action))
@@ -505,8 +588,6 @@ def custom_native_layout(
         ]
     }
     for page_index in sorted(page_buttons):
-        if page_index not in CUSTOM_PAGE_LINK_FUNCTIONS:
-            raise ValueError("custom page must be A, B, C or D")
         actions = page_buttons[page_index]
         if not actions:
             continue
@@ -514,9 +595,8 @@ def custom_native_layout(
             raise ValueError("a custom page can contain at most 18 buttons")
         for action in actions:
             custom_action_function(action)
-        # A-D without a command are native submenu links.  Their official Fan-family keyFun
-        # values are the only captured layout that exposes all four subpages at once.
-        pages[0].append(_button(page_index - 1, CUSTOM_PAGE_LINK_FUNCTIONS[page_index], actionable=False))
+        # Keep the profile's own key function for the on-screen submenu link.
+        pages[0].append(_button(page_index - 1, page_links[page_index], actionable=False))
         pages[page_index] = [
             _button(index, custom_action_function(name))
             for index, name in enumerate(actions)
@@ -725,7 +805,7 @@ def build_create(
 
 def build_hid_edit_page(
     *, remote_index: int, device_type_name: str, device_id: str, name: str,
-    keys: list[dict], page_index: int = 0,
+    keys: list[dict], page_index: int = 0, icon: int = 0,
 ) -> bytes:
     """Official getHidEditKeysCmd records: HID usage or uploaded custom IR name.
 
@@ -758,7 +838,7 @@ def build_hid_edit_page(
         records.append({"keyIndex": index, "keyFun": function, "key_type": key_type, "field32": field})
     return build_create(
         remote_index=remote_index, device_type=device_type, control_type=CTRL_HID,
-        control_mode=0, icon=0, device_id=device_id, name=name,
+        control_mode=0, icon=icon, device_id=device_id, name=name,
         ble_key_type=6, keys=records, page_index=page_index,
     )
 
@@ -1157,19 +1237,19 @@ def build_custom_native_pages(
     event_remote_id: str,
     main_buttons: list[str] | dict[str, str],
     page_buttons: dict[int, list[str]],
+    template: str = "FAN",
 ) -> tuple[tuple[int, bytes], ...]:
-    """Build an editable multi-page native remote.
-
-    FAN is used as the screen template because its official handler exposes all four A-D
-    subpages.  The target is still the same fake bridge MAC/key and every actionable key stores
-    a v3 bridge event rather than a real fan command.
-    """
-    layout = custom_native_layout(main_buttons, page_buttons)
+    """Build editable pages while retaining the selected native screen profile."""
+    template = NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
+    profile = NATIVE_PROFILE_LAYOUTS.get(template)
+    if profile is None:
+        raise ValueError(f"unknown native screen profile {template!r}")
+    layout = custom_native_layout(main_buttons, page_buttons, template=template)
     common = {
         "remote_index": remote_index,
-        "device_type": NATIVE_DEVTYPE["FAN"],
+        "device_type": NATIVE_DEVTYPE[native_profile_device_type(template)],
         "control_type": CTRL_NATIVE,
-        "control_mode": 0,
+        "control_mode": int(profile.get("control_mode", 0)),
         "icon": ICON.get(icon_name.lower(), 1),
         "device_id": device_id,
         "name": name,
@@ -1205,6 +1285,7 @@ def build_custom_native_bind_sequence(
     event_remote_id: str,
     main_buttons: list[str] | dict[str, str],
     page_buttons: dict[int, list[str]],
+    template: str = "FAN",
 ) -> tuple[tuple[str, bytes], ...]:
     """Return provisioning plus all pages for an editable native bridge remote."""
     pages = build_custom_native_pages(
@@ -1215,6 +1296,7 @@ def build_custom_native_bind_sequence(
         event_remote_id=event_remote_id,
         main_buttons=main_buttons,
         page_buttons=page_buttons,
+        template=template,
     )
     return (
         ("set_key", build_set_target_key(key_id, target_key)),

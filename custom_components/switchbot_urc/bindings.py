@@ -1,6 +1,7 @@
 """Home Assistant action mappings for logical WoRWS remotes."""
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 ACTION_NONE = "none"
@@ -11,6 +12,69 @@ ACTION_BRIGHTER = "brighter"
 ACTION_DARKER = "darker"
 ACTION_WARMER = "warmer"
 ACTION_COOLER = "cooler"
+
+
+def _button_identity(value: str) -> tuple[int, int]:
+    try:
+        page, key = value.removeprefix("p").split("_k", 1)
+        page_index, key_index = int(page), int(key)
+    except (AttributeError, ValueError):
+        raise ValueError(f"Invalid button identity {value!r}") from None
+    if not 0 <= page_index <= 4 or not 0 <= key_index <= 18:
+        raise ValueError(f"Invalid button identity {value!r}")
+    return page_index, key_index
+
+
+def plan_button_identity_migrations(
+    binding: dict[str, Any] | None, changes: object, removals: object = (),
+) -> list[dict[str, str]]:
+    """Validate key moves and prevent overwriting actions on the destination keys."""
+    if not isinstance(changes, list):
+        raise ValueError("Button identity migrations must be a list")
+    result = []
+    sources, destinations = set(), set()
+    for item in changes:
+        if not isinstance(item, dict):
+            raise ValueError("Each button identity migration must be an object")
+        source, destination = str(item.get("from", "")), str(item.get("to", ""))
+        _button_identity(source)
+        _button_identity(destination)
+        if source == destination or source in sources or destination in destinations:
+            raise ValueError("Button identity migrations must have unique source and destination keys")
+        sources.add(source)
+        destinations.add(destination)
+        result.append({"from": source, "to": destination})
+    actions = binding.get("button_actions", {}) if binding else {}
+    if not isinstance(removals, (list, tuple, set)):
+        raise ValueError("Removed button identities must be a list")
+    removed = {str(value) for value in removals}
+    for identity in removed:
+        _button_identity(identity)
+    if isinstance(actions, dict) and any(
+        destination in actions and destination not in sources and destination not in removed
+        for destination in destinations
+    ):
+        raise ValueError("A moved button would overwrite Home Assistant actions already saved for its destination")
+    return result
+
+
+def migrate_button_action_identities(
+    binding: dict[str, Any], migrations: list[dict[str, str]], removals: object = (),
+) -> dict[str, Any]:
+    """Move per-button actions with their physical button when the screen position changes."""
+    result = deepcopy(binding)
+    actions = result.get("button_actions")
+    if not isinstance(actions, dict):
+        return result
+    for identity in removals:
+        actions.pop(identity, None)
+    moved = {item["to"]: actions[item["from"]]
+             for item in migrations if item["from"] in actions}
+    for item in migrations:
+        if item["from"] in actions:
+            actions.pop(item["from"])
+    actions.update(moved)
+    return result
 
 # Native WoStrip/WoFloorLamp colour functions use the same RGB payloads as the
 # official app profile. Keep the preset action names readable in Studio while

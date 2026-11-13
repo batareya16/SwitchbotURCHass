@@ -19,6 +19,7 @@ from homeassistant.components import bluetooth, websocket_api
 
 from . import commands as c
 from . import install
+from . import physical_layout
 from .catalog import DEFAULT_BUTTONS, DEVICE_TYPES, ICONS, buttons_for
 from .client import UrcResponseDecodeError
 from .cloud import CloudError
@@ -80,6 +81,130 @@ def _find(inventory: list[dict[str, Any]], remote_id: str) -> dict[str, Any]:
         if item.get("key") in (remote_id, f"managed:{remote_id}"):
             return item
     raise ValueError("That remote is not in the device table; refresh first")
+
+
+async def _recreate_physical_layout(
+    hass, entry, client, item: dict[str, Any], managed: dict[str, Any],
+    name: str, icon_name: str | None, connection, request_id: int, *, kind: str,
+) -> None:
+    """Rewrite edited IR/HID key pages in place, retaining the installed remote row."""
+    slot = int(item["index"])
+    stages, pages, draft = physical_layout.compile_recreate(
+        managed,
+        slot=slot,
+        device_type=int(item["device_type_byte"]),
+        control_type=int(item["control_type"]),
+        name=name,
+        icon_name=icon_name,
+    )
+    if draft["kind"] != kind:
+        raise ValueError("The saved physical layout does not match this remote")
+    responses = await client.send_command_sequence(
+        tuple(packet for _stage, packet, _accepted in stages),
+        timeout=45,
+        timeout_retries=0,
+        accepted_codes=tuple(accepted for _stage, _packet, accepted in stages),
+    )
+    for (stage, _packet, accepted), response in zip(stages, responses):
+        if not response or response[0] not in accepted:
+            raise ValueError(
+                f"{stage}: response {response.hex() if response else 'timeout'}"
+            )
+    if len(responses) != len(stages):
+        raise ValueError(f"{stages[len(responses)][0]}: no acknowledgement")
+
+    raw = await client.query(0x07)
+    table = c.parse_added_devices(raw) if raw else []
+    expected_id = item["device_id_bytes"]
+    if not any(row[0] == slot and row[1] == int(item["device_type_byte"])
+               and row[2] == int(item["control_type"]) and row[3] == expected_id
+               for row in table):
+        raise ValueError("The remote row changed after rewriting its physical buttons")
+
+    remotes = deepcopy(list(entry.options.get("remotes", [])))
+    identity = str(managed.get("remote_id") or managed.get("device_id") or "")
+    updated = False
+    for remote in remotes:
+        remote_identity = str(remote.get("remote_id") or remote.get("device_id") or "")
+        if remote_identity != identity:
+            continue
+        remote.update({
+            "index": slot,
+            "name": name,
+            "physical_layout": draft,
+            "physical_packets": [packet.hex() for packet in pages],
+            "icon_code": pages[0][11] if pages and len(pages[0]) > 11 else 0,
+        })
+        if icon_name is not None:
+            remote["icon"] = icon_name
+        updated = True
+        break
+    if not updated:
+        raise ValueError("The remote was rewritten but its local record could not be found")
+    _save_remotes(hass, entry, remotes)
+    connection.send_result(request_id, {"slot": slot, "kind": kind})
+
+
+async def _recreate_physical_layout(
+    hass, entry, client, item: dict[str, Any], managed: dict[str, Any],
+    name: str, icon_name: str | None, connection, request_id: int, *, kind: str,
+) -> None:
+    """Rewrite edited IR/HID key pages in place, retaining the installed remote row."""
+    slot = int(item["index"])
+    stages, pages, draft = physical_layout.compile_recreate(
+        managed,
+        slot=slot,
+        device_type=int(item["device_type_byte"]),
+        control_type=int(item["control_type"]),
+        name=name,
+        icon_name=icon_name,
+    )
+    if draft["kind"] != kind:
+        raise ValueError("The saved physical layout does not match this remote")
+    responses = await client.send_command_sequence(
+        tuple(packet for _stage, packet, _accepted in stages),
+        timeout=45,
+        timeout_retries=0,
+        accepted_codes=tuple(accepted for _stage, _packet, accepted in stages),
+    )
+    for (stage, _packet, accepted), response in zip(stages, responses):
+        if not response or response[0] not in accepted:
+            raise ValueError(
+                f"{stage}: response {response.hex() if response else 'timeout'}"
+            )
+    if len(responses) != len(stages):
+        raise ValueError(f"{stages[len(responses)][0]}: no acknowledgement")
+
+    raw = await client.query(0x07)
+    table = c.parse_added_devices(raw) if raw else []
+    expected_id = item["device_id_bytes"]
+    if not any(row[0] == slot and row[1] == int(item["device_type_byte"])
+               and row[2] == int(item["control_type"]) and row[3] == expected_id
+               for row in table):
+        raise ValueError("The remote row changed after rewriting its physical buttons")
+
+    remotes = deepcopy(list(entry.options.get("remotes", [])))
+    identity = str(managed.get("remote_id") or managed.get("device_id") or "")
+    updated = False
+    for remote in remotes:
+        remote_identity = str(remote.get("remote_id") or remote.get("device_id") or "")
+        if remote_identity != identity:
+            continue
+        remote.update({
+            "index": slot,
+            "name": name,
+            "physical_layout": draft,
+            "physical_packets": [packet.hex() for packet in pages],
+            "icon_code": pages[0][11] if pages and len(pages[0]) > 11 else 0,
+        })
+        if icon_name is not None:
+            remote["icon"] = icon_name
+        updated = True
+        break
+    if not updated:
+        raise ValueError("The remote was rewritten but its local record could not be found")
+    _save_remotes(hass, entry, remotes)
+    connection.send_result(request_id, {"slot": slot, "kind": kind})
 
 
 @websocket_api.require_admin
@@ -202,16 +327,13 @@ async def ws_remote_recreate(hass, connection, msg):
         # its own that would have to delete and rebuild anyway.
         icon = str(msg.get("icon") or managed.get("icon") or "")
 
-        # Physical Studio can replace individual IR/HID key records and upload named IR
-        # codes. A catalogue reinstall cannot reconstruct those edits yet. Refuse before
-        # deleting the tile rather than silently replacing its buttons with defaults.
-        if item["control_type"] in (c.CTRL_IR, c.CTRL_HID) and managed.get("physical_layout"):
-            raise ValueError(
-                "This remote has a saved physical button layout. Changing its icon here would "
-                "replace those buttons, so the remote was left unchanged."
-            )
-
         if item["control_type"] == c.CTRL_IR:
+            if managed.get("physical_layout"):
+                await _recreate_physical_layout(
+                    hass, entry, client, item, managed, name,
+                    msg.get("icon"), connection, msg["id"], kind="ir",
+                )
+                return
             profile_key = managed.get("profile")
             if profile_key and profile_key in PROFILES:
                 profile = PROFILES[profile_key]
@@ -252,6 +374,12 @@ async def ws_remote_recreate(hass, connection, msg):
         if item["control_type"] == c.CTRL_HID:
             if not managed:
                 raise ValueError("No stored button list for this HID remote")
+            if managed.get("physical_layout"):
+                await _recreate_physical_layout(
+                    hass, entry, client, item, managed, name,
+                    msg.get("icon"), connection, msg["id"], kind="hid",
+                )
+                return
             error = await install.delete_and_verify(
                 client,
                 c.build_delete(
