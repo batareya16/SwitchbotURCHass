@@ -746,6 +746,8 @@ class SwitchBotUrcPanel extends HTMLElement {
               `Change what "${remote.name}" is called on the remote's screen`) : ""}
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
+            ${remote?.can_test_washer_artwork ? `<button class="secondary" id="washerArtworkTest"
+              title="Rewrite only the Main page with washing-machine artwork; the original page is saved for restore">${remote.washer_artwork_test_active ? "Restore artwork" : "Test washer artwork"}</button>` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
               "Bind this remote to a different Bluetooth address") : ""}
             ${remote ? this._action("deleteRemote", "🗑", "Delete",
@@ -1956,7 +1958,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _wireEvents() {
     const root = this.shadowRoot;
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote", "renameRemote",
-                      "recreateRemote", "moveRemote", "deleteRemote"]) {
+                      "recreateRemote", "washerArtworkTest", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
       if (el) el.disabled = this._physicalBusy;
     }
@@ -2046,6 +2048,22 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._notify(`Rewritten into slot ${result.slot}`);
         this._physical = null;
         this._physicalFor = null;
+        this._error = null;
+      } catch (error) { this._error = error?.message || String(error); }
+      finally { this._physicalBusy = false; await this._load(); }
+    });
+
+    root.getElementById("washerArtworkTest")?.addEventListener("click", async () => {
+      const remote = this._remote();
+      if (!remote) return;
+      const restore = !!remote.washer_artwork_test_active;
+      if (!restore && !confirm(`Show washing-machine artwork on "${remote.name}"? The original Main page is saved, and the remote slot and buttons are retained.`)) return;
+      this._physicalBusy = true;
+      this._render();
+      try {
+        await this._hass.callWS({ type: `${DOMAIN}/studio/remote/washer_artwork_test`,
+          entry_id: this._entryId, remote_id: this._remoteId, restore });
+        this._notify(restore ? "Original artwork restored" : "Washing-machine artwork sent to the Main page");
         this._error = null;
       } catch (error) { this._error = error?.message || String(error); }
       finally { this._physicalBusy = false; await this._load(); }

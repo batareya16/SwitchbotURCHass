@@ -521,6 +521,7 @@ async def ws_remote_recreate(hass, connection, msg):
                         # would be dropped while the tile stayed on the screen.
                         remote["physical_device_id"] = device_id
                         remote["device_id"] = device_id
+                    remote.pop("washer_artwork_backup_packet", None)
             _save_remotes(hass, entry, remotes)
             warning = ""
             if moved_from:
@@ -538,6 +539,133 @@ async def ws_remote_recreate(hass, connection, msg):
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio recreate failed")
         connection.send_error(msg["id"], "recreate_failed", str(err))
+
+
+def _washer_artwork_source_packet(remote: dict[str, Any], slot: int) -> bytes:
+    """Use saved bytes, or rebuild only a known stock native page exactly."""
+    device_type_name = str(remote.get("device_type", "")).upper()
+    if device_type_name not in c.NATIVE_DEVTYPE:
+        raise ValueError("The selected remote is not a supported native profile")
+
+    saved_packets = remote.get("physical_packets") or []
+    if saved_packets:
+        packets = [bytes.fromhex(value) for value in saved_packets]
+    else:
+        stock_layout = c.editable_layout_from_native_profile(device_type_name)
+        if remote.get("custom_layout") != stock_layout:
+            raise ValueError(
+                "The original page packet is not cached for this custom layout; refusing to "
+                "rebuild it from an incomplete copy"
+            )
+        packets = list(c.build_native_pages(
+            device_type_name=device_type_name,
+            remote_index=slot,
+            name=str(remote.get("name", "Remote")),
+            device_id=str(remote["device_id"]),
+            icon_name=str(remote.get("icon", "light")),
+            event_remote_id=str(remote.get("remote_id") or ""),
+        ))
+
+    page = next((packet for packet in packets
+                 if len(packet) > 88 and packet[:3] == b"\x0f\x62\x06" and packet[88] == 0), None)
+    if page is None:
+        raise ValueError("A complete Main-page packet is not available for this remote")
+
+    _validate_native_test_packet(remote, slot, page)
+    return page
+
+
+def _validate_native_test_packet(remote: dict[str, Any], slot: int, packet: bytes) -> None:
+    device_type_name = str(remote.get("device_type", "")).upper()
+    expected_type = c.device_type_bytes(c.NATIVE_DEVTYPE[device_type_name])
+    # Rewriting the current mode to itself validates the packet framing and CRC without changes.
+    body = packet[7:]
+    mode_offset = 1 + len(expected_type) + 1
+    if (len(packet) <= 7 + mode_offset or packet[88] != 0
+            or c.rewrite_native_page_control_mode(packet, body[mode_offset]) != packet):
+        raise ValueError("The saved Main-page packet is malformed or has an invalid CRC")
+    type_length = len(expected_type)
+    control_offset = 1 + type_length
+    id_offset = control_offset + 3
+    if (body[0] != slot or body[1:1 + type_length] != expected_type
+            or body[control_offset] != c.CTRL_NATIVE
+            or body[id_offset:id_offset + 11] != c.id_to_bytes(str(remote["device_id"]))):
+        raise ValueError("The saved Main-page packet does not match this native remote")
+
+
+def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | None) -> None:
+    options = deepcopy(dict(entry.options))
+    remote = next((item for item in options.get("remotes", [])
+                   if str(item.get("remote_id") or item.get("device_id") or "") == remote_id), None)
+    if remote is None:
+        raise ValueError("Remote not found")
+    if packet is None:
+        remote.pop("washer_artwork_backup_packet", None)
+    else:
+        remote["washer_artwork_backup_packet"] = packet.hex()
+    hass.config_entries.async_update_entry(entry, options=options)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/remote/washer_artwork_test",
+    vol.Required("entry_id"): str,
+    vol.Required("remote_id"): str,
+    vol.Required("restore"): bool,
+})
+@websocket_api.async_response
+async def ws_washer_artwork_test(hass, connection, msg):
+    """Temporarily redraw one native Main page with the V48 washing-machine artwork."""
+    try:
+        entry = _entry(hass, msg)
+        remote = next((item for item in entry.options.get("remotes", [])
+                       if str(item.get("remote_id") or item.get("device_id") or "")
+                       == msg["remote_id"]), None)
+        if remote is None:
+            raise ValueError("Remote not found")
+        client = _client(hass, entry)
+        raw = await client.query(7)
+        table = c.parse_added_devices(raw)
+        expected_id = c.id_to_bytes(str(remote["device_id"]))
+        expected_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
+        slot = remote.get("index")
+        matches = [row for row in table if row[0] == slot and row[2] == c.CTRL_NATIVE
+                   and row[1] == expected_type and row[3] == expected_id]
+        if len(matches) != 1:
+            raise ValueError("The native remote slot or device ID no longer matches the saved record")
+        backup_hex = remote.get("washer_artwork_backup_packet")
+        if msg["restore"]:
+            if not backup_hex:
+                raise ValueError("There is no saved artwork test to restore")
+            packet = bytes.fromhex(backup_hex)
+            _validate_native_test_packet(remote, int(slot), packet)
+            original_packet = None
+        else:
+            if backup_hex:
+                raise ValueError("The washing-machine artwork test is already active; restore it first")
+            original_packet = _washer_artwork_source_packet(remote, int(slot))
+            packet = c.rewrite_native_page_control_mode(original_packet, 0x07)
+            # Keep a recovery packet before the write in case the device applies it but loses its ACK.
+            _persist_artwork_test_packet(hass, entry, msg["remote_id"], original_packet)
+
+        response = await client.send_command(packet, timeout=30.0)
+        error = install.resp_error(response)
+        if error:
+            raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
+
+        table_after = c.parse_added_devices(await client.query(7))
+        expected_id = c.id_to_bytes(str(remote["device_id"]))
+        expected_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
+        slot = remote.get("index")
+        if not any(row[0] == slot and row[1] == expected_type and row[2] == c.CTRL_NATIVE
+                   and row[3] == expected_id for row in table_after):
+            raise ValueError("The page was acknowledged, but the native remote row changed")
+        if msg["restore"]:
+            _persist_artwork_test_packet(hass, entry, msg["remote_id"], None)
+        connection.send_result(msg["id"], {"restored": msg["restore"]})
+    except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
+        _LOGGER.exception("Remote Studio artwork test failed")
+        connection.send_error(msg["id"], "artwork_test_failed", str(err))
 
 
 @websocket_api.require_admin
@@ -789,6 +917,7 @@ async def ws_bindings_cleanup(hass, connection, msg):
 def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_rename)
     websocket_api.async_register_command(hass, ws_remote_recreate)
+    websocket_api.async_register_command(hass, ws_washer_artwork_test)
     websocket_api.async_register_command(hass, ws_pair_host)
     websocket_api.async_register_command(hass, ws_create_hid)
     websocket_api.async_register_command(hass, ws_diagnostics)

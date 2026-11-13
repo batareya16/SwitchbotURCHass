@@ -412,7 +412,8 @@ async def ws_physical_apply(hass, connection, msg):
                 pages = [packet for _, packet in bind if packet[:3] == b"\x0f\x62\x06"]
                 stored_changes = {"device_type": c.native_profile_device_type(layout["template"]),
                                   "custom_layout": layout,
-                                  "index": new_slot}
+                                  "index": new_slot,
+                                  "washer_artwork_backup_packet": None}
             else:
                 # Deleting keys leaves the physical remote and its existing HID bond in place.
                 delete = bytes([15, 98, 4, 1, slot]) + c.device_type_bytes(device_type) + bytes([control_type]) + expected_id + b"\xff\xff"

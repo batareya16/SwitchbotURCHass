@@ -803,6 +803,29 @@ def build_create(
     return bytes([0x0F, 0x62, 0x06]) + length + crc + bytes(v)
 
 
+def rewrite_native_page_control_mode(packet: bytes, control_mode: int) -> bytes:
+    """Change only the screen profile byte in a valid native 0F6206 page packet."""
+    if not 0 <= control_mode <= 0xFF:
+        raise ValueError("control mode must fit in one byte")
+    if len(packet) < 90 or packet[:3] != b"\x0f\x62\x06":
+        raise ValueError("expected a complete 0F6206 page packet")
+    body = bytearray(packet[7:])
+    declared_length = int.from_bytes(packet[3:5], "big")
+    expected_crc = int.from_bytes(packet[5:7], "big")
+    if declared_length != len(body) or crc16_modbus(body) != expected_crc:
+        raise ValueError("the saved 0F6206 page packet has an invalid length or CRC")
+    if body[1] == 0 and len(body) >= 5:
+        device_type_length = 4
+    else:
+        device_type_length = 1
+    mode_offset = 1 + device_type_length + 1
+    if len(body) <= mode_offset:
+        raise ValueError("the saved page packet has no control mode field")
+    body[mode_offset] = control_mode
+    crc = crc16_modbus(body).to_bytes(2, "big")
+    return packet[:5] + crc + bytes(body)
+
+
 def build_hid_edit_page(
     *, remote_index: int, device_type_name: str, device_id: str, name: str,
     keys: list[dict], page_index: int = 0, icon: int = 0,
