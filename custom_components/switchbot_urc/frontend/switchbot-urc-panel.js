@@ -1,4 +1,27 @@
 const DOMAIN = "switchbot_urc";
+const APP_ICON_ASSETS = {
+  light: "light", desklamp: "desklamp", floorlamp: "floorlamp",
+  ceilinglamp: "ceilinglamp", strip: "lightstrip", switch: "switch",
+  bathtub: "bathtub", coffeemachine: "coffeemachine", socket: "socket",
+  tv: "television", boiler: "boiler", heater: "heater", cooler: "cooler",
+  washer: "washer", fridge: "fridge", cookware: "cookware",
+  pool: "pool", ventilator: "ventilator",
+};
+const APP_ICON_LABELS = {
+  light: "Light", desklamp: "Desk lamp", floorlamp: "Floor lamp",
+  ceilinglamp: "Ceiling light", strip: "Light strip", switch: "Switch",
+  bathtub: "Bathtub", coffeemachine: "Coffee machine", socket: "Outlet",
+  tv: "TV", boiler: "Boiler", heater: "Heater", cooler: "Cooling",
+  washer: "Washing machine", fridge: "Fridge", cookware: "Cooker",
+  pool: "Pool", ventilator: "Fan",
+};
+const HID_PROFILE_ARTWORK = {
+  APPLE_TV: "1d", FIRE_TV: "1e", UNIVERSAL_BLE: "20", GOOGLE_TV: "1f",
+};
+const IR_PROFILE_ARTWORK = {
+  1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
+  8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
+};
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -42,6 +65,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     // not yet written.
     this._iconPickerFor = null;
     this._iconDraft = null;
+    this._tileNameDraft = null;
     this._physicalStatus = "";
     this._physicalBusy = false;
   }
@@ -370,6 +394,11 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _selectButton(button, rerender = true) {
     this._buttonId = button?.button_id || null;
+    if (button && rerender) {
+      this._iconPickerFor = null;
+      this._iconDraft = null;
+      this._tileNameDraft = null;
+    }
     // A position with no function yet becomes one as soon as it is picked, using the meaning the
     // position already carries. No dialogue: the choice was made by clicking it.
     const draft = button ? this._draftKey(button) : null;
@@ -462,19 +491,36 @@ class SwitchBotUrcPanel extends HTMLElement {
     return button.label.replace(/^Button /i, "").slice(0, 3);
   }
 
-  // The icons the remote itself can draw, as single paths on a 20x20 grid.
-  static ICON_PATHS = {
-    light: "M10 2a5.5 5.5 0 0 0-3.3 9.9c.6.5.9 1.1.9 1.8V14h4.8v-.3c0-.7.3-1.3.9-1.8A5.5 5.5 0 0 0 10 2ZM7.7 16.5h4.6M8.5 18.5h3",
-    desklamp: "M4 18h12M10 18v-6l3-4M6.5 3.5l7 1.5-1 5.5-7-1.5 1-5.5Z",
-    floorlamp: "M10 17V10M6 10l1.5-7h5L14 10H6ZM6 18h8",
-    ceilinglamp: "M10 2v4M5.5 10l2-4h5l2 4h-9ZM6.5 10v2a3.5 3.5 0 0 0 7 0v-2",
-    strip: "M3 7h14v5H3V7ZM6 12v2M10 12v2M14 12v2",
-    switch: "M4 5h12v10H4V5ZM7 10h6",
-    tv: "M3 4.5h14v10H3v-10ZM10 14.5V18M7 18h6",
-  };
+  _iconImage(name) {
+    const asset = APP_ICON_ASSETS[name] || APP_ICON_ASSETS.light;
+    return `<img class="ic-img" src="/switchbot_urc_static/app-icons/${asset}.webp"
+      alt="" aria-hidden="true">`;
+  }
 
-  _iconPath(name) {
-    return this.constructor.ICON_PATHS[name] || this.constructor.ICON_PATHS.switch;
+  _nativeArtworkSrc(profile, icon) {
+    if (profile?.artwork_id == null) return "";
+    const code = Object.keys(APP_ICON_ASSETS).indexOf(icon) + 1;
+    if (!code) return "";
+    // The ordinary V48 selector uses the first descriptor set for code 1 and the
+    // alternate set for all other codes. The roller-shade path is not decoded.
+    if (profile.value === "ROLLER_SHADE" || (profile.value === "BLIND_TILT" && (code === 2 || code === 3))) return "";
+    const suffix = code === 1 ? "" : "-alt";
+    return `/switchbot_urc_static/artwork/profile-${Number(profile.artwork_id).toString(16).padStart(2, "0")}${suffix}.png`;
+  }
+
+  _hidArtworkSrc(deviceType) {
+    const id = HID_PROFILE_ARTWORK[deviceType];
+    return id ? `/switchbot_urc_static/artwork/profile-${id}.png` : "";
+  }
+
+  _irArtworkSrc(remote) {
+    const type = /^IR_(\d+)$/.exec(remote.device_type || "");
+    const id = type ? IR_PROFILE_ARTWORK[Number(type[1])] : null;
+    if (!id) return "";
+    const code = remote.icon_code == null
+      ? Object.keys(APP_ICON_ASSETS).indexOf(remote.icon) + 1 : Number(remote.icon_code);
+    if (!Number.isInteger(code) || code < 0 || code > 255) return "";
+    return `/switchbot_urc_static/artwork/profile-${id}${code === 1 ? "" : "-alt"}.png`;
   }
 
   // Each key the WoRWS actually has, by its firmware position name.
@@ -501,13 +547,22 @@ class SwitchBotUrcPanel extends HTMLElement {
     const remote = this._remote();
     if (!remote) return;
     const input = this.shadowRoot.querySelector("[data-rename-input]");
-    const name = (input?.value || "").trim();
+    const name = (this._tileNameDraft ?? input?.value ?? "").trim();
     const icon = this._iconDraft ?? remote.icon;
     const renamed = name && name !== remote.name;
     const reiconed = icon !== remote.icon;
-    this._iconPickerFor = null;
-    this._iconDraft = null;
-    if (!renamed && !reiconed) { this._render(); return; }
+    if (this._physicalChanges()) {
+      this._error = "Save the screen layout before changing the name or icon.";
+      this._render();
+      return;
+    }
+    if (!renamed && !reiconed) {
+      this._iconPickerFor = null;
+      this._iconDraft = null;
+      this._tileNameDraft = null;
+      this._render();
+      return;
+    }
     if (!name) {
       this._error = "Give the remote a name.";
       this._render();
@@ -524,6 +579,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._notify(result?.warning
         || (reiconed && renamed ? `Saved as "${name}" with the ${icon} icon`
           : reiconed ? `Icon changed to ${icon}` : `Renamed to ${name}`));
+      this._iconPickerFor = null;
+      this._iconDraft = null;
+      this._tileNameDraft = null;
       this._physical = null;
       this._physicalFor = null;
       this._error = null;
@@ -534,8 +592,6 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderScreen(page) {
     // Real HTML inside the SVG screen, so the list scrolls like the device's own does instead
     // of silently cutting off whatever does not fit.
-    const icon = (name) => `<svg viewBox="0 0 20 20" class="ic"><path d="${
-      this._iconPath(name)}"/></svg>`;
     if ((page?.index ?? 0) !== 0) {
       const keys = page?.buttons || [];
       if (!keys.length) {
@@ -556,40 +612,87 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const remotes = this._entry()?.remotes || [];
     if (!remotes.length) return `<p class="scr-empty">No remotes yet</p>`;
-    const choices = this._entry()?.icons || [];
     return remotes.map((item) => {
       const current = item.remote_id === this._remoteId;
-      if (current && this._iconPickerFor === item.remote_id) {
-        // The row becomes the picker: the icons are already drawn here, so choosing one is
-        // seeing the result rather than reading its name in a dialogue.
-        // Both of the things drawn on the tile, edited where they are drawn. The cancel sits
-        // on the hint line: all seven icons only fit across the screen when nothing shares
-        // their row.
-        const pending = this._iconDraft ?? item.icon;
-        return `<div class="scr-row on picking">
-          <div class="ic-choices">${choices.map((name) => `
-            <button class="ic-choice${name === pending ? " on" : ""}"
-              data-pick-icon="${escapeHtml(name)}" title="${escapeHtml(name)}">
-              <svg viewBox="0 0 20 20" class="ic"><path d="${this._iconPath(name)}"/></svg>
-            </button>`).join("")}</div>
-        </div>
-        <div class="scr-row on naming">
-          <input class="scr-name" data-rename-input="1" value="${escapeHtml(item.name)}"
-            maxlength="30" spellcheck="false" aria-label="Name on the remote's screen">
-          <button class="k ic-btn" data-tile-save="1" title="Write the name and icon to the remote">✓</button>
-        </div>
-        <p class="scr-hint">The name and icon are what the remote draws on this row.
-          <button class="scr-cancel" data-icon-cancel="1">Cancel</button></p>`;
-      }
+      const profile = item.can_test_native_icon
+        ? this._nativeProfiles.find((candidate) => candidate.value === item.device_type) : null;
+      const artwork = item.can_test_native_icon
+        ? this._nativeArtworkSrc(profile, item.icon)
+        : this._hidArtworkSrc(item.device_type) || this._irArtworkSrc(item);
       return `<div class="scr-row${current ? " on" : ""}">
         <div class="k pick-remote" role="button" tabindex="0"
           data-remote="${escapeHtml(item.remote_id)}"
           title="${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}">
-          ${icon(item.icon)}<span class="nm">${escapeHtml(item.name)}</span></div>
+          ${artwork ? `<img class="ic-img" src="${artwork}" alt="">` : item.can_test_native_icon ||
+            String(item.device_type).startsWith("IR_")
+            ? `<span class="ic-fallback" aria-hidden="true">▣</span>` : this._iconImage(item.icon)}<span class="nm">${escapeHtml(item.name)}</span></div>
         ${current ? `<button class="k ic-btn" data-icon-for="${escapeHtml(item.remote_id)}"
-          title="Change this remote's icon">✎</button>` : ""}
+          title="Edit this remote's name and appearance">✎</button>` : ""}
       </div>`;
     }).join("");
+  }
+
+  _renderAppearance(remote) {
+    const isNative = !!remote.can_test_native_icon;
+    const native = this._physical?.kind === "native";
+    const isHid = remote.device_type in HID_PROFILE_ARTWORK;
+    const isIr = String(remote.device_type).startsWith("IR_");
+    const firmwareArtwork = isNative || isHid || isIr;
+    const profile = native
+      ? this._nativeProfiles.find((item) => item.value === this._physical.template) : null;
+    const editing = this._iconPickerFor === remote.remote_id;
+    const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
+    const iconCode = Object.keys(APP_ICON_ASSETS).indexOf(pickedIcon) + 1;
+    const choices = this._entry()?.icons || [];
+    const artwork = native ? this._nativeArtworkSrc(profile, remote.icon)
+      : this._hidArtworkSrc(remote.device_type) || this._irArtworkSrc(remote);
+    return `<section class="appearance">
+      <div class="appearance-head"><div><b>Appearance</b><span>How this remote is shown and arranged</span></div></div>
+      <div class="appearance-grid">
+        ${native || isHid || isIr ? `<div class="appearance-part">
+          <div class="artwork-preview">${artwork ? `<img src="${artwork}" alt="Firmware illustration for ${escapeHtml(native ? profile?.title : remote.device_type)}">` : "—"}</div>
+          <div class="appearance-part-body">
+            ${native ? `<label>Screen layout<select data-native-profile ${this._physicalBusy ? "disabled" : ""}>${
+              this._nativeProfiles.map((item) => `<option value="${escapeHtml(item.value)}" ${
+                item.value === this._physical.template ? "selected" : ""}>${escapeHtml(item.title || item.value)}</option>`).join("")
+            }</select></label>
+            <p>Sets the built-in illustration, button positions and available pages. The preview uses this remote's saved artwork variant. Check the result on the remote after saving.</p>
+            ${this._physicalChanges() ? `<div class="appearance-profile-save"><span class="appearance-draft">Layout change pending</span>
+              <button class="primary compact" data-physical-apply ${this._physicalBusy ? "disabled" : ""}>Save screen layout</button></div>` : ""}`
+              : isHid ? `<b>HID screen</b><p>This illustration is built into the selected HID type. Changing the catalog icon code does not change it.</p>`
+                : `<b>IR screen</b><p>${artwork ? "The IR type and saved icon variant select this built-in illustration." : "No decoded firmware illustration is available for this IR type."}</p>`}
+          </div>
+        </div>` : isNative ? `<p class="appearance-note">Loading the screen layout…</p>` : ""}
+        ${firmwareArtwork ? "" : `<div class="appearance-part">
+          <div class="app-icon-preview">${this._iconImage(pickedIcon)}</div>
+          <div class="appearance-part-body"><b>Icon preview</b>
+            <p>${escapeHtml(APP_ICON_LABELS[pickedIcon] || pickedIcon)} · preview from the SwitchBot app.</p>
+          </div>
+        </div>`}
+      </div>
+      ${editing ? `<div class="appearance-editor">
+        <label>Name on the remote<input data-rename-input="1" maxlength="30" spellcheck="false"
+          value="${escapeHtml(this._tileNameDraft ?? remote.name)}"></label>
+        ${firmwareArtwork ? "" : `<span class="appearance-field-label">Choose an icon</span>
+        <div class="appearance-icon-grid">${choices.map((name) => `<button
+          class="appearance-icon-choice${name === pickedIcon ? " selected" : ""}"
+          data-pick-icon="${escapeHtml(name)}" type="button" aria-label="${escapeHtml(APP_ICON_LABELS[name] || name)}"
+          aria-pressed="${name === pickedIcon}">${this._iconImage(name)}<span>${escapeHtml(APP_ICON_LABELS[name] || name)}</span></button>`).join("")}</div>`}
+        ${isNative ? `<p class="appearance-note">The screen layout chooses the firmware artwork. This remote keeps its existing artwork variant.</p>`
+          : isHid ? `<p class="appearance-note">This remote keeps its saved icon code.</p>`
+          : isIr ? `<p class="appearance-note">This remote keeps its saved icon code. The app's 18 icon names are not 18 distinct firmware illustrations.</p>`
+          : `<p class="appearance-note">These previews come from the SwitchBot app. Distinct physical artwork for every catalog icon is not confirmed.</p>`}
+        ${this._physicalChanges() ? `<p class="appearance-note">Save the screen layout first, then save the name${firmwareArtwork ? "" : " and icon"}.</p>` : ""}
+        <div class="appearance-actions"><button class="primary" data-tile-save="1" ${this._physicalBusy || this._physicalChanges() ? "disabled" : ""}>${firmwareArtwork ? "Save name" : "Save name and icon"}</button>
+          <button class="secondary compact" data-icon-cancel="1">Cancel</button></div>
+      </div>` : ""}
+      ${native && profile ? `<details class="appearance-details"><summary>Technical details</summary>
+        <span>Device type: ${escapeHtml(remote.device_type)}</span>
+        <span>Control mode: 0x${Number(profile.control_mode || 0).toString(16).padStart(2, "0")}</span>
+        <span>Catalog icon code: ${iconCode > 0 ? `0x${iconCode.toString(16).padStart(2, "0")}` : "unknown"}</span>
+      </details>` : ""}
+      ${native ? this._renderNativeProfileWarnings() : ""}
+    </section>`;
   }
 
   _renderFace(page) {
@@ -625,8 +728,9 @@ class SwitchBotUrcPanel extends HTMLElement {
         <rect x="35" y="20" width="230" height="640" rx="45" fill="url(#body)" class="shell"/>
         <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V280 H35 Z" class="glass"/>
         <path d="M48 58 C50 43 63 32 80 32 H220 C237 32 250 43 252 58" class="glass-edge"/>
-        <foreignObject x="35" y="65" width="230" height="197" clip-path="url(#screenClip)">
-          <div xmlns="http://www.w3.org/1999/xhtml" class="scr-scroll">
+        <foreignObject x="35" y="20" width="230" height="242" clip-path="url(#screenClip)">
+          <div xmlns="http://www.w3.org/1999/xhtml" class="scr-scroll" tabindex="0"
+            data-screen-key="${escapeHtml(`${this._entryId}:${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`)}">
             ${this._renderScreen(page)}
           </div>
         </foreignObject>
@@ -706,6 +810,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     const page = this._page();
     const button = this._button();
     const entries = this._entries();
+    const screenKey = `${this._entryId}:${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`;
+    const previousScreen = this.shadowRoot.querySelector(".scr-scroll");
+    const previousScroll = previousScreen?.dataset.screenKey === screenKey
+      ? previousScreen.scrollTop : 0;
     const lights = Object.values(this._hass?.states || {})
       .filter((state) => state.entity_id.startsWith("light."))
       .sort((a, b) => (a.attributes.friendly_name || a.entity_id).localeCompare(b.attributes.friendly_name || b.entity_id));
@@ -742,12 +850,10 @@ class SwitchBotUrcPanel extends HTMLElement {
           <div class="toolbar">
             ${this._action("addRemote", "＋", "Add a remote",
               "Install a new remote on the Universal Remote", "accent")}
-            ${remote ? this._action("renameRemote", "✎", "Rename",
-              `Change what "${remote.name}" is called on the remote's screen`) : ""}
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_test_native_icon ? `<button class="secondary" id="nativeIconVariantTest"
-              title="Switch the Main page to the firmware washing-machine artwork; the original page is kept">Test washing-machine screen</button>
+              title="Switch the Main page to control mode 0x0E; the original page is kept">Test control mode 0x0E</button>
               ${remote.native_icon_test_active ? `<button class="secondary" id="nativeIconVariantRestore"
                 title="Restore the saved original Main page">Restore original</button>` : ""}` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
@@ -758,7 +864,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
           ${this._renderApplyBar()}
-          ${this._renderNativeProfileWarnings()}
+          ${this._iconPickerFor ? "" : this._renderNativeProfileWarnings()}
           ${this._renderCloud()}
           ${this._renderDeviceTable()}
           ${this._renderDiagnostics()}
@@ -787,11 +893,16 @@ class SwitchBotUrcPanel extends HTMLElement {
                 </div>` : ""}
               <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span><span><i class="none"></i>Empty</span>${this._physical ? `<span><i class="draft-new"></i>Added</span><span><i class="draft-moved"></i>Moved</span><span><i class="draft-edited"></i>Edited</span>` : ""}</div>
               </section>
-              <aside class="editor">${button ? this._editor(button, remote) : `<div class="empty small">Choose a button.</div>`}</aside>
+              <aside class="editor">${this._iconPickerFor === remote.remote_id
+                ? this._renderAppearance(remote)
+                : button ? this._editor(button, remote)
+                : `<div class="empty small">Choose a button, or use the pencil on a remote to edit its appearance.</div>`}</aside>
             </div>
           ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
         ` : ""}
       </main>`;
+    const screen = this.shadowRoot.querySelector(".scr-scroll");
+    if (screen) screen.scrollTop = previousScroll;
     this._wireEvents();
     this._wireAddRemote();
     this._wireDiagnostics();
@@ -1038,6 +1149,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     const add = this._add;
     if (!add) return "";
     const sources = this._sources || {};
+    const nativeProfile = (sources.native_options?.screen_profiles || []).find(
+      (item) => item.value === add.deviceType);
+    const nativeArtwork = this._nativeArtworkSrc(nativeProfile, add.icon);
+    const hidArtwork = this._hidArtworkSrc(add.deviceType);
     const cat = this._catalog;
     const kinds = [
       ["native", "Bridge remote", sources.native,
@@ -1046,8 +1161,6 @@ class SwitchBotUrcPanel extends HTMLElement {
        "Search the bundled device database; the codes come from the SwitchBot cloud."],
       ["cloud", "IR saved in your account", (sources.cloud_remotes || []).length > 0,
        "Reinstall a remote you already made in the SwitchBot app."],
-      ["profile", "Bundled profile", (sources.profiles || []).length > 0,
-       "An offline fallback that needs no account."],
       ["hid", "HID remote", !!sources.hid,
        "Presses go out as Bluetooth keys to one paired host — a TV, a box, a computer."],
     ];
@@ -1096,11 +1209,11 @@ class SwitchBotUrcPanel extends HTMLElement {
           (sources.native_options?.screen_profiles || []).map(
             (item) => option(item.value, item.label, item.value === add.deviceType)).join("")
         }</select></label>
-        <p class="small">The profile controls the screen and available pages. The icon below only changes the remote tile.</p>
-        <label>Icon on the screen<select data-add-field="icon">${
-          (sources.native_options?.icons || []).map(
-            (item) => option(item, item, item === add.icon)).join("")
-        }</select></label>
+        <div class="add-native-artwork"><div class="artwork-preview">${nativeArtwork
+          ? `<img src="${nativeArtwork}" alt="Firmware artwork for ${escapeHtml(nativeProfile.title)}">`
+          : "—"}</div><p class="small">${escapeHtml(nativeProfile?.title || "Screen layout")}
+          controls the built-in artwork, button positions and pages. The preview uses the
+          default artwork variant; check the remote after installation.</p></div>
         <label>AES key<input type="text" data-add-field="target_key" spellcheck="false"
           value="${escapeHtml(add.targetKey || "")}"
           placeholder="32 hex characters, the same as the add-on's device_key"></label>
@@ -1109,16 +1222,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${add.kind === "cloud" ? `<label>Remote<select data-add-field="remote_id">${
         (sources.cloud_remotes || []).map((item) => option(item.remote_id, item.name, item.remote_id === add.remoteId)).join("")
       }</select></label>` : ""}
-      ${add.kind === "profile" ? `<label>Profile<select data-add-field="profile_key">${
-        (sources.profiles || []).map((item) => option(item.key, item.label, item.key === add.profileKey)).join("")
-      }</select></label>` : ""}
       ${add.kind === "hid" ? `
         <label>Kind<select data-add-field="device_type">${
           (sources.hid?.device_types || []).map((item) => option(item, item, item === add.deviceType)).join("")
         }</select></label>
-        <label>Icon on the screen<select data-add-field="icon">${
-          (sources.hid?.icons || []).map((item) => option(item, item, item === add.icon)).join("")
-        }</select></label>
+        <div class="add-native-artwork"><div class="artwork-preview">${hidArtwork
+          ? `<img src="${hidArtwork}" alt="Firmware artwork for ${escapeHtml(add.deviceType)}">`
+          : "—"}</div><p class="small">The HID type determines the built-in screen illustration.</p></div>
         <label>Paired host<input type="text" data-add-field="device_id" value="${escapeHtml(add.deviceId || "")}"
           placeholder="AA:BB:CC:DD:EE:FF — the machine that receives the key presses"></label>
         <p class="small">${sources.hid?.host_mac
@@ -1181,7 +1291,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         if (name === "name") add.name = field.value;
         else if (name === "replace") add.replace = field.checked;
         else if (name === "remote_id") add.remoteId = field.value;
-        else if (name === "profile_key") add.profileKey = field.value;
         else if (name === "device_type") add.deviceType = field.value;
         else if (name === "icon") add.icon = field.value;
         else if (name === "device_id") add.deviceId = field.value;
@@ -1191,9 +1300,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       field.addEventListener("change", () => {
         const name = field.dataset.addField;
         if (name === "remote_id") add.remoteId = field.value;
-        if (name === "profile_key") add.profileKey = field.value;
         if (name === "replace") add.replace = field.checked;
-        if (name === "device_type") add.deviceType = field.value;
+        if (name === "device_type") {
+          add.deviceType = field.value;
+          if (add.kind === "native" || add.kind === "hid") this._render();
+        }
         if (name === "icon") add.icon = field.value;
         if (name === "target_id") {
           add.addressMode = field.value === "__new__" ? "new"
@@ -1331,8 +1442,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           replace_existing: !!add.replace,
           ...(add.kind === "catalog"
             ? { hxd_index: this._catalog.hxd, remote_type: this._catalog.remoteType }
-            : add.kind === "cloud" ? { remote_id: add.remoteId }
-            : { profile_key: add.profileKey }),
+            : { remote_id: add.remoteId }),
         });
       }
       this._notify(result?.warning
@@ -1355,21 +1465,15 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderApplyBar() {
     if (!this._physical) return "";
     const changes = this._physicalChanges();
-    const profileSelector = this._physical.kind === "native" ? `
-      <label class="profile-select">Screen profile<select data-native-profile ${this._physicalBusy ? "disabled" : ""}>${
-        this._nativeProfiles.map((profile) => `<option value="${escapeHtml(profile.value)}" ${
-          profile.value === this._physical.template ? "selected" : ""}>${escapeHtml(profile.label)}</option>`).join("")
-      }</select></label>
-      <span class="small">Changing the profile keeps this layout. Unsupported pages block the write without deleting the draft.</span>` : "";
-    if (!changes && !this._physicalStatus && !profileSelector) return "";
+    if (!changes && !this._physicalStatus) return "";
     return `<div class="apply-bar ${changes ? "dirty" : ""}">
-      ${profileSelector}
       <span>${changes
         ? `${changes} change${changes === 1 ? "" : "s"} to the remote itself. Save writes them.`
         : escapeHtml(this._physicalStatus)}</span>
       <span class="spacer"></span>
       ${this._physicalBackup ? `<button class="secondary compact" id="physicalRestore">Load previous layout</button>` : ""}
       ${changes ? `<button class="secondary compact" id="physicalDiscard">Discard</button>` : ""}
+      ${changes && !this._iconPickerFor ? `<button class="primary compact" data-physical-apply ${this._physicalBusy ? "disabled" : ""}>Save screen layout</button>` : ""}
     </div>`;
   }
 
@@ -1688,6 +1792,16 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalStatus = "";
       this._render();
     });
+    root.querySelectorAll("[data-physical-apply]").forEach((element) => element.addEventListener("click", async () => {
+      try {
+        await this._applyPhysical();
+        this._error = null;
+        this._notify("Screen layout saved to the remote");
+      } catch (error) {
+        this._error = error?.message || String(error);
+        this._render();
+      }
+    }));
     root.querySelectorAll("[data-move-main]").forEach((select) => {
       select.addEventListener("change", () => {
         if (!select.value) return;
@@ -1927,7 +2041,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _wireEvents() {
     const root = this.shadowRoot;
-    for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote", "renameRemote",
+    for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote",
                       "recreateRemote", "nativeIconVariantTest", "nativeIconVariantRestore", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
       if (el) el.disabled = this._physicalBusy;
@@ -1966,11 +2080,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       // Open on the first kind this installation can actually use.
       const kind = sources.native ? "native"
         : (sources.catalog && sources.cloud) ? "catalog"
-        : (sources.cloud_remotes || []).length ? "cloud" : "profile";
+        : (sources.cloud_remotes || []).length ? "cloud" : "catalog";
       this._add = {
         kind, name: "", replace: false, busy: false, error: "",
         remoteId: (sources.cloud_remotes || [])[0]?.remote_id || "",
-        profileKey: (sources.profiles || [])[0]?.key || "",
         deviceType: (kind === "native"
           ? sources.native_options?.default_screen_profile
           : (sources.hid?.device_types || [])[0]) || "",
@@ -1987,22 +2100,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         targetKey: sources.native_options?.default_key || "",
       };
       this._render();
-    });
-
-    root.getElementById("renameRemote")?.addEventListener("click", async () => {
-      const remote = this._remote();
-      if (!remote) return;
-      const name = prompt("New name for this remote", remote.name);
-      if (!name || name === remote.name) return;
-      this._physicalBusy = true;
-      this._render();
-      try {
-        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/rename`,
-          entry_id: this._entryId, remote_id: this._remoteId, name });
-        this._notify(result?.warning || `Renamed to ${result.name}`);
-        this._error = null;
-      } catch (error) { this._error = error?.message || String(error); }
-      finally { this._physicalBusy = false; await this._load(); }
     });
 
     root.getElementById("recreateRemote")?.addEventListener("click", async () => {
@@ -2167,6 +2264,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         event.stopPropagation();
         this._iconPickerFor = element.dataset.iconFor;
         this._iconDraft = null;
+        this._tileNameDraft = this._remote()?.name || "";
+        this._buttonId = null;
         this._render();
       });
     });
@@ -2176,6 +2275,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         event.stopPropagation();
         this._iconPickerFor = null;
         this._iconDraft = null;
+        this._tileNameDraft = null;
         this._render();
       });
     });
@@ -2194,8 +2294,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (event.key === "Escape") {
         this._iconPickerFor = null;
         this._iconDraft = null;
+        this._tileNameDraft = null;
         this._render();
       }
+    });
+    root.querySelector("[data-rename-input]")?.addEventListener("input", (event) => {
+      this._tileNameDraft = event.target.value;
     });
 
     root.querySelector("[data-tile-save]")?.addEventListener("click", (event) => {
@@ -2203,12 +2307,21 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._saveTile();
     });
 
-    root.querySelectorAll("[data-button]").forEach((element) =>
-      element.addEventListener("click", () => {
+    root.querySelectorAll("[data-button]").forEach((element) => {
+      const select = () => {
         const button = this._page()?.buttons.find((item) => item.button_id === element.dataset.button);
         this._selectButton(button);
-      }),
-    );
+      };
+      element.addEventListener("click", select);
+      if (element.getAttribute("role") === "button") {
+        element.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            select();
+          }
+        });
+      }
+    });
     root.querySelectorAll("[data-mode]").forEach((element) =>
       element.addEventListener("click", () => {
         if (this._mode !== element.dataset.mode) this._dirty = true;
@@ -2312,6 +2425,28 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
   }
 
+  async _applyPhysical() {
+    if (!this._physicalChanges()) return;
+    const identityMigrations = this._identityMigrations();
+    const identityRemovals = this._identityRemovals();
+    this._physicalBusy = true;
+    this._render();
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/apply`,
+        entry_id: this._entryId, remote_id: this._remoteId, layout: this._physical,
+        identity_migrations: identityMigrations, identity_removals: identityRemovals });
+      this._physicalStatus = result.status;
+      this._physicalBackup = result.backup;
+      this._lastIdentityMigrations = identityMigrations;
+      this._physicalBaseline = structuredClone(this._physical);
+      this._resetPhysicalOrigins(this._physical);
+      await this._load();
+    } finally {
+      this._physicalBusy = false;
+      this._render();
+    }
+  }
+
   async _save() {
     const root = this.shadowRoot;
     const status = root.getElementById("saveStatus");
@@ -2344,21 +2479,8 @@ class SwitchBotUrcPanel extends HTMLElement {
 
       // Only touch the remote when its own layout actually differs.
       if (layoutChanges) {
-        this._physicalBusy = true;
         if (status) status.textContent = "Writing the layout to the remote…";
-        this._render();
-        const identityMigrations = this._identityMigrations();
-        const identityRemovals = this._identityRemovals();
-        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/apply`,
-          entry_id: this._entryId, remote_id: this._remoteId, layout: this._physical,
-          identity_migrations: identityMigrations, identity_removals: identityRemovals });
-        this._physicalStatus = result.status;
-        this._physicalBackup = result.backup;
-        this._lastIdentityMigrations = identityMigrations;
-        this._physicalBaseline = structuredClone(this._physical);
-        this._resetPhysicalOrigins(this._physical);
-        this._physicalBusy = false;
-        await this._load();
+        await this._applyPhysical();
       }
 
       this._dirty = false;
@@ -2438,6 +2560,10 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _styles() {
     return `
+      .appearance{display:grid;gap:18px}.appearance-head{display:flex;align-items:flex-start;justify-content:space-between}.appearance-head>div{display:grid;gap:3px}.appearance-head b{font-size:22px;letter-spacing:-.03em}.appearance-head span,.appearance-part-body p,.appearance-note{font-size:12px;line-height:1.45;color:var(--secondary-text-color,#68727d)}
+      .add-native-artwork{display:flex;align-items:center;gap:14px;padding:12px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--secondary-background-color,#f5f6f8)}.add-native-artwork p{line-height:1.5}.add-native-artwork .artwork-preview{width:86px;height:86px}.add-native-artwork .artwork-preview img{max-width:82px;max-height:82px}.ic-fallback{display:grid;place-items:center;flex:none;width:18px;height:18px;color:var(--secondary-text-color,#68727d)}
+      .appearance-grid{display:grid;gap:12px}.appearance-part{display:flex;align-items:center;gap:16px;min-width:0;padding:14px;border:1px solid var(--divider-color,#e2e5e8);border-radius:16px;background:var(--secondary-background-color,#f5f6f8)}.appearance-part-body{flex:1;min-width:0}.appearance-part-body label{display:grid;gap:3px;font-size:12px;font-weight:700}.appearance-part-body select{margin-top:3px}.appearance-part-body p{margin:6px 0 0}.artwork-preview,.app-icon-preview{display:grid;place-items:center;flex:none;width:100px;height:100px;border-radius:14px;background:#171d24;color:#fff}.artwork-preview img{display:block;max-width:96px;max-height:96px;object-fit:contain}.app-icon-preview .ic-img{width:74px;height:74px;object-fit:contain}.appearance-profile-save{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.appearance-draft{font-size:11px;font-weight:700;color:var(--primary-color,#03a9f4)}
+      .appearance-editor{display:grid;gap:10px;padding-top:16px;border-top:1px solid var(--divider-color,#e2e5e8)}.appearance-editor label{display:grid;gap:6px;font-size:12px;font-weight:700}.appearance-editor input{height:42px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:10px;background:var(--card-background-color,#fff);color:inherit;font:inherit}.appearance-field-label{font-size:12px;font-weight:700}.appearance-icon-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px}.appearance-icon-choice{display:grid;justify-items:center;align-content:center;gap:5px;min-height:88px;padding:8px 5px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--secondary-background-color,#f5f6f8);color:inherit;cursor:pointer}.appearance-icon-choice:hover{border-color:var(--primary-color,#03a9f4)}.appearance-icon-choice.selected{border:2px solid var(--primary-color,#03a9f4);background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff))}.appearance-icon-choice .ic-img{width:43px;height:43px;object-fit:contain;padding:4px;border-radius:8px;background:#171d24}.appearance-icon-choice span{font-size:10px;font-weight:700;text-align:center;line-height:1.15}.appearance-note{margin:0}.appearance-actions{display:flex;gap:8px;flex-wrap:wrap}.appearance-details{display:grid;gap:4px}.appearance-details span{display:block;font:11px/1.5 ui-monospace,monospace;color:var(--secondary-text-color,#68727d)}.appearance .native-profile-warnings{margin:0;padding:12px}
       .native-profile-warnings{display:grid;gap:10px;margin:16px 0 0;padding:14px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--card-background-color,#fff)}
       .profile-capacity-warning{display:grid;gap:3px;margin-top:14px;padding:11px 13px;border-left:3px solid #bd6a0f;border-radius:5px;background:#bd6a0f12;font-size:12px}.profile-capacity-warning span{color:var(--secondary-text-color,#68727d)}
       .profile-conflicts{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}.profile-conflict-heading{display:grid;gap:4px;margin-bottom:6px}.profile-conflict-heading span,.profile-conflict-row small{color:var(--secondary-text-color,#68727d);font-size:12px}
@@ -2474,7 +2600,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .shell{stroke:#d2d5da;stroke-width:1.2}
       .device .glass{fill:#090a0c}
       .device .glass-edge{fill:none;stroke:#ffffff29;stroke-width:1.2;stroke-linecap:round}
-      .scr-scroll{height:197px;overflow-y:auto;padding:12px 13px;scrollbar-width:thin;
+      .scr-scroll{height:242px;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;
+        -webkit-overflow-scrolling:touch;padding:48px 13px 12px;scrollbar-width:thin;
         scrollbar-color:#ffffff40 transparent;font:600 12px/1.2 system-ui,sans-serif;color:#fff}
       .scr-scroll::-webkit-scrollbar{width:4px}
       .scr-scroll::-webkit-scrollbar-thumb{background:#ffffff40;border-radius:2px}
@@ -2492,26 +2619,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row.draft-new,.scr-row.draft-edited{background:#267b6026}.scr-row.draft-moved{background:#32729a26}
       .draft-tag{margin-left:auto;padding:2px 5px;border:1px solid currentColor;border-radius:4px;font-size:9px;font-weight:700;text-transform:uppercase;line-height:1.2}
       .draft-tag.new,.draft-tag.edited{color:#83dfb2}.draft-tag.moved{color:#91cbea}
-      .scr-scroll .ic{width:18px;height:18px;flex:none;fill:none;stroke:#f6f8f9;stroke-width:1.65;
-        stroke-linejoin:round;stroke-linecap:round}
+      .scr-scroll .ic-img{width:18px;height:18px;flex:none;object-fit:contain}
       .ic-btn{flex:none;width:26px;height:26px;margin-right:4px;border:0;border-radius:5px;
         background:#ffffff26;color:#fff;font-size:13px;line-height:1;cursor:pointer}
       .ic-btn:hover{background:#ffffff3d}
-      .scr-row.picking{padding:3px 4px}
-      .ic-choices{flex:1;display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
-      .ic-choice{height:28px;display:grid;place-items:center;border:1px solid transparent;border-radius:5px;
-        background:#ffffff14;cursor:pointer;padding:0}
-      .ic-choice:hover{background:#ffffff38}
-      .ic-choice.on{background:#03a9f45c;border-color:#94d9fb}
-      .ic-choice .ic{width:16px;height:16px}
-      .ic-choice:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}
-      .scr-hint{margin:3px 7px 6px;font-size:10px;font-weight:500;color:#ffffff8a;line-height:1.4}
-      .scr-cancel{border:0;padding:0;background:none;color:#8fd0ff;font:inherit;cursor:pointer;
-        text-decoration:underline}
-      .scr-row.naming{padding:0 4px;gap:5px}
-      .scr-name{flex:1;min-width:0;height:26px;padding:0 8px;border:1px solid #ffffff2e;
-        border-radius:5px;background:#ffffff14;color:#fff;font:600 12px/1 system-ui,sans-serif}
-      .scr-name:focus{outline:none;border-color:#03a9f4;background:#ffffff1f}
       .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
       .device .cap{fill:#f7f7f9;stroke:#dadddf;stroke-width:1}
       .device .cap.ring{fill:#f4f4f7}

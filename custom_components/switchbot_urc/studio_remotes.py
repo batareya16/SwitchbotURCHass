@@ -27,7 +27,6 @@ from .cloud import CloudError
 from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
 from .inventory import stable_id_for_local
-from .ir_profiles import PROFILES
 from .studio_catalog import cloud_client
 from .studio_physical import resolve
 
@@ -463,17 +462,16 @@ async def ws_remote_create(hass, connection, msg):
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/remote/install_ir",
     vol.Required("entry_id"): str,
-    vol.Required("source"): vol.In(("catalog", "cloud", "profile")),
+    vol.Required("source"): vol.In(("catalog", "cloud")),
     vol.Required("name"): str,
     vol.Optional("hxd_index"): str,
     vol.Optional("remote_type"): int,
     vol.Optional("remote_id"): str,
-    vol.Optional("profile_key"): str,
     vol.Optional("replace_existing", default=False): bool,
 })
 @websocket_api.async_response
 async def ws_remote_install_ir(hass, connection, msg):
-    """Install a whole IR remote, from the catalog, the account, or a bundled profile.
+    """Install a whole IR remote from the catalog or the account.
 
     This is the options flow's add-IR-remote path, driven from the panel instead of a form
     sequence. Both call the same `install.install_ir_profile`, so the device sees the same
@@ -488,12 +486,7 @@ async def ws_remote_install_ir(hass, connection, msg):
         cloud = None
         cloud_item = None
 
-        if source == "profile":
-            key = msg.get("profile_key") or next(iter(PROFILES))
-            if key not in PROFILES:
-                raise ValueError(f"Unknown bundled profile {key!r}")
-            profile = PROFILES[key]
-        elif source == "catalog":
+        if source == "catalog":
             metadata = await hass.async_add_executor_job(
                 ir_catalog.profile_by_index, str(msg.get("hxd_index", ""))
             )
@@ -662,8 +655,6 @@ async def ws_remote_sources(hass, connection, msg):
             for item in entry.options.get("cloud_remotes", [])
             if isinstance(item, dict) and item.get("remoteID")
         ],
-        "profiles": [{"key": key, "label": getattr(value, "title", key)}
-                     for key, value in PROFILES.items()],
         # The same choices the options flow's bind_native step offers. The key is prefilled as
         # it is there: this command is admin-only, and binding a bridge without seeing which key
         # it will carry is how mismatched keys happen.
@@ -690,7 +681,7 @@ async def ws_remote_sources(hass, connection, msg):
             "default_screen_profile": c.NATIVE_PROFILE_ALIASES.get(
                 str((known[0] if known else {}).get("device_type", "STRIP")).upper(), "STRIP"),
             "screen_profiles": [
-                c.native_profile_metadata(name) | {"label": f"{name.replace('_', ' ').title()} · " + (
+                c.native_profile_metadata(name) | {"label": f"{c.NATIVE_PROFILE_TITLES[name]} · " + (
                     "main page only" if len(profile["pages"]) == 1 else
                     "pages " + ", ".join("Main" if int(page) == 0 else "ABCD"[int(page) - 1]
                                          for page in sorted(profile["pages"]))

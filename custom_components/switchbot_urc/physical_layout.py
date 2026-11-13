@@ -4,14 +4,12 @@ from __future__ import annotations
 from copy import deepcopy
 
 from . import commands as c
-from .ir_profiles import PROFILES
 
 
 def source_packets(remote: dict) -> list[bytes]:
     if remote.get("physical_packets"):
         return [bytes.fromhex(value) for value in remote["physical_packets"]]
-    profile = PROFILES.get(remote.get("profile"))
-    return list(profile.pages) if profile else []
+    return []
 
 
 # keyFun -> what the V48 firmware actually transmits, from the report table at flash 0x33a4a.

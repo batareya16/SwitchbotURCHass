@@ -50,7 +50,6 @@ from .inventory import (
     merge_inventory,
     stable_id_for_local,
 )
-from .ir_profiles import PROFILES
 from .ir_catalog import available as catalog_available
 from .ir_catalog import REMOTE_TYPES, brands as catalog_brands, profiles as catalog_profiles
 
@@ -1055,33 +1054,26 @@ class UrcOptionsFlow(OptionsFlow):
                             }
                         )
                 elif item["control_type"] == commands.CTRL_IR:
-                    profile_key = str(managed.get("profile", ""))
-                    if profile_key in PROFILES:
+                    cloud_item = item.get("cloud_item", {})
+                    remote_id = cloud_item.get("remoteID")
+                    cloud = self._cloud_client()
+                    if not remote_id or cloud is None:
+                        errors["base"] = "recreate_profile_missing"
+                    else:
+                        payload = await cloud.get_ir_remote(
+                            str(remote_id), str(cloud_item.get("createFrom") or "hub")
+                        )
+                        downloaded = find_cloud_items(payload)
+                        if not downloaded:
+                            raise ValueError("queryIrRemote returned no IR record")
+                        profile = profile_from_cloud(
+                            downloaded[0], remote_id=str(remote_id),
+                            name=user_input["name"], metadata=cloud_item,
+                        )
                         install_errors, _index = await self._install_ir_profile(
-                            PROFILES[profile_key], name=user_input["name"], replace_existing=True
+                            profile, name=user_input["name"], replace_existing=True
                         )
                         errors.update(install_errors)
-                    else:
-                        cloud_item = item.get("cloud_item", {})
-                        remote_id = cloud_item.get("remoteID")
-                        cloud = self._cloud_client()
-                        if not remote_id or cloud is None:
-                            errors["base"] = "recreate_profile_missing"
-                        else:
-                            payload = await cloud.get_ir_remote(
-                                str(remote_id), str(cloud_item.get("createFrom") or "hub")
-                            )
-                            downloaded = find_cloud_items(payload)
-                            if not downloaded:
-                                raise ValueError("queryIrRemote returned no IR record")
-                            profile = profile_from_cloud(
-                                downloaded[0], remote_id=str(remote_id),
-                                name=user_input["name"], metadata=cloud_item,
-                            )
-                            install_errors, _index = await self._install_ir_profile(
-                                profile, name=user_input["name"], replace_existing=True
-                            )
-                            errors.update(install_errors)
                     if not errors:
                         return await self.async_step_remote_manager()
                 elif item["control_type"] == commands.CTRL_HID:
@@ -1118,7 +1110,7 @@ class UrcOptionsFlow(OptionsFlow):
                                             remote_index=len(commands.parse_added_devices(raw_table)),
                                             name=user_input["name"],
                                             device_id=user_input["device_id"],
-                                            icon_name=user_input["icon"],
+                                            icon_name=str(managed.get("icon") or ICONS[0]),
                                             buttons=user_input["buttons"],
                                         )
                                     )
@@ -1169,9 +1161,6 @@ class UrcOptionsFlow(OptionsFlow):
                     vol.Required("device_type", default=(user_input or {}).get(
                         "device_type", managed.get("device_type", "UNIVERSAL_BLE")
                     )): vol.In(DEVICE_TYPES),
-                    vol.Required("icon", default=(user_input or {}).get(
-                        "icon", managed.get("icon", "light")
-                    )): vol.In(ICONS),
                     vol.Required("device_id", default=(user_input or {}).get(
                         "device_id", managed.get(
                             "device_id", item["device_id_bytes"][:6][::-1].hex()
@@ -1492,7 +1481,7 @@ class UrcOptionsFlow(OptionsFlow):
             }
         )
 
-    # -- install IR remotes from cloud, catalog, or captured fallback -----------------------
+    # -- install IR remotes from cloud or catalog ------------------------------------------
 
     async def _install_ir_profile(
         self, profile: Any, *, name: str, replace_existing: bool
@@ -1526,8 +1515,8 @@ class UrcOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Choose the source of the IR profile; slots remain fully automatic."""
-        # The bundled catalog is optional; without it only the cloud and captured paths work.
-        options = ["ir_saved_cloud", "ir_captured"]
+        # The bundled catalog is optional; saved cloud remotes remain available without it.
+        options = ["ir_saved_cloud"]
         if catalog_available():
             options.insert(1, "ir_catalog_type")
         return self.async_show_menu(step_id="add_ir_remote", menu_options=options)
@@ -1746,36 +1735,6 @@ class UrcOptionsFlow(OptionsFlow):
             description_placeholders={"status": self._ir_status},
         )
 
-    async def async_step_ir_captured(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Keep the known-good captured profile as an offline fallback."""
-        errors: dict[str, str] = {}
-        profile_choices = {key: value.title for key, value in PROFILES.items()}
-        selected = (user_input or {}).get("profile", next(iter(PROFILES)))
-        profile = PROFILES.get(selected, next(iter(PROFILES.values())))
-        if user_input is not None:
-            errors, remote_index = await self._install_ir_profile(
-                profile, name=user_input["name"],
-                replace_existing=user_input["replace_existing"],
-            )
-            if not errors and remote_index is not None:
-                return await self.async_step_remote_manager()
-        return self.async_show_form(
-            step_id="ir_captured",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("profile", default=selected): vol.In(profile_choices),
-                    vol.Required(
-                        "name", default=(user_input or {}).get("name", profile.default_name)
-                    ): str,
-                    vol.Required("replace_existing", default=False): cv.boolean,
-                }
-            ),
-            errors=errors,
-            description_placeholders={"status": self._ir_status},
-        )
-
     # -- read-only native diagnostics -------------------------------------------------------
 
     async def async_step_native_diagnostics(
@@ -1920,6 +1879,11 @@ class UrcOptionsFlow(OptionsFlow):
                             "light": "Light", "desklamp": "Desk lamp",
                             "floorlamp": "Floor lamp", "ceilinglamp": "Ceiling light",
                             "strip": "LED strip", "switch": "Switch", "tv": "TV / remote",
+                            "bathtub": "Bathtub", "coffeemachine": "Coffee machine",
+                            "socket": "Outlet", "boiler": "Boiler", "heater": "Heater",
+                            "cooler": "Cooling", "washer": "Washing machine",
+                            "fridge": "Fridge", "cookware": "Cooker", "pool": "Pool",
+                            "ventilator": "Fan",
                         }
                     ),
                     vol.Required(
@@ -2346,7 +2310,7 @@ class UrcOptionsFlow(OptionsFlow):
                             remote_index=index,
                             name=user_input["name"],
                             device_id=user_input["device_id"],
-                            icon_name=user_input["icon"],
+                            icon_name=ICONS[0],
                             buttons=user_input["buttons"],
                         )
                         resp = await client.send_command(plaintext)
@@ -2359,7 +2323,7 @@ class UrcOptionsFlow(OptionsFlow):
                                     "index": index,
                                     "name": user_input["name"],
                                     "device_type": device_type,
-                                    "icon": user_input["icon"],
+                                    "icon": ICONS[0],
                                     "device_id": user_input["device_id"],
                                     "remote_id": uuid.uuid4().hex[:8],
                                     "buttons": user_input["buttons"],
@@ -2376,7 +2340,6 @@ class UrcOptionsFlow(OptionsFlow):
             {
                 vol.Required("name", default="New HID remote"): str,
                 vol.Required("device_type", default=DEVICE_TYPES[0]): vol.In(DEVICE_TYPES),
-                vol.Required("icon", default=ICONS[0]): vol.In(ICONS),
                 vol.Required("device_id", default=self.options.get("host_mac", "")): str,
                 vol.Required("buttons", default=DEFAULT_BUTTONS): cv.multi_select(
                     {b: b for b in buttons}

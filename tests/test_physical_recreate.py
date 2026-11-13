@@ -4,12 +4,11 @@ from conftest import INTEGRATION, load
 
 
 c = load(INTEGRATION / "commands.py")
-profiles = load(INTEGRATION / "ir_profiles.py")
 physical = load(INTEGRATION / "physical_layout.py")
 
 
 def test_ir_recreate_rewrites_saved_pages_and_uploads_custom_ir_code():
-    device_id = "01141a0a0e17030b1f4d5b"
+    device_id = "00112233445566778899aa"
     source = c.build_ir_pages(
         remote_index=2, device_type=2, remote_id=bytes.fromhex(device_id),
         name="TV", key_map=[(5, 0, 3)], icon=0,

@@ -4,7 +4,6 @@ from conftest import INTEGRATION, load
 
 
 commands = load(INTEGRATION / "commands.py")
-profiles = load(INTEGRATION / "ir_profiles.py")
 cloud_ir = load(INTEGRATION / "cloud_ir.py")
 
 
@@ -12,26 +11,10 @@ def _pages(stages):
     return [packet for stage, packet, *_ in stages if stage.startswith(("ir_page_", "bind_page_"))]
 
 
-def test_captured_ir_icon_rewrites_every_page_without_changing_buttons():
-    original = profiles.CAPTURED_TV.build_install(
-        remote_index=2, name="TV", remote_count=3,
-    )
-    updated = profiles.CAPTURED_TV.build_install(
-        remote_index=2, name="TV", remote_count=3, icon=commands.ICON["floorlamp"],
-    )
-    assert original[0][1][11] == 0
-    assert updated[0][1][11] == commands.ICON["floorlamp"]
-    for before, after in zip(_pages(original), _pages(updated), strict=True):
-        assert after[8] == before[8]  # device type
-        assert after[11] == commands.ICON["floorlamp"]
-        assert after[90:] == before[90:]  # key records
-        commands.rewrite_ir_page(after, remote_index=2, name="TV")  # CRC valid
-
-
 def test_cloud_ir_icon_rewrites_header_and_pages():
     profile = cloud_ir.CloudIrProfile(
         key="cloud", title="Cloud", default_name="Lamp",
-        remote_id=bytes.fromhex("01141a0a0e17030b1f4d5b"),
+        remote_id=bytes.fromhex("00112233445566778899aa"),
         remote_id_text="test", device_type=2,
         code_bank=b"\x10\x20\x30", key_map=((1, 0, 3),),
     )

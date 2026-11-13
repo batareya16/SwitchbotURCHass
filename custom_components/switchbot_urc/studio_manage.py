@@ -29,7 +29,6 @@ from .inventory import merge_inventory, stable_id_for_local
 from . import addressing
 from . import studio_remotes
 from . import targets
-from .ir_profiles import PROFILES
 from .studio_catalog import cloud_client
 
 _LOGGER = logging.getLogger(__name__)
@@ -308,7 +307,7 @@ async def ws_remote_recreate(hass, connection, msg):
     """Write a remote to the device again from what is stored for it.
 
     Use it when the tile on the screen is wrong or missing. IR remotes are reinstalled from
-    their bundled profile or from the account record; HID remotes are deleted and rebuilt from
+    their account record; HID remotes are deleted and rebuilt from
     the stored button list; native remotes are deleted and bound again from the stored bridge
     credentials, which also repairs the per-address target key the delete releases.
 
@@ -322,9 +321,9 @@ async def ws_remote_recreate(hass, connection, msg):
         item = _find(await _inventory(hass, entry, client), msg["remote_id"])
         managed = item.get("managed_item") or {}
         name = (msg.get("name") or item.get("name") or "Remote").strip()
-        # The icon is drawn on the remote's own screen and only changes when the tile is
-        # written again, so it rides along with the rebuild rather than having a command of
-        # its own that would have to delete and rebuild anyway.
+        # The icon code is part of the page record. Its distinct visual effect on V48 is
+        # limited by the firmware artwork selector; still preserve the selected app code
+        # when rebuilding a tile.
         icon = str(msg.get("icon") or managed.get("icon") or "")
 
         if item["control_type"] == c.CTRL_IR:
@@ -334,23 +333,19 @@ async def ws_remote_recreate(hass, connection, msg):
                     msg.get("icon"), connection, msg["id"], kind="ir",
                 )
                 return
-            profile_key = managed.get("profile")
-            if profile_key and profile_key in PROFILES:
-                profile = PROFILES[profile_key]
-            else:
-                cloud_item = item.get("cloud_item", {})
-                remote_id = cloud_item.get("remoteID")
-                if not remote_id:
-                    raise ValueError(
-                        "Nothing to rebuild this remote from: it has no bundled profile and no "
-                        "account record. Add it again from the catalog instead."
-                    )
-                downloaded = find_cloud_items(await cloud_client(hass, entry).get_ir_remote(
-                    str(remote_id), str(cloud_item.get("createFrom") or "hub")))
-                if not downloaded:
-                    raise ValueError("The account holds no IR record for that remote")
-                profile = profile_from_cloud(
-                    downloaded[0], remote_id=str(remote_id), name=name, metadata=cloud_item)
+            cloud_item = item.get("cloud_item", {})
+            remote_id = cloud_item.get("remoteID")
+            if not remote_id:
+                raise ValueError(
+                    "Nothing to rebuild this IR remote from: it has no account record. "
+                    "Add it again from the catalog instead."
+                )
+            downloaded = find_cloud_items(await cloud_client(hass, entry).get_ir_remote(
+                str(remote_id), str(cloud_item.get("createFrom") or "hub")))
+            if not downloaded:
+                raise ValueError("The account holds no IR record for that remote")
+            profile = profile_from_cloud(
+                downloaded[0], remote_id=str(remote_id), name=name, metadata=cloud_item)
             requested_icon = msg.get("icon")
             previous_icon_code = managed.get("icon_code")
             errors, slot, record = await install.install_ir_profile(
@@ -403,7 +398,7 @@ async def ws_remote_recreate(hass, connection, msg):
                 remote_index=slot,
                 name=name,
                 device_id=str(managed["device_id"]),
-                icon_name=icon or "light",
+                icon_name=icon or str(managed.get("icon") or "light"),
                 buttons=list(managed.get("buttons") or DEFAULT_BUTTONS),
             ))
             error = install.resp_error(response)
@@ -629,7 +624,7 @@ def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | No
 })
 @websocket_api.async_response
 async def ws_native_icon_variant_test(hass, connection, msg):
-    """Temporarily switch one native Main page to the recovered washer profile."""
+    """Temporarily switch one native Main page to control mode 0x0E."""
     try:
         entry = _entry(hass, msg)
         remote = next((item for item in entry.options.get("remotes", [])
@@ -668,7 +663,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             # controlMode selects the firmware artwork profile.  The icon byte only
             # selects that profile's normal/alternate rendering variant.
             packet = c.rewrite_native_page_control_mode(
-                original_packet, c.NATIVE_WASHER_CONTROL_MODE)
+                original_packet, c.NATIVE_TEST_CONTROL_MODE)
             packet = c.rewrite_native_page_icon(packet, 1)
 
         packet_body = packet[7:]

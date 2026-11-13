@@ -42,7 +42,11 @@ def is_native(device_type: str) -> bool:
     return device_type.upper() in NATIVE_DEVICE_TYPES
 
 # Icons the remote screen supports.
-ICONS = ["light", "desklamp", "floorlamp", "ceilinglamp", "strip", "switch", "tv"]
+ICONS = [
+    "light", "desklamp", "floorlamp", "ceilinglamp", "strip", "switch",
+    "bathtub", "coffeemachine", "socket", "tv", "boiler", "heater",
+    "cooler", "washer", "fridge", "cookware", "pool", "ventilator",
+]
 
 # Default button set offered for a new UniversalBLE remote.
 DEFAULT_BUTTONS = ["ON", "OFF", "UP", "DOWN", "OK"]

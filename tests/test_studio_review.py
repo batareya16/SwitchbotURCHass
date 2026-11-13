@@ -112,7 +112,7 @@ class TestADestructiveBindIsNeverRepeated:
     def test_the_table_can_answer_whether_the_row_landed(self):
         # The reply the remote gave after the loop: slot 4, type 0x7e, native control.
         table = bytes.fromhex(
-            "010000000047288b0500180101141a0a0f01034409390f01020101141a0a0e17030b1f4d5b02"
+            "010000000047288b0500180000112233445566778899aa02"
             "f2045464379317020000000000037200921fe01b888a0000000000047e00921fe01671da0000000000")
         body = table[4:]
         rows = [body[off:off + 13] for off in range(len(body) - 12)]

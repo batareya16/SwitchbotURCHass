@@ -153,8 +153,11 @@ DEVTYPE = {"APPLE_TV": 0xF0, "FIRE_TV": 0xF1, "UNIVERSAL_BLE": 0xF2, "GOOGLE_TV"
 # controlType: HID=4, Matter=3, IR=1, native SwitchBot device=0.
 CTRL_HID = 4
 CTRL_NATIVE = 0
-# V48 DSP control-mode atlas: 0x0e is the washing-machine/front-loader artwork.
-NATIVE_WASHER_CONTROL_MODE = 0x0E
+# V48 DSP control-mode atlas: 0x0e is a recovered built-in artwork profile.
+# The firmware contains no verified human-readable name for this resource.
+NATIVE_TEST_CONTROL_MODE = 0x0E
+# Compatibility alias for saved Studio/test code from the earlier artwork experiment.
+NATIVE_WASHER_CONTROL_MODE = NATIVE_TEST_CONTROL_MODE
 CTRL_IR = 1
 
 # Native SwitchBot-device remote types (controlType 0, NO HID-pair needed). devType bytes from
@@ -263,6 +266,25 @@ NATIVE_PROFILE_LAYOUTS: dict[str, dict] = {
         (TAG["CHUP"], 60), (TAG["CHDOWN"], 61))}},
 }
 
+# V48 DSP controlMode=0 device-type fallback table at 0x20059aa0. These IDs select
+# firmware-resident artwork descriptors, not the app's icon_32pt preview assets.
+NATIVE_PROFILE_ARTWORK = {
+    "PLUG": 0x0D, "CURTAIN": 0x03, "BLIND_TILT": 0x07,
+    "CEILING": 0x14, "BULB": 0x0C, "STRIP": 0x16,
+    "BOT": 0x13, "FAN": 0x09, "ROLLER_SHADE": 0x22,
+    "AIR_PURIFIER": 0x2F, "HUMIDIFIER": 0x0B,
+    "LOCK": 0x21, "SWITCH": 0x13, "GARAGE_DOOR": 0x2E,
+}
+
+NATIVE_PROFILE_TITLES = {
+    "PLUG": "Outlet", "CURTAIN": "Curtains", "BLIND_TILT": "Tilt blinds",
+    "CEILING": "Ceiling light", "BULB": "Bulb", "STRIP": "Light strip",
+    "CANDLE": "Candle lamp", "BOT": "Button bot", "FAN": "Fan",
+    "ROLLER_SHADE": "Roller shade", "AIR_PURIFIER": "Air purifier",
+    "HUMIDIFIER": "Humidifier", "LOCK": "Door lock", "SWITCH": "Switch",
+    "GARAGE_DOOR": "Garage door", "TRV": "Thermostat",
+}
+
 NATIVE_PROFILE_ALIASES = {
     **{name: "PLUG" for name in ("PLUG", "PLUG_US", "PLUG_JP")},
     **{name: "CURTAIN" for name in ("CURTAIN", "CURTAIN_3")},
@@ -347,6 +369,9 @@ def native_profile_metadata(profile_name: str) -> dict:
         })
     return {
         "value": profile_name,
+        "title": NATIVE_PROFILE_TITLES.get(profile_name, profile_name.replace("_", " ").title()),
+        "control_mode": int(profile.get("control_mode", 0)),
+        "artwork_id": NATIVE_PROFILE_ARTWORK.get(profile_name),
         "pages": [0, *(item["index"] for item in subpages)],
         "main_positions": sorted({item["index"] for item in main_keys}),
         "main_keys": main_keys,
@@ -663,9 +688,15 @@ def strip_color_keys() -> list[dict]:
         for index, (key_fun, cmd) in enumerate(STRIP_COLOR_KEYS)
     ]
 
-# iconCode: light=1 desklamp=2 floorlamp=3 ceilinglamp=4 strip=5 switch=6 ... tv=10.
-ICON = {"light": 1, "desklamp": 2, "floorlamp": 3, "ceilinglamp": 4, "strip": 5,
-        "switch": 6, "tv": 10}
+# getDeviceIconCode in the bundled SwitchBot app. V48 does not prove that all 18
+# values render 18 different illustrations on the physical remote.
+ICON = {
+    "light": 1, "desklamp": 2, "floorlamp": 3, "ceilinglamp": 4,
+    "strip": 5, "switch": 6, "bathtub": 7, "coffeemachine": 8,
+    "socket": 9, "tv": 10, "boiler": 11, "heater": 12,
+    "cooler": 13, "washer": 14, "fridge": 15, "cookware": 16,
+    "pool": 17, "ventilator": 18,
+}
 
 # bleKeyType for UniversalBLE keys.
 BLE_KEY_TYPE_UNIVERSAL = 6

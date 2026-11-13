@@ -24,7 +24,6 @@ from .bindings import (
     resolve_binding_action,
 )
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
-from .ir_profiles import PROFILES
 from . import studio_catalog
 from . import studio_cloud
 from . import targets
@@ -34,7 +33,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.9"
+FRONTEND_VERSION = "0.50.15"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -122,8 +121,6 @@ def _remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None) -> lis
     remote_slot = remote.get("index") if isinstance(remote.get("index"), int) else None
     result: list[dict[str, Any]] = []
     stored_pages = remote.get("studio_pages")
-    if stored_pages is None and remote.get("profile") in PROFILES:
-        stored_pages = commands.studio_pages_from_packets(PROFILES[remote["profile"]].pages)
     if isinstance(stored_pages, list):
         positions = {value: key for key, value in commands.TAG.items()}
         for page in stored_pages:
@@ -357,6 +354,7 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "remote_slot": remote.get("index"),
                 "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
                 "icon": str(remote.get("icon", "")),
+                "icon_code": remote.get("icon_code") if isinstance(remote.get("icon_code"), int) else None,
                 "can_test_native_icon": str(remote.get("device_type", "")).upper()
                     in commands.NATIVE_DEVTYPE,
                 "native_icon_test_active": bool(

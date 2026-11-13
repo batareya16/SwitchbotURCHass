@@ -68,6 +68,13 @@ normal and alternate large-image resource references. Many pairs look like illum
 other visual states, but the image appearance alone does not establish the runtime state meaning.
 The separate control-mode and icon-variant selection stages are described below.
 
+The [complete profile atlas](native-all-profile-artwork.png) previews all 50 descriptor rows with
+correct RGB565/A8 colors. Two pairs share the same normal artwork, leaving 48 distinct normal
+image references. The known selectors reach 47 profile IDs: 20 `controlMode` values and 77
+`devType` fallback rows (32 distinct profile IDs), with overlap. Profiles `0x02`, `0x04`, and
+`0xfe` are present in the descriptor table but have no route through either known selector.
+These counts describe firmware artwork, not 50 independently writable `icon` values.
+
 ### Button glyphs use built-in firmware resources
 
 The drawing helper `20023ac0` maps a 16-bit `keyFun` through a firmware-resident lookup table at
@@ -155,13 +162,21 @@ cannot be followed past its first FLIX bundle with the installed Ghidra language
 
 ### Resource payload codec and rendered glyphs
 
-The resource payload is a byte-controlled RGB stream. Each control byte has this meaning:
+The resource payload is a byte-controlled stream of three-byte pixels. Each control byte has this
+meaning:
 
 ```text
 count = control & 0x7f
-control & 0x80: read one RGB888 triple and repeat it count times
-otherwise:      read count consecutive RGB888 triples
+control & 0x80: read one pixel triple and repeat it count times
+otherwise:      read count consecutive pixel triples
 ```
+
+Each expanded triple is **big-endian RGB565 plus 8-bit alpha**: `[color_hi, color_lo, alpha]`.
+Treating it as RGB888 produced the earlier pink/cyan/yellow preview with the alpha byte displayed
+as blue. RGB565/A8 yields expected white UI glyphs and the plausible device colors in the full
+[profile artwork atlas](native-all-profile-artwork.png). The alpha is composited over the atlas
+background. This is a decoding correction for the preview assets; it does not change bytes sent
+to the remote.
 
 Counts are literal (`N`, not `N+1`). The decoder consumes exactly the declared payload length for
 all 330 distinct glyph resources. It produces exactly `width * height` pixels for 326; four produce
@@ -231,19 +246,51 @@ the native press dispatch and device behavior separately. The decoded atlases no
 artwork, while device captures are still needed to verify which variant and label appear on each
 physical screen.
 
-The integration currently offers these icon names and packet bytes. These names are its own
-catalog labels; the firmware analysis below does not establish that they select distinct device
-illustrations.
+The bundled Android app's `getDeviceIconCode` maps these named selections to the packet's
+`icon` byte. A missing or unknown name maps to `00`. Studio previews firmware artwork for
+supported IR, HID, and native screen profiles and retains their saved icon codes; the app's
+list is not proof of 18 distinct V48 illustrations.
+The [18 app icon previews](native-app-icon-catalog.png) were extracted from the bundled
+SwitchBot 10.5 APK's `res/drawable-mdpi-v4/src_common_src_assets_urc_images_icon_32pt_*_highlight.webp`
+resources. They show what the phone app draws for each choice; they are not decoded images from
+the remote's screen. Their colors are unchanged from the APK.
 
-| Integration icon label | Byte |
-| --- | ---: |
-| light | `01` |
-| desklamp | `02` |
-| floorlamp | `03` |
-| ceilinglamp | `04` |
-| strip | `05` |
-| switch | `06` |
-| tv | `0A` |
+For HID, the current `build_remote` writes `controlMode=0`, one of the four device types
+`F0..F3`, and the catalog icon byte. The HID screen callback calls the same artwork selector
+as native. The V48 fallback table maps Apple TV `F0 -> 1D`, Fire TV `F1 -> 1E`, Universal BLE
+`F2 -> 20`, and Google TV `F3 -> 1F`. In each of these four descriptor rows the normal and
+alternate exported images have identical pixel content. Thus the recovered HID rendering path
+offers one illustration per HID type, regardless of which catalog icon code is sent. Other
+unrecovered rendering paths and physical redraw behavior are not established by this check.
+
+For IR, the `dev_INFRARED` screen callback at `20030420` dispatches to `2002fe10`, which
+passes the same DSP model fields to `200236b0`. The integration's IR page command writes a
+device type, `controlMode=0`, and the profile's saved icon byte. The fallback table maps the
+catalog's types `1..14` to their respective descriptor IDs. Code `1` selects the normal
+resource; other values select the alternate resource on the recovered ordinary branch. Some
+pairs are identical and others differ. This does not establish that changing an installed IR
+remote's icon byte visibly redraws it without recreation or another refresh mechanism.
+
+| App icon name | Byte | Studio name |
+| --- | ---: | --- |
+| light | `01` | light |
+| desklamp | `02` | desklamp |
+| floorlamp | `03` | floorlamp |
+| ceilinglamp | `04` | ceilinglamp |
+| lightstrip | `05` | strip |
+| switch | `06` | switch |
+| bathtub | `07` | bathtub |
+| coffeemachine | `08` | coffeemachine |
+| socket | `09` | socket |
+| television | `0A` | tv |
+| boiler | `0B` | boiler |
+| heater | `0C` | heater |
+| cooler | `0D` | cooler |
+| washer | `0E` | washer |
+| fridge | `0F` | fridge |
+| cookware | `10` | cookware |
+| pool | `11` | pool |
+| ventilator | `12` | ventilator |
 
 ARM's create parser stores the packet's `controlType`, `controlMode`, and `icon` at model `+2`,
 `+3`, and `+4`.
@@ -271,6 +318,17 @@ verified mapping to the firmware's 20 different device illustrations. For the st
 setting `icon=1` selects normal artwork and any other icon value selects alternate artwork; it
 does not select the corresponding named bulb/lamp/strip illustration. The reason the integration
 has these icon labels and values is not established by this screen path alone.
+
+The controlled `controlMode=0x0e`, `icon=1` Main-page rewrite received `01` from the device, but
+the user still saw the lamp artwork. The table query used as a preflight reports slot/type/ID,
+not the stored mode or the DSP-rendered image. The recovered ARM path queues an IPC update; the
+DSP model constructor contains undecoded FLIX. Therefore this result does not establish that an
+installed tile can switch artwork in place. Studio should not turn the atlas into a writable
+artwork picker until the update/refresh route is established and verified on the device.
+The app's 18 icon names must also not be conflated with 18 `controlMode` values: they occupy
+different packet bytes, and the decoded ordinary DSP artwork selector only distinguishes `icon=1`
+from other icon values. No instruction-level route from icon codes `2..18` to 17 distinct V48
+menu images has been recovered.
 
 ## Remaining firmware work
 

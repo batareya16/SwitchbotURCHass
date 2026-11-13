@@ -106,14 +106,13 @@ leads to the same editor.
 
 ## IR remotes
 
-**Remote manager → Add IR remote** offers three paths:
+**Remote manager → Add IR remote** offers two paths:
 
 - install a remote already saved in the SwitchBot cloud (`code`, `keyMap`, AC fast-binaries and
   custom key details via `queryIrRemote`);
 - add from the IR catalog (`custom_components/switchbot_urc/ir_catalog.db`): type → brand →
   model, with the code bank fetched through the official `querymodel` and a cloud record created
-  after BLE install;
-- use the captured fallback TV profile, offline.
+  after BLE install.
 
 The integration unpacks the base64/zlib code bank the way the app does, checks every `keyMap`
 offset, builds up to five `0F 62 06` pages and runs a full sync. Slot, remote count, CRC and
@@ -127,8 +126,8 @@ to request a code bank. No IR codes are in it; those come from SwitchBot's cloud
 account. It is derived from `assets/IRLibarayDb.pack` in the SwitchBot Android app, which is a
 gzip-compressed SQLite database, and the data in it belongs to SwitchBot.
 
-The file is **optional**. If it is absent, the catalog path is simply not offered and the other
-two IR paths work unchanged. To build your own from an app APK you already have:
+The file is **optional**. If it is absent, the catalog path is simply not offered and the
+saved-cloud IR path still works. To build your own from an app APK you already have:
 
 ```bash
 python3 tools/build_ir_catalog.py --apk /path/to/switchbot_assets.apk \

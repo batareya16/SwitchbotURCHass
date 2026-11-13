@@ -15,7 +15,6 @@ from . import commands as c
 from . import physical_layout as physical
 from . import targets
 from .const import DOMAIN
-from .ir_profiles import PROFILES
 from .cloud import SwitchBotCloudClient
 from .inventory import cloud_items, cloud_item_id
 from .cloud_ir import find_cloud_items, profile_from_cloud
@@ -42,9 +41,6 @@ def ir_sources(entry):
     sources = []
     for remote in entry.options.get("remotes", []):
         bank = bytes.fromhex(remote.get("ir_code_bank", ""))
-        profile = PROFILES.get(remote.get("profile"))
-        if not bank and profile:
-            bank = profile.code_bank
         if not bank:
             continue
         packet_sources = physical.source_packets(remote) + [
@@ -132,7 +128,7 @@ def _native_profiles() -> list[dict]:
         if c.native_profile_device_type(name) is None:
             continue
         item = c.native_profile_metadata(name)
-        item["label"] = f"{name.replace('_', ' ').title()} · " + (
+        item["label"] = f"{item['title']} · " + (
             "main page only" if len(profile["pages"]) == 1 else
             "pages " + ", ".join("Main" if int(page) == 0 else "ABCD"[int(page) - 1]
                                  for page in sorted(profile["pages"]))

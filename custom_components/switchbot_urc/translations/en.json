@@ -289,8 +289,7 @@
         "title": "Add IR remote",
         "menu_options": {
           "ir_saved_cloud": "Install a remote saved in SwitchBot cloud",
-          "ir_catalog_type": "Add from the SwitchBot IR catalog",
-          "ir_captured": "Use the captured fallback profile"
+          "ir_catalog_type": "Add from the SwitchBot IR catalog"
         }
       },
       "ir_saved_cloud": {
@@ -323,15 +322,6 @@
           "model": "Model / code set",
           "name": "Name shown on the remote",
           "replace_existing": "Replace the matching remote if already installed"
-        }
-      },
-      "ir_captured": {
-        "title": "Captured IR fallback",
-        "description": "Installs the known-good code bank recovered from the trace. This path works without cloud access. Current stage/result: {status}",
-        "data": {
-          "profile": "IR profile",
-          "name": "Name shown on the remote",
-          "replace_existing": "Replace this IR profile if it is already installed"
         }
       },
       "native_diagnostics": {
