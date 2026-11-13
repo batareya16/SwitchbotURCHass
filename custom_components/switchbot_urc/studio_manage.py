@@ -642,16 +642,25 @@ async def ws_washer_artwork_test(hass, connection, msg):
             original_packet = None
         else:
             if backup_hex:
-                raise ValueError("The washing-machine artwork test is already active; restore it first")
-            original_packet = _washer_artwork_source_packet(remote, int(slot))
-            packet = c.rewrite_native_page_control_mode(original_packet, 0x07)
-            # Keep a recovery packet before the write in case the device applies it but loses its ACK.
-            _persist_artwork_test_packet(hass, entry, msg["remote_id"], original_packet)
+                original_packet = bytes.fromhex(backup_hex)
+                _validate_native_test_packet(remote, int(slot), original_packet)
+            else:
+                original_packet = _washer_artwork_source_packet(remote, int(slot))
+                # Keep a recovery packet before the write in case the device applies it but loses its ACK.
+                _persist_artwork_test_packet(hass, entry, msg["remote_id"], original_packet)
+            packet = c.rewrite_native_page_control_mode(
+                original_packet, c.NATIVE_WASHER_CONTROL_MODE)
 
         response = await client.send_command(packet, timeout=30.0)
         error = install.resp_error(response)
         if error:
             raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
+        _LOGGER.info(
+            "Native artwork test acknowledged: remote_id=%s slot=%s restore=%s mode=%s response=%s",
+            msg["remote_id"], slot, msg["restore"],
+            "original" if msg["restore"] else f"0x{c.NATIVE_WASHER_CONTROL_MODE:02x}",
+            response.hex(),
+        )
 
         table_after = c.parse_added_devices(await client.query(7))
         expected_id = c.id_to_bytes(str(remote["device_id"]))

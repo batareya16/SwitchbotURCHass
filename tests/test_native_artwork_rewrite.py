@@ -21,11 +21,11 @@ def test_rewrite_native_page_control_mode_preserves_all_other_page_data():
         keys=[{"keyIndex": c.TAG["ON"], "keyFun": 5}],
     )
 
-    rewritten = c.rewrite_native_page_control_mode(packet, 7)
+    rewritten = c.rewrite_native_page_control_mode(packet, c.NATIVE_WASHER_CONTROL_MODE)
 
     assert rewritten[:5] == packet[:5]
     assert rewritten[7:10] == packet[7:10]
-    assert rewritten[10] == 7
+    assert rewritten[10] == c.NATIVE_WASHER_CONTROL_MODE
     assert rewritten[11:] == packet[11:]
     assert int.from_bytes(rewritten[5:7], "big") == c.crc16_modbus(rewritten[7:])
     assert c.rewrite_native_page_control_mode(rewritten, 0) == packet

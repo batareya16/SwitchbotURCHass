@@ -747,7 +747,9 @@ class SwitchBotUrcPanel extends HTMLElement {
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_test_washer_artwork ? `<button class="secondary" id="washerArtworkTest"
-              title="Rewrite only the Main page with washing-machine artwork; the original page is saved for restore">${remote.washer_artwork_test_active ? "Restore artwork" : "Test washer artwork"}</button>` : ""}
+              title="Try the washing-machine artwork again; the saved original page is kept">Test washer artwork</button>
+              ${remote.washer_artwork_test_active ? `<button class="secondary" id="washerArtworkRestore"
+                title="Restore the saved original Main page">Restore original</button>` : ""}` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
               "Bind this remote to a different Bluetooth address") : ""}
             ${remote ? this._action("deleteRemote", "🗑", "Delete",
@@ -756,7 +758,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
           ${this._renderApplyBar()}
-          ${this._renderNativeProfileLayout()}
+          ${this._renderNativeProfileWarnings()}
           ${this._renderCloud()}
           ${this._renderDeviceTable()}
           ${this._renderDiagnostics()}
@@ -1476,45 +1478,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       || `Function ${value}`;
   }
 
-  _renderNativeProfileLayout() {
+  _renderNativeProfileWarnings() {
     if (this._physical?.kind !== "native") return "";
     const profile = this._nativeProfiles.find((item) => item.value === this._physical.template);
     if (!profile) return "";
     const conflicts = this._nativeProfileConflicts(profile);
-    const mainPage = this._physical.pages.find((page) => page.index === 0);
     const mainKeys = profile.main_keys || [];
-    const targetPageIds = new Set((profile.subpages || [])
-      .filter((page) => page.link_index != null).map((page) => page.index));
-    const pageLinkByIndex = new Map((this._physical.pages || [])
-      .filter((page) => page.index && targetPageIds.has(page.index))
-      .map((page) => [page.index - 1, page.index]));
-    const renderCell = (slot, button, isLink = false) => {
-      const action = button ? this._profileFunctionLabel(button.function)
-        : slot.label || `Position ${slot.index}`;
-      const linkPage = pageLinkByIndex.get(slot.index);
-      const conflict = conflicts.some((item) => item.type === "main" && item.key.index === slot.index);
-      const current = button ? this._layoutState({ button_page: 0, button_index: button.index }) : "unchanged";
-      return `<div class="profile-cell${button ? " occupied" : ""}${isLink || linkPage ? " linked" : ""}${conflict ? " conflict" : ""}${current !== "unchanged" ? ` draft-${current}` : ""}">
-        <span>${escapeHtml(slot.position || `#${slot.index + 1}`)}</span>
-        <strong>${escapeHtml(linkPage ? `Page ${"ABCD"[linkPage - 1]}` : action)}</strong>
-      </div>`;
-    };
-    const mainCells = mainKeys.map((slot) => renderCell(slot,
-      mainPage?.buttons?.find((key) => key.index === slot.index), pageLinkByIndex.has(slot.index))).join("");
-    const subpages = (profile.subpages || []).map((page) => {
-      const draftPage = this._physical.pages.find((item) => item.index === page.index);
-      const keys = draftPage
-        ? draftPage.buttons.map((key, index) => ({
-          index,
-          label: this._profileFunctionLabel(key.function),
-          actionable: true,
-        }))
-        : page.keys;
-      return `<article class="profile-screen">
-        <div class="profile-screen-head"><b>Page ${"ABCD"[page.index - 1]}</b><span>${page.link_position || "No link key"}</span></div>
-        <div class="profile-row-grid">${keys.map((key) => `<span class="profile-row${draftPage ? " occupied" : ""}">${escapeHtml(key.label)}</span>`).join("")}</div>
-      </article>`;
-    }).join("");
     const conflictRows = conflicts.map((item) => {
       if (item.type === "main") {
         const label = this._profileFunctionLabel(item.key.function);
@@ -1524,21 +1493,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<div class="profile-conflict-row"><span><b>Page ${"ABCD"[item.page.index - 1]}</b><small>${item.page.buttons.length} button${item.page.buttons.length === 1 ? "" : "s"} · unavailable in this profile</small></span>
         ${item.targets.length ? `<label>Move to<select data-move-page="${item.page.index}"><option value="">Choose page…</option>${item.targets.map((page) => `<option value="${page.index}">Page ${"ABCD"[page.index - 1]} · ${page.link_position}</option>`).join("")}</select></label>` : `<small>No free page link</small>`}</div>`;
     }).join("");
-    const mainTitle = conflicts.length
-      ? `${conflicts.length} item${conflicts.length === 1 ? "" : "s"} need a new position`
-      : "Layout fits this profile";
     const draftPageCount = this._physical.pages.filter((page) => page.index).length;
     const profilePageCount = (profile.subpages || []).filter((page) => page.link_index != null).length;
     const pageCapacityExceeded = draftPageCount > profilePageCount;
-    return `<section class="native-profile-layout">
-      <div class="profile-layout-heading"><div><h2>Screen layout</h2><p>${escapeHtml(profile.label)} · ${escapeHtml(mainTitle)}</p></div>
-        <span class="profile-fit ${conflicts.length ? "has-conflicts" : ""}">${conflicts.length ? "Needs placement" : "Compatible"}</span></div>
-      ${pageCapacityExceeded ? `<div class="profile-capacity-warning"><b>This profile has room for ${profilePageCount} submenu page${profilePageCount === 1 ? "" : "s"}; the draft has ${draftPageCount}.</b><span>All current pages cannot be saved together. Remove a page or choose a profile with more page slots.</span></div>` : ""}
-      <div class="profile-screen-grid">
-        <article class="profile-screen main-profile-screen"><div class="profile-screen-head"><b>Main screen</b><span>${mainKeys.length} positions</span></div><div class="profile-main-grid">${mainCells}</div></article>
-        ${subpages}
-      </div>
-      ${conflicts.length ? `<div class="profile-conflicts"><div class="profile-conflict-heading"><b>Resolve before writing</b><span>Buttons and their saved Home Assistant actions move together.</span></div>${conflictRows}</div>` : ""}
+    if (!conflicts.length && !pageCapacityExceeded) return "";
+    return `<section class="native-profile-warnings">
+      <b>${escapeHtml(profile.label)} layout needs attention</b>
+      ${pageCapacityExceeded ? `<div class="profile-capacity-warning"><b>This profile supports ${profilePageCount} submenu page${profilePageCount === 1 ? "" : "s"}; the draft has ${draftPageCount}.</b><span>Remove a page or choose a profile with more page slots.</span></div>` : ""}
+      ${conflicts.length ? `<div class="profile-conflicts"><div class="profile-conflict-heading"><b>Resolve ${conflicts.length} placement conflict${conflicts.length === 1 ? "" : "s"} before writing</b><span>Button mappings move with their buttons.</span></div>${conflictRows}</div>` : ""}
     </section>`;
   }
 
@@ -1958,7 +1920,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _wireEvents() {
     const root = this.shadowRoot;
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote", "renameRemote",
-                      "recreateRemote", "washerArtworkTest", "moveRemote", "deleteRemote"]) {
+                      "recreateRemote", "washerArtworkTest", "washerArtworkRestore", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
       if (el) el.disabled = this._physicalBusy;
     }
@@ -2053,11 +2015,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       finally { this._physicalBusy = false; await this._load(); }
     });
 
-    root.getElementById("washerArtworkTest")?.addEventListener("click", async () => {
+    const runWasherArtwork = async (restore) => {
       const remote = this._remote();
       if (!remote) return;
-      const restore = !!remote.washer_artwork_test_active;
-      if (!restore && !confirm(`Show washing-machine artwork on "${remote.name}"? The original Main page is saved, and the remote slot and buttons are retained.`)) return;
+      if (!restore && !confirm(`Try washing-machine artwork on "${remote.name}"? The original Main page is saved, and the remote slot and buttons are retained.`)) return;
       this._physicalBusy = true;
       this._render();
       try {
@@ -2067,7 +2028,9 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._error = null;
       } catch (error) { this._error = error?.message || String(error); }
       finally { this._physicalBusy = false; await this._load(); }
-    });
+    };
+    root.getElementById("washerArtworkTest")?.addEventListener("click", () => runWasherArtwork(false));
+    root.getElementById("washerArtworkRestore")?.addEventListener("click", () => runWasherArtwork(true));
 
     root.getElementById("moveRemote")?.addEventListener("click", async () => {
       const remote = this._remote();
@@ -2461,25 +2424,12 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _styles() {
     return `
-      .native-profile-layout{margin:18px 0 24px;padding:20px;background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#e2e5e8);border-radius:14px}
-      .profile-layout-heading,.profile-screen-head,.profile-conflict-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
-      .profile-layout-heading h2{margin:0;font-size:20px;line-height:1.25}
-      .profile-layout-heading p{margin:5px 0 0;color:var(--secondary-text-color,#68727d);font-size:13px}
-      .profile-fit{padding:6px 10px;border-radius:6px;background:#237e5120;color:#176b43;font-size:12px;font-weight:700;white-space:nowrap}
-      .profile-fit.has-conflicts{background:#bd6a0f20;color:#94500a}
+      .native-profile-warnings{display:grid;gap:10px;margin:16px 0 0;padding:14px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--card-background-color,#fff)}
       .profile-capacity-warning{display:grid;gap:3px;margin-top:14px;padding:11px 13px;border-left:3px solid #bd6a0f;border-radius:5px;background:#bd6a0f12;font-size:12px}.profile-capacity-warning span{color:var(--secondary-text-color,#68727d)}
-      .profile-screen-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:16px}
-      .profile-screen{min-width:0;padding:14px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--secondary-background-color,#f4f6f7)}
-      .profile-screen-head{font-size:12px}.profile-screen-head span{color:var(--secondary-text-color,#68727d);font-size:11px}
-      .profile-main-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:11px}
-      .profile-cell{min-height:58px;display:grid;align-content:center;gap:3px;padding:7px;border:1px solid var(--divider-color,#dfe3e8);border-radius:7px;background:var(--card-background-color,#fff);text-align:center}
-      .profile-cell>span{font-size:10px;color:var(--secondary-text-color,#68727d)}.profile-cell strong{overflow-wrap:anywhere;font-size:11px;line-height:1.25}
-      .profile-cell.occupied{border-color:#33836c80;background:#e9f5f0}.profile-cell.linked{border-color:#4585b880;background:#edf4fa}.profile-cell.conflict{border-color:#c47a2b;background:#fff3e2;color:#78420a}.profile-cell.draft-new,.profile-cell.draft-edited{box-shadow:inset 0 -3px #36866a}.profile-cell.draft-moved{box-shadow:inset 0 -3px #397da4}
-      .profile-row-grid{display:grid;gap:5px;margin-top:11px}.profile-row{padding:7px 9px;border:1px solid var(--divider-color,#dfe3e8);border-radius:6px;background:var(--card-background-color,#fff);font-size:11px;color:var(--secondary-text-color,#68727d)}.profile-row.occupied{border-color:#33836c80;background:#e9f5f0;color:var(--primary-text-color,#17202a)}
-      .profile-conflicts{margin-top:16px;border-top:1px solid var(--divider-color,#e2e5e8);padding-top:14px}.profile-conflict-heading{align-items:flex-start;margin-bottom:6px}.profile-conflict-heading span,.profile-conflict-row small{color:var(--secondary-text-color,#68727d);font-size:12px}
+      .profile-conflicts{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}.profile-conflict-heading{display:grid;gap:4px;margin-bottom:6px}.profile-conflict-heading span,.profile-conflict-row small{color:var(--secondary-text-color,#68727d);font-size:12px}
       .profile-conflict-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,260px);align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--divider-color,#e2e5e8)}.profile-conflict-row>span{display:grid;gap:3px}.profile-conflict-row label{display:grid;gap:3px;font-size:11px;font-weight:700;color:var(--secondary-text-color,#68727d)}.profile-conflict-row select{height:38px;margin:0;border-radius:7px}
       .physical-editor{margin-top:20px;padding:22px;background:var(--card-background-color,#fff);border-radius:20px}.physical-editor fieldset{border:0;padding:0;margin:0;min-width:0}.physical-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.physical-page{margin-top:20px;padding:18px;border:1px solid var(--divider-color,#ddd);border-radius:16px}.physical-key{display:grid;grid-template-columns:150px 160px minmax(180px,1fr) auto;gap:12px;align-items:center;padding:14px 0;border-bottom:1px solid var(--divider-color,#ddd)}.physical-key label{display:grid;gap:6px;font-size:12px}.physical-key input,.action-box input{width:100%;min-height:40px;padding:8px;background:var(--card-background-color,#fff);color:inherit;border:1px solid var(--divider-color,#ddd);border-radius:8px}.physical-status{padding:12px;background:var(--secondary-background-color,#eee);border-radius:10px;white-space:pre-wrap}@media(max-width:850px){.physical-key{grid-template-columns:1fr 1fr}.physical-toolbar button{height:auto;min-height:42px;padding:8px}.header-actions{flex-wrap:wrap}.layout-button{display:block!important}}
-      @media(max-width:600px){.native-profile-layout{padding:14px}.profile-layout-heading{align-items:flex-start;flex-direction:column}.profile-conflict-row{grid-template-columns:1fr}.profile-screen-grid{grid-template-columns:1fr}}
+      @media(max-width:600px){.profile-conflict-row{grid-template-columns:1fr}}
       :host{display:block;min-height:100%;background:var(--primary-background-color,#f5f6f8);color:var(--primary-text-color,#17202a);font-family:var(--paper-font-body1_-_font-family,system-ui,sans-serif)}
       .apply-bar{flex-wrap:wrap}.apply-bar .profile-select{display:grid;gap:4px;min-width:min(100%,260px);font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.apply-bar .profile-select select{margin:0}.apply-bar>.small{flex:1 1 260px}
       *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;background:var(--card-background-color,#fff);padding:20px 22px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px;padding-top:2px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px) auto;align-items:center;gap:16px;margin:18px 0;padding:18px 22px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:22px 0 16px;padding:5px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:26px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:26px 28px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:16px;margin-top:22px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.save-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:20px}.save-row span{font-size:12px;color:#e74c3c}.primary,.secondary{height:42px;padding:0 18px;border:1px solid transparent;border-radius:12px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background .15s,box-shadow .15s,transform .12s,border-color .15s}
