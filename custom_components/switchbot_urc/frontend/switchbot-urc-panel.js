@@ -1772,6 +1772,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const { page, key } = found;
     const kind = this._physical.kind;
+    const rowPosition = page.index
+      ? this._pageKeyEntries(page).findIndex((item) => item.key === key) : -1;
+    const lastRowPosition = page.index ? page.buttons.length - 1 : -1;
     const linkedPage = button.button_page === 0
       ? this._physical.pages.find((item) => item.index === key.index + 1)
       : null;

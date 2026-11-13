@@ -636,24 +636,9 @@ async def ws_washer_artwork_test(hass, connection, msg):
         if remote is None:
             raise ValueError("Remote not found")
         client = _client(hass, entry)
-        raw = await client.query(7)
-        table = c.parse_added_devices(raw)
         expected_id = c.id_to_bytes(str(remote["device_id"]))
         expected_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
         slot = int(remote["index"])
-        matches = [row for row in table if row[0] == slot and row[2] == c.CTRL_NATIVE
-                   and row[1] == expected_type and row[3] == expected_id]
-        if len(matches) != 1:
-            rows = [
-                {"slot": row[0], "device_type": f"0x{row[1]:02x}",
-                 "control_type": row[2], "device_id": row[3].hex()}
-                for row in table
-            ]
-            raise ValueError(
-                "The native remote slot or device ID no longer matches the saved record: "
-                f"expected slot={slot}, device_type=0x{expected_type:02x}, "
-                f"device_id={expected_id.hex()}; device table={rows}"
-            )
         backup_hex = remote.get("washer_artwork_backup_packet")
         if msg["restore"]:
             if not backup_hex:
@@ -676,7 +661,29 @@ async def ws_washer_artwork_test(hass, connection, msg):
             "Native artwork page command prepared: remote_id=%s slot=%s restore=%s bytes=%s",
             msg["remote_id"], slot, msg["restore"], len(packet),
         )
-        response = await client.send_command(packet, timeout=30.0)
+        before_raw, response = await client.send_command_with_preflight_query(
+            packet,
+            subcommand=7,
+            query_timeout=20.0,
+            command_timeout=30.0,
+            prewrite_retries=3,
+            refresh_credentials=True,
+        )
+        table = c.parse_added_devices(before_raw)
+        matches = [row for row in table if row[0] == slot and row[2] == c.CTRL_NATIVE
+                   and row[1] == expected_type and row[3] == expected_id]
+        if len(matches) != 1:
+            rows = [
+                {"slot": row[0], "device_type": f"0x{row[1]:02x}",
+                 "control_type": row[2], "device_id": row[3].hex()}
+                for row in table
+            ]
+            raise ValueError(
+                "The page command was sent, but the same-session device table did not confirm "
+                f"the saved native remote: expected slot={slot}, "
+                f"device_type=0x{expected_type:02x}, device_id={expected_id.hex()}; "
+                f"device table={rows}"
+            )
         error = install.resp_error(response)
         if error:
             raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
@@ -686,14 +693,6 @@ async def ws_washer_artwork_test(hass, connection, msg):
             "original" if msg["restore"] else f"0x{c.NATIVE_WASHER_CONTROL_MODE:02x}",
             response.hex(),
         )
-
-        table_after = c.parse_added_devices(await client.query(7))
-        expected_id = c.id_to_bytes(str(remote["device_id"]))
-        expected_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
-        slot = remote.get("index")
-        if not any(row[0] == slot and row[1] == expected_type and row[2] == c.CTRL_NATIVE
-                   and row[3] == expected_id for row in table_after):
-            raise ValueError("The page was acknowledged, but the native remote row changed")
         if msg["restore"]:
             _persist_artwork_test_packet(hass, entry, msg["remote_id"], None)
         connection.send_result(msg["id"], {"restored": msg["restore"]})
