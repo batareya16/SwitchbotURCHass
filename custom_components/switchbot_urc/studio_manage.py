@@ -676,7 +676,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         target_mode = packet_body[mode_offset]
         target_icon = packet_body[icon_offset]
 
-        _LOGGER.info(
+        _LOGGER.warning(
             "Native icon variant command prepared: remote_id=%s slot=%s restore=%s "
             "source_mode=%s source_icon=%s target_mode=%s target_icon=%s bytes=%s prefix=%s",
             msg["remote_id"], slot, msg["restore"],
