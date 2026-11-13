@@ -521,6 +521,7 @@ async def ws_remote_recreate(hass, connection, msg):
                         # would be dropped while the tile stayed on the screen.
                         remote["physical_device_id"] = device_id
                         remote["device_id"] = device_id
+                    remote.pop("icon_variant_backup_packet", None)
                     remote.pop("washer_artwork_backup_packet", None)
             _save_remotes(hass, entry, remotes)
             warning = ""
@@ -541,7 +542,7 @@ async def ws_remote_recreate(hass, connection, msg):
         connection.send_error(msg["id"], "recreate_failed", str(err))
 
 
-def _washer_artwork_source_packet(remote: dict[str, Any], slot: int) -> bytes:
+def _native_main_page_source_packet(remote: dict[str, Any], slot: int) -> bytes:
     """Use saved bytes, or rebuild only a known stock native page exactly."""
     device_type_name = str(remote.get("device_type", "")).upper()
     if device_type_name not in c.NATIVE_DEVTYPE:
@@ -612,22 +613,23 @@ def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | No
     if remote is None:
         raise ValueError("Remote not found")
     if packet is None:
+        remote.pop("icon_variant_backup_packet", None)
         remote.pop("washer_artwork_backup_packet", None)
     else:
-        remote["washer_artwork_backup_packet"] = packet.hex()
+        remote["icon_variant_backup_packet"] = packet.hex()
     hass.config_entries.async_update_entry(entry, options=options)
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command({
-    vol.Required("type"): f"{DOMAIN}/studio/remote/washer_artwork_test",
+    vol.Required("type"): f"{DOMAIN}/studio/remote/icon_variant_test",
     vol.Required("entry_id"): str,
     vol.Required("remote_id"): str,
     vol.Required("restore"): bool,
 })
 @websocket_api.async_response
-async def ws_washer_artwork_test(hass, connection, msg):
-    """Temporarily redraw one native Main page with the V48 washing-machine artwork."""
+async def ws_native_icon_variant_test(hass, connection, msg):
+    """Temporarily switch one native Main page between built-in icon variants."""
     try:
         entry = _entry(hass, msg)
         remote = next((item for item in entry.options.get("remotes", [])
@@ -639,7 +641,8 @@ async def ws_washer_artwork_test(hass, connection, msg):
         expected_id = c.id_to_bytes(str(remote["device_id"]))
         expected_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
         slot = int(remote["index"])
-        backup_hex = remote.get("washer_artwork_backup_packet")
+        backup_hex = (remote.get("icon_variant_backup_packet")
+                      or remote.get("washer_artwork_backup_packet"))
         if msg["restore"]:
             if not backup_hex:
                 raise ValueError("There is no saved artwork test to restore")
@@ -651,14 +654,22 @@ async def ws_washer_artwork_test(hass, connection, msg):
                 original_packet = bytes.fromhex(backup_hex)
                 _validate_native_test_packet(remote, int(slot), original_packet)
             else:
-                original_packet = _washer_artwork_source_packet(remote, int(slot))
+                original_packet = _native_main_page_source_packet(remote, int(slot))
                 # Keep a recovery packet before the write in case the device applies it but loses its ACK.
                 _persist_artwork_test_packet(hass, entry, msg["remote_id"], original_packet)
-            packet = c.rewrite_native_page_control_mode(
-                original_packet, c.NATIVE_WASHER_CONTROL_MODE)
+            body = original_packet[7:]
+            type_length = 4 if body[1] == 0 and len(body) >= 5 else 1
+            icon_offset = 1 + type_length + 2
+            current_icon = body[icon_offset]
+            packet = c.rewrite_native_page_icon(
+                original_packet, 1 if current_icon != 1 else 2)
+
+        packet_body = packet[7:]
+        packet_type_length = 4 if packet_body[1] == 0 and len(packet_body) >= 5 else 1
+        icon_offset = 1 + packet_type_length + 2
 
         _LOGGER.info(
-            "Native artwork page command prepared: remote_id=%s slot=%s restore=%s bytes=%s",
+            "Native icon variant command prepared: remote_id=%s slot=%s restore=%s bytes=%s",
             msg["remote_id"], slot, msg["restore"], len(packet),
         )
         before_raw, response = await client.send_command_with_preflight_query(
@@ -688,16 +699,16 @@ async def ws_washer_artwork_test(hass, connection, msg):
         if error:
             raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
         _LOGGER.info(
-            "Native artwork test acknowledged: remote_id=%s slot=%s restore=%s mode=%s response=%s",
+            "Native icon variant test acknowledged: remote_id=%s slot=%s restore=%s icon=%s response=%s",
             msg["remote_id"], slot, msg["restore"],
-            "original" if msg["restore"] else f"0x{c.NATIVE_WASHER_CONTROL_MODE:02x}",
+            packet[7 + icon_offset],
             response.hex(),
         )
         if msg["restore"]:
             _persist_artwork_test_packet(hass, entry, msg["remote_id"], None)
         connection.send_result(msg["id"], {"restored": msg["restore"]})
     except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
-        _LOGGER.exception("Remote Studio artwork test failed")
+        _LOGGER.exception("Remote Studio icon variant test failed")
         connection.send_error(msg["id"], "artwork_test_failed", str(err))
 
 
@@ -950,7 +961,7 @@ async def ws_bindings_cleanup(hass, connection, msg):
 def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_rename)
     websocket_api.async_register_command(hass, ws_remote_recreate)
-    websocket_api.async_register_command(hass, ws_washer_artwork_test)
+    websocket_api.async_register_command(hass, ws_native_icon_variant_test)
     websocket_api.async_register_command(hass, ws_pair_host)
     websocket_api.async_register_command(hass, ws_create_hid)
     websocket_api.async_register_command(hass, ws_diagnostics)

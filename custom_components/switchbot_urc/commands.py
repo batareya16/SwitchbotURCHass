@@ -828,6 +828,26 @@ def rewrite_native_page_control_mode(packet: bytes, control_mode: int) -> bytes:
     return packet[:5] + crc + bytes(body)
 
 
+def rewrite_native_page_icon(packet: bytes, icon: int) -> bytes:
+    """Change only the built-in artwork variant byte in a native page packet."""
+    if not 0 <= icon <= 0xFF:
+        raise ValueError("icon must fit in one byte")
+    if len(packet) < 90 or packet[:3] != b"\x0f\x62\x06":
+        raise ValueError("expected a complete 0F6206 page packet")
+    body = bytearray(packet[7:])
+    declared_length = int.from_bytes(packet[3:5], "big")
+    expected_crc = int.from_bytes(packet[5:7], "big")
+    if declared_length != len(body) or crc16_modbus(body) != expected_crc:
+        raise ValueError("the saved 0F6206 page packet has an invalid length or CRC")
+    device_type_length = 4 if body[1] == 0 and len(body) >= 5 else 1
+    icon_offset = 1 + device_type_length + 2
+    if len(body) <= icon_offset:
+        raise ValueError("the saved page packet has no icon field")
+    body[icon_offset] = icon
+    crc = crc16_modbus(body).to_bytes(2, "big")
+    return packet[:5] + crc + bytes(body)
+
+
 def build_hid_edit_page(
     *, remote_index: int, device_type_name: str, device_id: str, name: str,
     keys: list[dict], page_index: int = 0, icon: int = 0,

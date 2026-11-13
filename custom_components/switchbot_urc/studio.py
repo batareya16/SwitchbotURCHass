@@ -357,9 +357,12 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "remote_slot": remote.get("index"),
                 "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
                 "icon": str(remote.get("icon", "")),
-                "can_test_washer_artwork": str(remote.get("device_type", "")).upper()
+                "can_test_native_icon": str(remote.get("device_type", "")).upper()
                     in commands.NATIVE_DEVTYPE,
-                "washer_artwork_test_active": bool(remote.get("washer_artwork_backup_packet")),
+                "native_icon_test_active": bool(
+                    remote.get("icon_variant_backup_packet")
+                    or remote.get("washer_artwork_backup_packet")
+                ),
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
             }

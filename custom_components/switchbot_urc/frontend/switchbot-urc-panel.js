@@ -746,9 +746,9 @@ class SwitchBotUrcPanel extends HTMLElement {
               `Change what "${remote.name}" is called on the remote's screen`) : ""}
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
-            ${remote?.can_test_washer_artwork ? `<button class="secondary" id="washerArtworkTest"
-              title="Try the washing-machine artwork again; the saved original page is kept">Test washer artwork</button>
-              ${remote.washer_artwork_test_active ? `<button class="secondary" id="washerArtworkRestore"
+            ${remote?.can_test_native_icon ? `<button class="secondary" id="nativeIconVariantTest"
+              title="Switch the Main page to the other built-in icon variant; the original page is kept">Test alternate icon</button>
+              ${remote.native_icon_test_active ? `<button class="secondary" id="nativeIconVariantRestore"
                 title="Restore the saved original Main page">Restore original</button>` : ""}` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
               "Bind this remote to a different Bluetooth address") : ""}
@@ -1928,7 +1928,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _wireEvents() {
     const root = this.shadowRoot;
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote", "renameRemote",
-                      "recreateRemote", "washerArtworkTest", "washerArtworkRestore", "moveRemote", "deleteRemote"]) {
+                      "recreateRemote", "nativeIconVariantTest", "nativeIconVariantRestore", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
       if (el) el.disabled = this._physicalBusy;
     }
@@ -2023,17 +2023,17 @@ class SwitchBotUrcPanel extends HTMLElement {
       finally { this._physicalBusy = false; await this._load(); }
     });
 
-    const runWasherArtwork = async (restore) => {
+    const runNativeIconVariant = async (restore) => {
       const remote = this._remote();
       if (!remote) return;
-      if (!restore && !confirm(`Try washing-machine artwork on "${remote.name}"? The original Main page is saved, and the remote slot and buttons are retained.`)) return;
+      if (!restore && !confirm(`Switch "${remote.name}" to the other built-in icon variant? The original Main page is saved.`)) return;
       let actionError = null;
       this._physicalBusy = true;
       this._render();
       try {
-        await this._hass.callWS({ type: `${DOMAIN}/studio/remote/washer_artwork_test`,
+        await this._hass.callWS({ type: `${DOMAIN}/studio/remote/icon_variant_test`,
           entry_id: this._entryId, remote_id: this._remoteId, restore });
-        this._notify(restore ? "Original artwork restored" : "Washing-machine artwork sent to the Main page");
+        this._notify(restore ? "Original icon restored" : "Alternate icon variant sent to the Main page");
         this._error = null;
       } catch (error) { actionError = error?.message || String(error); }
       finally { this._physicalBusy = false; await this._load(); }
@@ -2043,8 +2043,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._notify(actionError);
       }
     };
-    root.getElementById("washerArtworkTest")?.addEventListener("click", () => runWasherArtwork(false));
-    root.getElementById("washerArtworkRestore")?.addEventListener("click", () => runWasherArtwork(true));
+    root.getElementById("nativeIconVariantTest")?.addEventListener("click", () => runNativeIconVariant(false));
+    root.getElementById("nativeIconVariantRestore")?.addEventListener("click", () => runNativeIconVariant(true));
 
     root.getElementById("moveRemote")?.addEventListener("click", async () => {
       const remote = this._remote();
