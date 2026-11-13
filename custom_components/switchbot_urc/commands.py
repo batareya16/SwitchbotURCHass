@@ -153,7 +153,8 @@ DEVTYPE = {"APPLE_TV": 0xF0, "FIRE_TV": 0xF1, "UNIVERSAL_BLE": 0xF2, "GOOGLE_TV"
 # controlType: HID=4, Matter=3, IR=1, native SwitchBot device=0.
 CTRL_HID = 4
 CTRL_NATIVE = 0
-NATIVE_WASHER_CONTROL_MODE = 0x13
+# V48 DSP control-mode atlas: 0x0e is the washing-machine/front-loader artwork.
+NATIVE_WASHER_CONTROL_MODE = 0x0E
 CTRL_IR = 1
 
 # Native SwitchBot-device remote types (controlType 0, NO HID-pair needed). devType bytes from

@@ -25,6 +25,7 @@ def test_rewrite_native_page_control_mode_preserves_all_other_page_data():
 
     assert rewritten[:5] == packet[:5]
     assert rewritten[7:10] == packet[7:10]
+    assert c.NATIVE_WASHER_CONTROL_MODE == 0x0E
     assert rewritten[10] == c.NATIVE_WASHER_CONTROL_MODE
     assert rewritten[11:] == packet[11:]
     assert int.from_bytes(rewritten[5:7], "big") == c.crc16_modbus(rewritten[7:])

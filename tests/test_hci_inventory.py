@@ -266,6 +266,41 @@ def test_late_central_connection_is_closed_after_a_failed_cleanup():
     assert not server.links
 
 
+def test_advertising_rearms_only_after_an_incoming_peripheral_disconnect():
+    server = object.__new__(hci.MultiAddressServer)
+    server._central_link = None
+    server._central_client = None
+    server.links = {}
+    server._pending_set_addresses = {}
+    server._enable_frame = b"\x01\x01\x00\x00\x00\x00"
+    commands = []
+    class Channel:
+        def command(self, opcode, payload=b"", **kwargs):
+            commands.append(opcode)
+    class Writer:
+        def disconnected(self, _handle):
+            pass
+    class Protocol:
+        def session_summary(self):
+            return "test"
+    server.channel = Channel()
+    server.writer = Writer()
+
+    # The add-on's outgoing management link must not trigger an advertising enable.
+    client = hci.AttManagementClient(PEER, lambda _: None)
+    client.handle = 24
+    client.closing = True
+    server._central_client = client
+    server._central_link = hci.Link(24, PEER, client, None)
+    server._on_event(hci.EV_DISCONN_COMPLETE, bytes([0, 24, 0, 0x13]))
+    assert hci.OP_LE_SET_EXT_ADV_ENABLE not in commands
+
+    # A remote connected to the fake hub consumes its advertising set, so re-arm it.
+    server.links[25] = hci.Link(25, PEER, Protocol(), object())
+    server._on_event(hci.EV_DISCONN_COMPLETE, bytes([0, 25, 0, 0x13]))
+    assert commands == [hci.OP_LE_SET_EXT_ADV_ENABLE]
+
+
 def test_connection_guard_refuses_new_query_without_overwriting_old_attempt():
     import threading
     server = object.__new__(hci.MultiAddressServer)
