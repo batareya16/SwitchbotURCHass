@@ -1772,10 +1772,15 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const { page, key } = found;
     const kind = this._physical.kind;
+    const linkedPage = button.button_page === 0
+      ? this._physical.pages.find((item) => item.index === key.index + 1)
+      : null;
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
     return `<div class="action-box key-editor">
-      <div class="action-title"><b>On the remote</b><span>what this key sends when pressed</span></div>
+      <div class="action-title"><b>On the remote</b><span>${linkedPage
+        ? `opens Page ${"ABCD"[linkedPage.index - 1] || linkedPage.index}`
+        : "what this key sends when pressed"}</span></div>
       ${transports.length > 1 ? `<label>Command type<select data-key-field="transport">${
         transports.map((item) => `<option value="${item}" ${key.transport === item ? "selected" : ""}>${label[item]}</option>`).join("")
       }</select></label>` : ""}
@@ -1802,7 +1807,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${button.button_page
           ? `<button class="secondary compact destructive" id="removeKey"
               title="Take this row off the page; the rows below it move up">Delete this row</button>`
-          : `<button class="secondary compact destructive" id="removeKey"
+          : linkedPage ? "" : `<button class="secondary compact destructive" id="removeKey"
               title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`}
       </div>
       ${this._pageControl(button, key)}
@@ -2019,6 +2024,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const remote = this._remote();
       if (!remote) return;
       if (!restore && !confirm(`Try washing-machine artwork on "${remote.name}"? The original Main page is saved, and the remote slot and buttons are retained.`)) return;
+      let actionError = null;
       this._physicalBusy = true;
       this._render();
       try {
@@ -2026,8 +2032,13 @@ class SwitchBotUrcPanel extends HTMLElement {
           entry_id: this._entryId, remote_id: this._remoteId, restore });
         this._notify(restore ? "Original artwork restored" : "Washing-machine artwork sent to the Main page");
         this._error = null;
-      } catch (error) { this._error = error?.message || String(error); }
+      } catch (error) { actionError = error?.message || String(error); }
       finally { this._physicalBusy = false; await this._load(); }
+      if (actionError) {
+        this._error = actionError;
+        this._render();
+        this._notify(actionError);
+      }
     };
     root.getElementById("washerArtworkTest")?.addEventListener("click", () => runWasherArtwork(false));
     root.getElementById("washerArtworkRestore")?.addEventListener("click", () => runWasherArtwork(true));

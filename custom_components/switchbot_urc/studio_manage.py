@@ -550,13 +550,25 @@ def _washer_artwork_source_packet(remote: dict[str, Any], slot: int) -> bytes:
     saved_packets = remote.get("physical_packets") or []
     if saved_packets:
         packets = [bytes.fromhex(value) for value in saved_packets]
-    else:
-        stock_layout = c.editable_layout_from_native_profile(device_type_name)
-        if remote.get("custom_layout") != stock_layout:
-            raise ValueError(
-                "The original page packet is not cached for this custom layout; refusing to "
-                "rebuild it from an incomplete copy"
+    elif isinstance(remote.get("custom_layout"), dict):
+        layout = remote["custom_layout"]
+        template = str(layout.get("template") or device_type_name).upper()
+        packets = [
+            packet for _, packet in c.build_custom_native_pages(
+                remote_index=slot,
+                name=str(remote.get("name", "Remote")),
+                device_id=str(remote["device_id"]),
+                icon_name=str(remote.get("icon", "light")),
+                event_remote_id=str(remote.get("remote_id") or ""),
+                main_buttons=c.normalize_main_buttons(layout.get("main_buttons", {})),
+                page_buttons={
+                    int(page): list(actions)
+                    for page, actions in layout.get("pages", {}).items()
+                },
+                template=template,
             )
+        ]
+    else:
         packets = list(c.build_native_pages(
             device_type_name=device_type_name,
             remote_index=slot,
@@ -628,11 +640,20 @@ async def ws_washer_artwork_test(hass, connection, msg):
         table = c.parse_added_devices(raw)
         expected_id = c.id_to_bytes(str(remote["device_id"]))
         expected_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
-        slot = remote.get("index")
+        slot = int(remote["index"])
         matches = [row for row in table if row[0] == slot and row[2] == c.CTRL_NATIVE
                    and row[1] == expected_type and row[3] == expected_id]
         if len(matches) != 1:
-            raise ValueError("The native remote slot or device ID no longer matches the saved record")
+            rows = [
+                {"slot": row[0], "device_type": f"0x{row[1]:02x}",
+                 "control_type": row[2], "device_id": row[3].hex()}
+                for row in table
+            ]
+            raise ValueError(
+                "The native remote slot or device ID no longer matches the saved record: "
+                f"expected slot={slot}, device_type=0x{expected_type:02x}, "
+                f"device_id={expected_id.hex()}; device table={rows}"
+            )
         backup_hex = remote.get("washer_artwork_backup_packet")
         if msg["restore"]:
             if not backup_hex:
@@ -651,6 +672,10 @@ async def ws_washer_artwork_test(hass, connection, msg):
             packet = c.rewrite_native_page_control_mode(
                 original_packet, c.NATIVE_WASHER_CONTROL_MODE)
 
+        _LOGGER.info(
+            "Native artwork page command prepared: remote_id=%s slot=%s restore=%s bytes=%s",
+            msg["remote_id"], slot, msg["restore"], len(packet),
+        )
         response = await client.send_command(packet, timeout=30.0)
         error = install.resp_error(response)
         if error:
