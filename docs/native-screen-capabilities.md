@@ -194,6 +194,20 @@ rows have no image descriptor. The primary atlas visually identifies power, navi
 lighting, numeric, and color controls. The secondary atlas has smaller variants for many glyphs.
 Regenerate either with [`decode_glyph_resources.py`](../../firmware-worws/scripts/decode_glyph_resources.py).
 
+Remote Studio uses the primary firmware glyph directly by `button_function`/`keyFun`; it does not
+infer an icon from a translated button label. Its transparent PNG assets are generated from the
+same indexed `RES.bin` resources:
+
+```sh
+rtk python3 hass/tools/export_native_glyphs.py \
+  --res firmware-worws/v48/RES.bin \
+  --index hass/docs/native-glyph-resource-index.csv \
+  --output-dir hass/custom_components/switchbot_urc/frontend/native-glyphs
+```
+
+The filenames use the four-digit `keyFun` value, for example `keyfun-014b.png`. Functions without
+a primary resource remain without a glyph in the editor; Studio does not substitute a guessed icon.
+
 A scan of all 4-byte-aligned `RES.bin` positions for a matching LVGL header, self-pointing payload
 address, complete RGB token stream, and decoded size within eight pixels of declared dimensions
 found 987 objects of this format. Of these, 330 are the distinct resources referenced by the

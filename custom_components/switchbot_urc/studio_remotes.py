@@ -426,6 +426,7 @@ async def ws_remote_create(hass, connection, msg):
             "name": msg["name"],
             "device_type": device_type,
             "icon": str(msg.get("icon") or target.get("icon") or "strip"),
+            "icon_code": c.ICON.get(str(msg.get("icon") or target.get("icon") or "strip").lower(), 1),
             "device_id": str(target["device_id"]),
             "physical_device_id": str(target["device_id"]),
             "remote_id": remote_id,

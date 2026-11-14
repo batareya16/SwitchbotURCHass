@@ -509,6 +509,7 @@ async def ws_remote_recreate(hass, connection, msg):
                     remote["name"] = name
                     if icon:
                         remote["icon"] = icon
+                        remote["icon_code"] = c.ICON.get(icon.lower(), 1)
                     if moved_from:
                         # Both, not just one: `device_id` is what the device table is searched
                         # by, so leaving it on the old address would make this remote
@@ -624,7 +625,7 @@ def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | No
 })
 @websocket_api.async_response
 async def ws_native_icon_variant_test(hass, connection, msg):
-    """Temporarily switch one native Main page to control mode 0x0E."""
+    """Temporarily switch one native Main page to the built-in Floor lamp profile."""
     try:
         entry = _entry(hass, msg)
         remote = next((item for item in entry.options.get("remotes", [])
@@ -663,7 +664,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             # controlMode selects the firmware artwork profile.  The icon byte only
             # selects that profile's normal/alternate rendering variant.
             packet = c.rewrite_native_page_control_mode(
-                original_packet, c.NATIVE_TEST_CONTROL_MODE)
+                original_packet, c.NATIVE_FLOOR_LAMP_TEST_CONTROL_MODE)
             packet = c.rewrite_native_page_icon(packet, 1)
 
         packet_body = packet[7:]
@@ -674,7 +675,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         target_icon = packet_body[icon_offset]
 
         _LOGGER.warning(
-            "Native screen profile command prepared: remote_id=%s slot=%s restore=%s "
+            "Native Floor lamp profile command prepared: remote_id=%s slot=%s restore=%s "
             "source_mode=%s source_icon=%s target_mode=%s target_icon=%s bytes=%s prefix=%s",
             msg["remote_id"], slot, msg["restore"],
             None if source_mode is None else f"0x{source_mode:02x}",
@@ -708,7 +709,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
         if error:
             raise ValueError(f"The remote did not acknowledge the Main-page rewrite ({error})")
         _LOGGER.info(
-            "Native screen profile test acknowledged: remote_id=%s slot=%s restore=%s "
+            "Native Floor lamp profile write acknowledged: remote_id=%s slot=%s restore=%s "
             "mode=0x%02x icon=0x%02x response=%s",
             msg["remote_id"], slot, msg["restore"],
             target_mode, target_icon,

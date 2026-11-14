@@ -22,6 +22,29 @@ const IR_PROFILE_ARTWORK = {
   1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
   8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
 };
+const NATIVE_GLYPH_FUNCTIONS = new Set([
+  0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x000c, 0x000d, 0x000f,
+  0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017, 0x0018, 0x0019,
+  0x001a, 0x001b, 0x001c, 0x001e, 0x001f, 0x0020, 0x0021, 0x0027, 0x0028, 0x0029,
+  0x002a, 0x002b, 0x002c, 0x002d, 0x002e, 0x002f, 0x0030, 0x0031, 0x0032, 0x0033,
+  0x0034, 0x0035, 0x0036, 0x0037, 0x0038, 0x0039, 0x003a, 0x003b, 0x003c, 0x003d,
+  0x003e, 0x0046, 0x0047, 0x0048, 0x0049, 0x004a, 0x004b, 0x004c, 0x004d, 0x004e,
+  0x0050, 0x0051, 0x0052, 0x0053, 0x0054, 0x0055, 0x0059, 0x005a, 0x005b, 0x005c,
+  0x005e, 0x0064, 0x0065, 0x0066, 0x0067, 0x0068, 0x0069, 0x006a, 0x006b, 0x006c,
+  0x006d, 0x006e, 0x006f, 0x0070, 0x0071, 0x0072, 0x0073, 0x0074, 0x0075, 0x0076,
+  0x0077, 0x0078, 0x0079, 0x007a, 0x007b, 0x007c, 0x007d, 0x007e, 0x007f, 0x0080,
+  0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008a,
+  0x008b, 0x008c, 0x008d, 0x008e, 0x008f, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094,
+  0x0095, 0x0096, 0x0097, 0x0098, 0x0099, 0x009a, 0x00c8, 0x00c9, 0x00ca, 0x00cb,
+  0x00d2, 0x00d3, 0x00d4, 0x00d5, 0x00d6, 0x00dc, 0x00dd, 0x00de, 0x00df, 0x00e0,
+  0x012c, 0x012d, 0x012e, 0x012f, 0x0137, 0x0138, 0x0139, 0x013a, 0x013b, 0x013c,
+  0x013d, 0x013e, 0x0140, 0x0141, 0x0142, 0x0143, 0x014a, 0x014b, 0x014c, 0x014d,
+  0x014e, 0x014f, 0x0150, 0x0151, 0x0152, 0x0153, 0x0154, 0x0155, 0x0156, 0x0157,
+  0x0158, 0x0159, 0x02bc, 0x0320, 0x0321, 0x0322, 0x0384, 0x0385, 0x0387, 0x0388,
+  0x0389, 0x038a, 0x038b, 0x038c, 0x038d, 0x038e, 0x038f, 0x0390, 0x0391, 0x0392,
+  0x0393, 0x0394, 0x0395, 0x0396, 0x05dc, 0x0640, 0x06a4, 0x07d0, 0x07d1, 0x07d2,
+  0x07d3, 0x0834, 0x0835, 0x0836, 0x0837, 0x0838, 0x0839,
+]);
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -477,18 +500,15 @@ class SwitchBotUrcPanel extends HTMLElement {
     return ["none", "No action"];
   }
 
-  _buttonIcon(button) {
-    const label = button.label.toUpperCase();
-    if (label.includes("ON")) return "⏻";
-    if (label.includes("OFF")) return "○";
-    if (label.includes("BRIGHT") || label.includes("UP")) return "＋";
-    if (label.includes("DARK") || label.includes("DOWN")) return "−";
-    if (label.includes("WARM") || label.includes("LEFT")) return "‹";
-    if (label.includes("COOL") || label.includes("RIGHT")) return "›";
-    if (label.includes("COLOR")) return "●";
-    if (label.includes("FAN") || label.includes("SPEED")) return "✣";
-    if (label.includes("MUTE")) return "×";
-    return button.label.replace(/^Button /i, "").slice(0, 3);
+  _nativeGlyphSrc(button) {
+    const functionCode = Number(button?.button_function);
+    if (!Number.isInteger(functionCode) || !NATIVE_GLYPH_FUNCTIONS.has(functionCode)) return "";
+    return `/switchbot_urc_static/native-glyphs/keyfun-${functionCode.toString(16).padStart(4, "0")}.png`;
+  }
+
+  _nativeGlyph(button, className = "") {
+    const src = this._nativeGlyphSrc(button);
+    return src ? `<img class="native-glyph ${className}" src="${src}" alt="" aria-hidden="true">` : "";
   }
 
   _iconImage(name) {
@@ -604,8 +624,10 @@ class SwitchBotUrcPanel extends HTMLElement {
           ? `<span class="draft-tag ${item.layout_state}">${item.layout_state}</span>` : "";
         const draftClass = item.layout_state && item.layout_state !== "unchanged"
           ? ` draft-${item.layout_state}` : "";
+        const glyph = this._nativeGlyph(item, "scr-icon");
         return `<div class="scr-row k ${status}${on ? " on" : ""}${draftClass}" role="button" tabindex="0"
           data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}">
+          ${glyph}
           <span class="pos">${escapeHtml(item.position || `#${item.button_index + 1}`)}</span>
           <span class="nm">${escapeHtml(item.label)}</span>${layoutState}</div>`;
       }).join("");
@@ -620,12 +642,12 @@ class SwitchBotUrcPanel extends HTMLElement {
         ? this._nativeArtworkSrc(profile, item.icon)
         : this._hidArtworkSrc(item.device_type) || this._irArtworkSrc(item);
       return `<div class="scr-row${current ? " on" : ""}">
-        <div class="k pick-remote" role="button" tabindex="0"
+        <button class="k pick-remote" type="button"
           data-remote="${escapeHtml(item.remote_id)}"
           title="${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}">
           ${artwork ? `<img class="ic-img" src="${artwork}" alt="">` : item.can_test_native_icon ||
             String(item.device_type).startsWith("IR_")
-            ? `<span class="ic-fallback" aria-hidden="true">▣</span>` : this._iconImage(item.icon)}<span class="nm">${escapeHtml(item.name)}</span></div>
+            ? `<span class="ic-fallback" aria-hidden="true">▣</span>` : this._iconImage(item.icon)}<span class="nm">${escapeHtml(item.name)}</span></button>
         ${current ? `<button class="k ic-btn" data-icon-for="${escapeHtml(item.remote_id)}"
           title="Edit this remote's name and appearance">✎</button>` : ""}
       </div>`;
@@ -644,8 +666,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
     const iconCode = Object.keys(APP_ICON_ASSETS).indexOf(pickedIcon) + 1;
     const choices = this._entry()?.icons || [];
-    const artwork = native ? this._nativeArtworkSrc(profile, remote.icon)
+    const artwork = native ? this._nativeArtworkSrc(profile, pickedIcon)
       : this._hidArtworkSrc(remote.device_type) || this._irArtworkSrc(remote);
+    const canChooseIcon = native || !firmwareArtwork;
     return `<section class="appearance">
       <div class="appearance-head"><div><b>Appearance</b><span>How this remote is shown and arranged</span></div></div>
       <div class="appearance-grid">
@@ -663,27 +686,29 @@ class SwitchBotUrcPanel extends HTMLElement {
                 : `<b>IR screen</b><p>${artwork ? "The IR type and saved icon variant select this built-in illustration." : "No decoded firmware illustration is available for this IR type."}</p>`}
           </div>
         </div>` : isNative ? `<p class="appearance-note">Loading the screen layout…</p>` : ""}
-        ${firmwareArtwork ? "" : `<div class="appearance-part">
+        ${canChooseIcon ? `<div class="appearance-part">
           <div class="app-icon-preview">${this._iconImage(pickedIcon)}</div>
           <div class="appearance-part-body"><b>Icon preview</b>
-            <p>${escapeHtml(APP_ICON_LABELS[pickedIcon] || pickedIcon)} · preview from the SwitchBot app.</p>
+            <p>${escapeHtml(APP_ICON_LABELS[pickedIcon] || pickedIcon)} · ${native
+              ? "the app icon code is separate from the screen layout; the firmware may use it only as an artwork variant."
+              : "preview from the SwitchBot app."}</p>
           </div>
-        </div>`}
+        </div>` : ""}
       </div>
       ${editing ? `<div class="appearance-editor">
         <label>Name on the remote<input data-rename-input="1" maxlength="30" spellcheck="false"
           value="${escapeHtml(this._tileNameDraft ?? remote.name)}"></label>
-        ${firmwareArtwork ? "" : `<span class="appearance-field-label">Choose an icon</span>
+        ${canChooseIcon ? `<span class="appearance-field-label">Device icon</span>
         <div class="appearance-icon-grid">${choices.map((name) => `<button
           class="appearance-icon-choice${name === pickedIcon ? " selected" : ""}"
           data-pick-icon="${escapeHtml(name)}" type="button" aria-label="${escapeHtml(APP_ICON_LABELS[name] || name)}"
-          aria-pressed="${name === pickedIcon}">${this._iconImage(name)}<span>${escapeHtml(APP_ICON_LABELS[name] || name)}</span></button>`).join("")}</div>`}
-        ${isNative ? `<p class="appearance-note">The screen layout chooses the firmware artwork. This remote keeps its existing artwork variant.</p>`
+          aria-pressed="${name === pickedIcon}">${this._iconImage(name)}<span>${escapeHtml(APP_ICON_LABELS[name] || name)}</span></button>`).join("")}</div>` : ""}
+        ${isNative ? `<p class="appearance-note">Screen layout sets the built-in controls and illustration. Device icon is a separate packet field; recovered firmware does not map all 18 icon names to matching drawings.</p>`
           : isHid ? `<p class="appearance-note">This remote keeps its saved icon code.</p>`
           : isIr ? `<p class="appearance-note">This remote keeps its saved icon code. The app's 18 icon names are not 18 distinct firmware illustrations.</p>`
           : `<p class="appearance-note">These previews come from the SwitchBot app. Distinct physical artwork for every catalog icon is not confirmed.</p>`}
         ${this._physicalChanges() ? `<p class="appearance-note">Save the screen layout first, then save the name${firmwareArtwork ? "" : " and icon"}.</p>` : ""}
-        <div class="appearance-actions"><button class="primary" data-tile-save="1" ${this._physicalBusy || this._physicalChanges() ? "disabled" : ""}>${firmwareArtwork ? "Save name" : "Save name and icon"}</button>
+        <div class="appearance-actions"><button class="primary" data-tile-save="1" ${this._physicalBusy || this._physicalChanges() ? "disabled" : ""}>${canChooseIcon ? "Save name and icon" : "Save name"}</button>
           <button class="secondary compact" data-icon-cancel="1">Cancel</button></div>
       </div>` : ""}
       ${native && profile ? `<details class="appearance-details"><summary>Technical details</summary>
@@ -734,18 +759,44 @@ class SwitchBotUrcPanel extends HTMLElement {
             ${this._renderScreen(page)}
           </div>
         </foreignObject>
+        ${Array.from({ length: 4 }, (_, index) => {
+          const tag = "ABCD"[index];
+          const button = page?.index === 0
+            ? byPos[tag]
+            : null;
+          const linked = page?.index === 0
+            ? this._pages().find((item) => item.index === index + 1) : null;
+          const profileButton = this._physical?.pages?.find((item) => item.index === 0)
+            ?.buttons?.find((item) => item.index === index);
+          const glyphSrc = this._nativeGlyphSrc(button || {
+            button_function: profileButton?.function,
+          });
+          if (!glyphSrc) return "";
+          const action = linked
+            ? `data-page-link="${index + 1}"`
+            : button ? `data-button="${escapeHtml(button.button_id)}"` : "";
+          const role = action ? 'role="button" tabindex="0"' : "";
+          const title = linked ? `${tag} · ${escapeHtml(linked.name)}`
+            : `${tag} · ${escapeHtml(button?.label || "")}`;
+          return `<g class="screen-softkey" ${role} ${action} aria-label="${title}" title="${title}">
+            <rect x="${52 + index * 52}" y="224" width="44" height="34" rx="6"/>
+            <image href="${glyphSrc}" x="${64 + index * 52}" y="225" width="20" height="20"
+              preserveAspectRatio="xMidYMid meet"/>
+            <text x="${74 + index * 52}" y="252" class="screen-softkey-label">${tag}</text>
+          </g>`;
+        }).join("")}
         <g class="scr-sep"><path d="M35 262h230M80 262v18M220 262v18"/></g>
 
         ${["A", "B", "C", "D"].map((tag, index) => {
-          const shape = `<rect x="${52 + index * 52}" y="296" width="44" height="32" rx="10" class="cap"/>
-            <text x="${74 + index * 52}" y="316" class="cap-t">${tag}</text>`;
+          const shape = `<rect x="${52 + index * 52}" y="288" width="44" height="32" rx="10" class="cap"/>
+            <text x="${74 + index * 52}" y="308" class="cap-t">${tag}</text>`;
           const linked = this._pages().find((item) => item.index === index + 1);
           // A key that opens a page has no command of its own: that is what the firmware does
           // with it, and it is why it cannot carry a Home Assistant action.
           if (linked && !byPos[tag]) {
             return `<g class="k link" role="button" tabindex="0" data-page-link="${index + 1}">
               <title>${escapeHtml(tag)} opens ${escapeHtml(linked.name)}</title>${shape}
-              <path d="M-4-4l4 4-4 4" transform="translate(${88 + index * 52} 312)" class="mark link-mark"/>
+              <path d="M-4-4l4 4-4 4" transform="translate(${88 + index * 52} 304)" class="mark link-mark"/>
             </g>`;
           }
           return key(tag, shape, tag);
@@ -779,7 +830,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ? `<div class="screen-keys"><div class="sk-title">Positions this remote uses that the
          device has no key for</div><div class="button-grid">${extras.map((item) => {
           const [status, statusLabel] = this._status(item);
-          return `<button class="remote-button ${status} ${item.button_id === this._buttonId ? "selected" : ""}" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)}"><span class="glyph">${escapeHtml(this._buttonIcon(item))}</span><span>${escapeHtml(item.label)}</span><i></i></button>`;
+          return `<button class="remote-button ${status} ${item.button_id === this._buttonId ? "selected" : ""}" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)}">${this._nativeGlyph(item, "glyph")}<span>${escapeHtml(item.label)}</span><i></i></button>`;
         }).join("")}</div></div>`
       : "";
     return svg + extrasRow;
@@ -853,7 +904,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_test_native_icon ? `<button class="secondary" id="nativeIconVariantTest"
-              title="Switch the Main page to control mode 0x0E; the original page is kept">Test control mode 0x0E</button>
+              title="Temporarily show the built-in Floor lamp screen profile; the original page is saved">Test Floor lamp screen</button>
               ${remote.native_icon_test_active ? `<button class="secondary" id="nativeIconVariantRestore"
                 title="Restore the saved original Main page">Restore original</button>` : ""}` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
@@ -1209,11 +1260,15 @@ class SwitchBotUrcPanel extends HTMLElement {
           (sources.native_options?.screen_profiles || []).map(
             (item) => option(item.value, item.label, item.value === add.deviceType)).join("")
         }</select></label>
+        <label>Device icon<select data-add-field="icon">${
+          (sources.native_options?.icons || []).map((name) => option(
+            name, APP_ICON_LABELS[name] || name, name === add.icon)).join("")
+        }</select></label>
         <div class="add-native-artwork"><div class="artwork-preview">${nativeArtwork
           ? `<img src="${nativeArtwork}" alt="Firmware artwork for ${escapeHtml(nativeProfile.title)}">`
           : "—"}</div><p class="small">${escapeHtml(nativeProfile?.title || "Screen layout")}
-          controls the built-in artwork, button positions and pages. The preview uses the
-          default artwork variant; check the remote after installation.</p></div>
+          controls the built-in controls, artwork, button positions and pages. Device icon is a
+          separate code and its name is not a guaranteed physical drawing.</p></div>
         <label>AES key<input type="text" data-add-field="target_key" spellcheck="false"
           value="${escapeHtml(add.targetKey || "")}"
           placeholder="32 hex characters, the same as the add-on's device_key"></label>
@@ -2123,14 +2178,14 @@ class SwitchBotUrcPanel extends HTMLElement {
     const runNativeIconVariant = async (restore) => {
       const remote = this._remote();
       if (!remote) return;
-      if (!restore && !confirm(`Switch "${remote.name}" to the other built-in icon variant? The original Main page is saved.`)) return;
+      if (!restore && !confirm(`Temporarily switch "${remote.name}" to the built-in Floor lamp screen profile? The original Main page is saved for restore.`)) return;
       let actionError = null;
       this._physicalBusy = true;
       this._render();
       try {
         await this._hass.callWS({ type: `${DOMAIN}/studio/remote/icon_variant_test`,
           entry_id: this._entryId, remote_id: this._remoteId, restore });
-        this._notify(restore ? "Original icon restored" : "Alternate icon variant sent to the Main page");
+        this._notify(restore ? "Original Main page restored" : "Floor lamp screen profile command acknowledged");
         this._error = null;
       } catch (error) { actionError = error?.message || String(error); }
       finally { this._physicalBusy = false; await this._load(); }
@@ -2254,9 +2309,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._render();
       };
       element.addEventListener("click", pick);
-      element.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick(); }
-      });
     });
 
     root.querySelectorAll("[data-icon-for]").forEach((element) => {
@@ -2601,7 +2653,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .glass{fill:#090a0c}
       .device .glass-edge{fill:none;stroke:#ffffff29;stroke-width:1.2;stroke-linecap:round}
       .scr-scroll{height:242px;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;
-        -webkit-overflow-scrolling:touch;padding:48px 13px 12px;scrollbar-width:thin;
+        -webkit-overflow-scrolling:touch;padding:48px 13px 48px;scrollbar-width:thin;
         scrollbar-color:#ffffff40 transparent;font:600 12px/1.2 system-ui,sans-serif;color:#fff}
       .scr-scroll::-webkit-scrollbar{width:4px}
       .scr-scroll::-webkit-scrollbar-thumb{background:#ffffff40;border-radius:2px}
@@ -2609,11 +2661,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row{display:flex;align-items:center;gap:4px;min-height:30px;border-radius:5px;margin-bottom:3px}
       .scr-row.on{background:#ffffff1f}
       .scr-row>.k{flex:1;display:flex;align-items:center;gap:9px;padding:6px 7px;cursor:pointer;
-        border-radius:5px;min-width:0}
+        border-radius:5px;min-width:0;pointer-events:auto}
+      .scr-row>.pick-remote{border:0;background:transparent;color:inherit;text-align:left;font-weight:inherit}
+      .pick-remote>*{pointer-events:none}
       .scr-row>.k:hover{background:#ffffff14}
       .scr-row>.k:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}
       .scr-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .scr-row .pos{font-size:10px;font-weight:800;color:#ffffff7a;min-width:28px}
+      .native-glyph{display:block;width:24px;height:24px;object-fit:contain;flex:none}
+      .scr-row .scr-icon{width:20px;height:20px}
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
       .scr-row.draft-new,.scr-row.draft-edited{background:#267b6026}.scr-row.draft-moved{background:#32729a26}
@@ -2624,6 +2680,11 @@ class SwitchBotUrcPanel extends HTMLElement {
         background:#ffffff26;color:#fff;font-size:13px;line-height:1;cursor:pointer}
       .ic-btn:hover{background:#ffffff3d}
       .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
+      .device .screen-softkey{cursor:pointer}
+      .device .screen-softkey rect{fill:#ffffff0d;stroke:#ffffff24;stroke-width:.8}
+      .device .screen-softkey:hover rect,.device .screen-softkey:focus-visible rect{fill:#ffffff22;stroke:#8bd4ff;stroke-width:1.5}
+      .device .screen-softkey:focus-visible{outline:none}
+      .device .screen-softkey-label{fill:#ffffff80;font:700 7px/1 system-ui,sans-serif;text-anchor:middle}
       .device .cap{fill:#f7f7f9;stroke:#dadddf;stroke-width:1}
       .device .cap.ring{fill:#f4f4f7}
       .device .cap.seg{fill:#f4f4f7;stroke:#e6e6ea}
