@@ -446,6 +446,10 @@ async def ws_remote_recreate(hass, connection, msg):
                 raise ValueError(
                     "No stored bridge credentials for this remote, so it cannot be written again"
                 )
+            device_type_name = str(managed["device_type"])
+            if not c.native_device_type_supported(device_type_name):
+                raise ValueError("WoRWS local page writes require a one-byte native device type")
+            appearance = physical_layout.native_appearance(managed)
             device_id = str(managed.get("physical_device_id") or managed["device_id"])
             moved_from = ""
             wanted = str(msg.get("target_address") or "").strip()
@@ -494,7 +498,9 @@ async def ws_remote_recreate(hass, connection, msg):
             slot = len(c.parse_added_devices(raw))
             custom_layout = managed.get("custom_layout")
             native_icon = str(managed.get("icon") or "light")
-            native_mode = managed.get("control_mode")
+            native_mode = appearance["control_mode"]
+            native_icon = next((key for key, value in c.ICON.items()
+                                if value == appearance["icon_code"]), native_icon)
             if custom_layout:
                 stages = c.build_custom_native_bind_sequence(
                     key_id=0x01,
@@ -511,13 +517,14 @@ async def ws_remote_recreate(hass, connection, msg):
                     },
                     template=custom_layout.get("template"),
                     control_mode=native_mode,
-                    device_type_name=str(managed["device_type"]),
+                    device_type_name=device_type_name,
+                    glyphs=custom_layout.get("glyphs"),
                 )
             else:
                 stages = c.build_native_bind_sequence(
                     key_id=0x01,
                     target_key=bytes.fromhex(str(target["target_key"])),
-                    device_type_name=str(managed["device_type"]),
+                    device_type_name=device_type_name,
                     remote_index=slot,
                     name=name,
                     device_id=device_id,
@@ -547,6 +554,9 @@ async def ws_remote_recreate(hass, connection, msg):
                     remote["name"] = name
                     remote["icon"] = native_icon
                     remote["icon_code"] = c.ICON.get(native_icon, 1)
+                    remote["control_mode"] = native_mode
+                    remote["native_type"] = appearance["native_type"]
+                    remote["floor_lamp_test_applied"] = False
                     remote["physical_packets"] = [packet.hex() for stage, packet in stages
                                                   if stage.startswith("bind_")]
                     if moved_from:
@@ -602,6 +612,9 @@ def _native_page_source_packets(remote: dict[str, Any], slot: int) -> list[bytes
                     for page, actions in layout.get("pages", {}).items()
                 },
                 template=template,
+                control_mode=remote.get("control_mode"),
+                device_type_name=device_type_name,
+                glyphs=layout.get("glyphs"),
             )
         ]
     else:
@@ -612,6 +625,7 @@ def _native_page_source_packets(remote: dict[str, Any], slot: int) -> list[bytes
             device_id=str(remote["device_id"]),
             icon_name=str(remote.get("icon", "light")),
             event_remote_id=str(remote.get("remote_id") or ""),
+            control_mode=int(remote.get("control_mode") or 0),
         ))
 
     if not packets:
@@ -704,6 +718,7 @@ async def ws_native_icon_update(hass, connection, msg):
                 "icon": msg["icon"],
                 "icon_code": icon_code,
                 "physical_packets": [packet.hex() for packet in packets],
+                "floor_lamp_test_applied": False,
             })
             remote.pop("icon_variant_backup_packet", None)
             remote.pop("washer_artwork_backup_packet", None)
@@ -737,7 +752,9 @@ def _validate_native_test_packet(remote: dict[str, Any], slot: int, packet: byte
         raise ValueError("The saved Main-page packet does not match this native remote")
 
 
-def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | None) -> None:
+def _persist_artwork_test_packet(
+    hass, entry, remote_id: str, packet: bytes | None, *, applied: bool = False
+) -> None:
     options = deepcopy(dict(entry.options))
     remote = next((item for item in options.get("remotes", [])
                    if str(item.get("remote_id") or item.get("device_id") or "") == remote_id), None)
@@ -748,6 +765,7 @@ def _persist_artwork_test_packet(hass, entry, remote_id: str, packet: bytes | No
         remote.pop("washer_artwork_backup_packet", None)
     else:
         remote["icon_variant_backup_packet"] = packet.hex()
+    remote["floor_lamp_test_applied"] = applied
     hass.config_entries.async_update_entry(entry, options=options)
 
 
@@ -799,7 +817,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             # controlMode selects the firmware artwork profile.  The icon byte only
             # selects that profile's normal/alternate rendering variant.
             packet = c.rewrite_native_page_control_mode(
-                original_packet, c.NATIVE_FLOOR_LAMP_TEST_CONTROL_MODE)
+                original_packet, c.NATIVE_FLOOR_LAMP_CONTROL_MODE)
             packet = c.rewrite_native_page_icon(packet, 1)
 
         packet_body = packet[7:]
@@ -850,8 +868,9 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             target_mode, target_icon,
             response.hex(),
         )
-        if msg["restore"]:
-            _persist_artwork_test_packet(hass, entry, msg["remote_id"], None)
+        _persist_artwork_test_packet(
+            hass, entry, msg["remote_id"], original_packet, applied=not msg["restore"]
+        )
         connection.send_result(msg["id"], {"restored": msg["restore"]})
     except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
         _LOGGER.exception("Remote Studio icon variant test failed")

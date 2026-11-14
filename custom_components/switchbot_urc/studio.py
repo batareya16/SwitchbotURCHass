@@ -29,11 +29,12 @@ from . import studio_cloud
 from . import targets
 from . import studio_manage
 from . import studio_physical
+from .physical_layout import native_appearance
 from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.38"
+FRONTEND_VERSION = "0.50.41"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -349,15 +350,13 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "remote_id": remote_id,
                 "name": str(remote.get("name") or remote_id),
                 "device_type": device_type,
-                "native_type": remote.get("native_type") or (
-                    remote.get("device_type") if remote.get("device_type") in commands.NATIVE_DEVTYPE else None
-                ),
                 "reachability": _reachability(remote),
                 "layout_editable": True,
                 "remote_slot": remote.get("index"),
                 "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
                 "icon": str(remote.get("icon", "")),
                 "icon_code": remote.get("icon_code") if isinstance(remote.get("icon_code"), int) else None,
+                **native_appearance(remote),
                 "can_test_native_icon": str(remote.get("device_type", "")).upper()
                     in commands.NATIVE_DEVTYPE,
                 "native_icon_test_active": bool(

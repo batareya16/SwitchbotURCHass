@@ -2,14 +2,73 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 from . import commands as c
+
+
+def _validate_glyph(glyph):
+    if (type(glyph) is not int or not 0 <= glyph <= 0xFFFF
+            or not (Path(__file__).parent / "frontend" / "native-glyphs"
+                    / f"keyfun-{glyph:04x}.png").is_file()):
+        raise ValueError("Choose an available firmware icon")
 
 
 def source_packets(remote: dict) -> list[bytes]:
     if remote.get("physical_packets"):
         return [bytes.fromhex(value) for value in remote["physical_packets"]]
     return []
+
+
+def native_appearance(remote: dict) -> dict:
+    """Recover the Studio type and icon variant from the cached Main-page write."""
+    name = str(remote.get("device_type", "")).upper()
+    device_code = c.NATIVE_DEVTYPE.get(name)
+    if device_code is None:
+        return {}
+    stored_type = remote.get("native_type")
+    mode = remote.get("control_mode")
+    icon = remote.get("icon_code")
+    if not isinstance(icon, int):
+        icon = c.ICON.get(str(remote.get("icon", "")).lower(), 1)
+    # Older Studio versions saved the original page when applying the Floor lamp test
+    # but left the cached artwork fields pointing at that original page.
+    legacy_floor_lamp_test = (
+        device_code == 0x72 and "floor_lamp_test_applied" not in remote
+        and remote.get("icon_variant_backup_packet")
+    )
+    try:
+        packets = source_packets(remote)
+    except (ValueError, TypeError):
+        packets = []
+    for packet in packets:
+        if len(packet) < 90 or packet[:3] != b"\x0f\x62\x06":
+            continue
+        width = 4 if packet[8] == 0 else 1
+        control = 8 + width
+        if (len(packet) < 89 + width or packet[87 + width] != 0
+                or packet[control] != c.CTRL_NATIVE
+                or int.from_bytes(packet[8:control], "big") != device_code
+                or int.from_bytes(packet[3:5], "big") != len(packet) - 7
+                or int.from_bytes(packet[5:7], "big") != c.crc16_modbus(packet[7:])):
+            continue
+        mode, icon = packet[control + 1:control + 3]
+        break
+    if remote.get("floor_lamp_test_applied") or legacy_floor_lamp_test:
+        mode, icon = c.NATIVE_FLOOR_LAMP_CONTROL_MODE, 1
+    elif mode is None:
+        mode = c.native_type_metadata(stored_type or name)["control_mode"]
+    if device_code == c.NATIVE_DEVTYPE["FLOOR_LAMP"]:
+        return {"native_type": "FLOOR_LAMP", "control_mode": c.NATIVE_FLOOR_LAMP_CONTROL_MODE,
+                "icon_code": 1}
+    candidates = [item for item in c.native_type_picker_options()
+                  if c.NATIVE_DEVTYPE[item["device_type"]] == device_code
+                  and item["control_mode"] == mode]
+    preferred = c.NATIVE_TYPE_EQUIVALENTS.get(stored_type or name, stored_type or name)
+    match = next((item for item in candidates if item["value"] == preferred),
+                 candidates[0] if candidates else None)
+    return {"native_type": match["value"] if match else preferred,
+            "control_mode": mode, "icon_code": icon}
 
 
 # keyFun -> what the V48 firmware actually transmits, from the report table at flash 0x33a4a.
@@ -84,7 +143,7 @@ def draft_for(remote: dict) -> dict:
             stored_template = (remote.get("custom_layout") or {}).get("template")
             draft.setdefault("template", c.NATIVE_PROFILE_ALIASES.get(
                 str(stored_template or device_type).upper(), "FAN"))
-            draft["native_type"] = remote.get("native_type") or draft.get("native_type") or device_type
+            draft.update(native_appearance(remote))
         return draft
     device_type = str(remote.get("device_type", "")).upper()
     if device_type in c.DEVTYPE:
@@ -97,9 +156,8 @@ def draft_for(remote: dict) -> dict:
         main = c.normalize_main_buttons(layout.get("main_buttons", {}))
         template = str(layout.get("template") or c.NATIVE_PROFILE_ALIASES.get(device_type, "FAN"))
         template = c.NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
-        return {"kind": "native", "template": template,
-                "native_type": remote.get("native_type", device_type),
-                "control_mode": int(remote.get("control_mode", 0)),
+        draft = {"kind": "native", "template": template,
+                **native_appearance(remote),
                 "icon_name": remote.get("icon", "light"), "pages": [{"index": 0, "buttons": [
             {"index": c.TAG[position], "transport": "native", "function": c.custom_action_function(action)}
             for position, action in main.items()
@@ -107,6 +165,16 @@ def draft_for(remote: dict) -> dict:
             {"index": index, "transport": "native", "function": c.custom_action_function(action)}
             for index, action in enumerate(actions)
         ]} for page, actions in layout.get("pages", {}).items()]}
+        glyphs = layout.get("glyphs", {})
+        for page in draft["pages"]:
+            number = page["index"]
+            if number and (link := f"p0_k{number - 1}") in glyphs:
+                page["link_glyph"] = glyphs[link]
+            for key in page["buttons"]:
+                identity = f"p{number}_k{key['index']}"
+                if identity in glyphs:
+                    key["glyph"] = glyphs[identity]
+        return draft
     pages = []
     for packet in source_packets(remote):
         c.rewrite_ir_page(packet, remote_index=packet[7], name="")
@@ -143,8 +211,14 @@ def validate(remote: dict, draft: dict) -> dict:
                 raise ValueError("The selected remote type does not match its button layout")
             result["native_type"] = c.native_profile_device_type(template) or template
             native_type = c.native_type_metadata(result["native_type"])
+        if not c.native_device_type_supported(native_type["device_type"]):
+            raise ValueError("Choose a type supported by WoRWS local page writes")
+        appearance = native_appearance(remote)
         result["control_mode"] = native_type["control_mode"]
-        result["icon_name"] = native_type["icon_name"]
+        icon = (appearance["icon_code"] if appearance["native_type"] == native_type["value"]
+                else native_type["icon_code"])
+        result["icon_name"] = next((name for name, value in c.ICON.items() if value == icon),
+                                   native_type["icon_name"])
     pages = result.get("pages")
     if not isinstance(pages, list) or not 1 <= len(pages) <= 5:
         raise ValueError("Use Main and up to four pages A–D")
@@ -159,12 +233,20 @@ def validate(remote: dict, draft: dict) -> dict:
         minimum = 0 if number == 0 and len(pages) > 1 else 1
         if not isinstance(buttons, list) or not minimum <= len(buttons) <= limit:
             raise ValueError(f"Page {number} must have 1–{limit} buttons")
+        if "link_glyph" in page:
+            if expected != "native" or not number:
+                raise ValueError("Only Native submenu links support a menu icon")
+            _validate_glyph(page["link_glyph"])
         seen = set()
         for key in buttons:
             index = key.get("index")
             if type(index) is not int or not 0 <= index <= (18 if number == 0 else limit - 1) or index in seen:
                 raise ValueError("Button positions must be unique and within the page")
             seen.add(index)
+            if "glyph" in key:
+                if expected != "native" or (not number and index > 3):
+                    raise ValueError("This position does not support a screen icon")
+                _validate_glyph(key["glyph"])
             transport = key.get("transport")
             allowed = {"native"} if expected == "native" else {"hid", "ir"} if expected == "hid" else {"stored", "ir"}
             if transport not in allowed:
@@ -351,7 +433,16 @@ def compile_recreate(
 
 def native_layout(draft: dict) -> dict:
     positions = {value: name for name, value in c.TAG.items()}
+    glyphs = {}
+    for page in draft["pages"]:
+        number = page["index"]
+        if "link_glyph" in page:
+            glyphs[f"p0_k{number - 1}"] = page["link_glyph"]
+        for key in page["buttons"]:
+            if "glyph" in key:
+                glyphs[f"p{number}_k{key['index']}"] = key["glyph"]
     return {"layout_version": 2, "template": draft.get("template", "FAN"),
+            "glyphs": glyphs,
             "native_type": draft.get("native_type", draft.get("template", "FAN")),
             "control_mode": int(draft.get("control_mode", 0)),
             "icon_name": draft.get("icon_name", "light"), "main_buttons": {

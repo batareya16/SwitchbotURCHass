@@ -322,6 +322,14 @@ the helper instead consults a 77-entry device-type table at `0x20059aa0`; its
 [fallback mapping](native-default-artwork-map.csv) includes `0x72 -> 0x16` for a strip profile.
 Curtain types `0x63` and `0x7b` have a separate 3-entry mapping driven by model `+0x55`.
 
+The local V48 page parser consumes exactly one device-type byte at ARM `0x34c6..0x34d0`.
+It consumes control type, mode and icon in the next three bytes before copying the ID at
+`0x34f6`. Four-byte product codes such as `0x0010d0b0` and `0x0010d0b1` shift those
+fields and cannot describe a local page. The Studio Floor lamp type uses the one-byte
+strip layout (`0x72`), native control type (`0x00`), mode `0x03` for artwork profile
+`0x15`, and icon byte `0x01` for the normal variant. The inventory query returns the
+device type and ID, so Studio uses its cached Main-page write for the mode and icon.
+
 For ordinary device types, icon value `1` selects the first artwork descriptor triple, while
 other values select the alternate triple. Type `0x78` additionally uses hardcoded descriptors
 for icon values `2` and `3`; type `0x2c` crosses an undecoded FLIX bundle. The two variants often

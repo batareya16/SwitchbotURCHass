@@ -46,10 +46,10 @@ def test_floor_lamp_screen_profile_is_control_mode_three():
     )
 
     rewritten = c.rewrite_native_page_control_mode(
-        packet, c.NATIVE_FLOOR_LAMP_TEST_CONTROL_MODE
+        packet, c.NATIVE_FLOOR_LAMP_CONTROL_MODE
     )
 
-    assert c.NATIVE_FLOOR_LAMP_TEST_CONTROL_MODE == 0x03
+    assert c.NATIVE_FLOOR_LAMP_CONTROL_MODE == 0x03
     assert rewritten[10] == 0x03
     assert rewritten[:5] == packet[:5]
     assert rewritten[7:10] == packet[7:10]

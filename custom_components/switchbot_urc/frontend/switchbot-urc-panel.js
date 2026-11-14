@@ -295,7 +295,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const now = this._physical.pages.find((page) => page.index === key.button_page)
       ?.buttons.find((item) => item.index === key.button_index);
     if (before && now && (before.transport !== now.transport || before.function !== now.function
-        || before.code_hex !== now.code_hex)) return "edited";
+        || before.code_hex !== now.code_hex || before.glyph !== now.glyph)) return "edited";
     return "unchanged";
   }
 
@@ -331,6 +331,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             button_page: page.index,
             button_index: key.index,
             button_function: key.function ?? source?.button_function ?? profileKey?.function ?? 0,
+            button_glyph: key.glyph,
             default_function: source?.default_function ?? profileKey?.function,
             can_add_command: this._physical.kind !== "native" || !!profileKey?.actionable,
             layout_state: page.buttons.includes(key)
@@ -505,7 +506,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _nativeGlyphSrc(button) {
-    const functionCode = Number(button?.button_function);
+    const functionCode = button?.button_glyph ?? button?.button_function;
     if (!Number.isInteger(functionCode) || !NATIVE_GLYPH_FUNCTIONS.has(functionCode)) return "";
     return `/switchbot_urc_static/native-glyphs/keyfun-${functionCode.toString(16).padStart(4, "0")}.png`;
   }
@@ -515,20 +516,46 @@ class SwitchBotUrcPanel extends HTMLElement {
     return src ? `<img class="native-glyph ${className}" src="${src}" alt="" aria-hidden="true">` : "";
   }
 
+  _renderGlyphPicker(owner, field, label, defaultFunction) {
+    const selected = owner[field];
+    const preview = this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
+    return `<details class="glyph-picker">
+      <summary>${preview}<b>${label}</b></summary>
+      <button class="secondary compact" data-glyph-field="${field}" data-glyph-code=""
+        ${selected === undefined ? "disabled" : ""}>Reset to default</button>
+      <div class="glyph-grid" role="group" aria-label="${label}">
+        ${[...NATIVE_GLYPH_FUNCTIONS].map((code) => {
+          const name = `Icon 0x${code.toString(16).padStart(4, "0")}`;
+          return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
+            aria-label="${escapeHtml(name)}" title="${escapeHtml(name)}" aria-pressed="${code === (selected ?? defaultFunction)}">
+            ${this._nativeGlyph({ button_function: code })}</button>`;
+        }).join("")}
+      </div>
+    </details>`;
+  }
+
+  _renderMenuIcon(page) {
+    if (!page?.index || this._physical?.kind !== "native") return "";
+    const owner = this._physical.pages.find((item) => item.index === page.index);
+    if (!owner) return "";
+    const profile = this._nativeProfile(this._physical.native_type || this._physical.template);
+    const defaultFunction = profile?.main_keys?.find((key) =>
+      key.index === page.index - 1 && !key.actionable)?.function;
+    return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction);
+  }
+
   _iconImage(name) {
     const asset = APP_ICON_ASSETS[name] || APP_ICON_ASSETS.light;
     return `<img class="ic-img" src="/switchbot_urc_static/app-icons/${asset}.webp"
       alt="" aria-hidden="true">`;
   }
 
-  _nativeArtworkSrc(profile, icon) {
+  _nativeArtworkSrc(profile, code = profile?.icon_code ?? 1) {
     if (profile?.preview_artwork_id != null) {
       const id = profile.preview_artwork_id.toString(16).padStart(2, "0");
       return `/switchbot_urc_static/artwork/profile-${id}.png`;
     }
     if (profile?.artwork_id == null) return "";
-    const code = Object.keys(APP_ICON_ASSETS).indexOf(icon) + 1;
-    if (!code) return "";
     // Use the profile's recovered artwork as a preview even when its special icon variant
     // path is not decoded yet. Blind Tilt uses hardcoded descriptors for codes 2/3, while
     // Roller Shade crosses an unresolved FLIX path.
@@ -539,7 +566,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _nativeProfile(type) {
-    return this._nativeProfiles.find((item) =>
+    return [...this._nativeProfiles, ...(this._sources?.native_options?.screen_profiles || [])].find((item) =>
       item.value === type || item.equivalent_types?.includes(type));
   }
 
@@ -552,20 +579,18 @@ class SwitchBotUrcPanel extends HTMLElement {
       `${item.title} ${item.value} ${item.profile} ${item.control_mode}`.toLowerCase().includes(filter)) : profiles;
     return `<label class="native-type-search">Filter types<input id="${searchId}" type="search" ${searchAttribute}
       value="${escapeHtml(this._nativeTypeSearch || "")}" placeholder="Search type or screen mode"></label>
-      <div class="native-type-grid">${[...visible].sort((a, b) =>
-        Number(a.selectable === false) - Number(b.selectable === false)).map((item) => {
-      const artwork = this._nativeArtworkSrc(item, item.icon_name || "light");
+      <div class="native-type-grid">${visible.map((item) => {
+      const artwork = this._nativeArtworkSrc(item);
       const detail = (item.label || "").split(" · ").slice(1).join(" · ");
       const active = item.value === selected || item.equivalent_types?.includes(selected);
       return `<button class="native-type-choice${active ? " selected" : ""}"
         type="button" data-${dataAttribute}="${escapeHtml(item.value)}"
-        aria-pressed="${!!active}" ${item.selectable === false ? "disabled" : ""}>
+        aria-pressed="${!!active}">
         <span class="native-type-art" ${item.preview_artwork_id != null
           ? 'title="Type illustration. The physical display may differ."' : ""}>${artwork
           ? `<img src="${artwork}" alt="">` : '<span title="Artwork not verified">—</span>'}</span>
         <span>${escapeHtml(item.title || item.value)}</span>
         ${detail ? `<span class="native-type-detail">${escapeHtml(detail)}</span>` : ""}
-        ${item.selectable === false ? '<span class="native-type-detail">Local write unverified</span>' : ""}
       </button>`;
     }).join("")}</div>`;
   }
@@ -686,7 +711,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const nativeProfile = item.can_test_native_icon
         ? this._nativeProfile(item.native_type || item.device_type) : null;
       const artwork = item.can_test_native_icon
-        ? this._nativeArtworkSrc(nativeProfile, "light")
+        ? this._nativeArtworkSrc(nativeProfile, item.icon_code ?? undefined)
         : this._hidArtworkSrc(item.device_type) || this._irArtworkSrc(item);
       return `<div class="scr-row${current ? " on" : ""}">
         <button class="k pick-remote" type="button"
@@ -712,7 +737,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const editing = this._iconPickerFor === remote.remote_id;
     const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
     const choices = this._entry()?.icons || [];
-    const artwork = native ? this._nativeArtworkSrc(profile, "light")
+    const artwork = native ? this._nativeArtworkSrc(profile, this._physical.icon_code)
       : this._hidArtworkSrc(remote.device_type) || this._irArtworkSrc(remote);
     const canChooseIcon = !firmwareArtwork;
     return `<section class="appearance">
@@ -774,13 +799,19 @@ class SwitchBotUrcPanel extends HTMLElement {
     // its mark cannot drift apart the way hand-placed coordinates did.
     const mark = (cx, cy, d) => `<path d="${d}" transform="translate(${cx} ${cy})" class="mark"/>`;
     const cap = (cx, cy, r) => `<circle cx="${cx}" cy="${cy}" r="${r}" class="cap"/>`;
+    // Rotate one annular sector for all four keys. Leave space between the sectors and OK
+    // for the widest selection outline.
+    const direction = (angle) => `<g transform="translate(150 427) rotate(${angle})">
+      <path d="M-32.8-37.7 A50 50 0 0 1 32.8-37.7 L19.7-22.6 A30 30 0 0 0-19.7-22.6 Z" class="cap seg"/>
+      ${mark(0, -39, "M-6 3l6-6 6 6")}
+    </g>`;
     // A rocker half, given the centre of that half so it lines up with its own glyph. `up`
     // rounds the top end, `down` the bottom; both are 36 across and 36 tall.
     const rocker = (cx, cy, up) => up
       ? `<path d="M${cx - 18} ${cy}a18 18 0 0 1 36 0v18h-36z" class="cap"/>`
       : `<path d="M${cx - 18} ${cy}a18 18 0 0 0 36 0v-18h-36z" class="cap"/>`;
     const svg = `
-      <svg class="device" viewBox="0 0 300 680" role="group" aria-label="Universal Remote">
+      <svg class="device" viewBox="0 0 300 657" role="group" aria-label="Universal Remote">
         <defs>
           <linearGradient id="body" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stop-color="#f0f0f2"/><stop offset="30%" stop-color="#fff"/>
@@ -794,7 +825,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V262 H35 Z"/>
           </clipPath>
         </defs>
-        <rect x="35" y="20" width="230" height="640" rx="45" fill="url(#body)" class="shell"/>
+        <rect x="35" y="20" width="230" height="617" rx="45" fill="url(#body)" class="shell"/>
         <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V296 H35 Z" class="glass"/>
         <path d="M48 58 C50 43 63 32 80 32 H220 C237 32 250 43 252 58" class="glass-edge"/>
         <foreignObject x="35" y="20" width="230" height="242" clip-path="url(#screenClip)">
@@ -809,8 +840,9 @@ class SwitchBotUrcPanel extends HTMLElement {
           const linked = pages.find((item) => item.index === index + 1);
           const linkFunction = profile?.main_keys?.find((item) =>
             item.index === index && !item.actionable)?.function;
-          const glyphSrc = this._nativeGlyphSrc(linked && linkFunction != null
-            ? { button_function: linkFunction }
+          const linkGlyph = this._physical?.pages.find((item) => item.index === linked?.index)?.link_glyph;
+          const glyphSrc = this._nativeGlyphSrc(linked
+            ? { button_function: linkFunction, button_glyph: linkGlyph }
             : softkeys[tag]);
           const x = 52 + index * 52;
           const shape = `<rect x="${x}" y="265" width="44" height="27" rx="5" class="cap"/>
@@ -819,7 +851,9 @@ class SwitchBotUrcPanel extends HTMLElement {
           // A key that opens a page has no command of its own: that is what the firmware does
           // with it, and it is why it cannot carry a Home Assistant action.
           if (linked) {
-            return `<g class="k link${page?.index === linked.index ? " current-page" : ""}"
+            const previousLink = this._physicalBaseline?.pages.find((item) => item.index === linked.index);
+            const changed = this._physical && (!previousLink || previousLink.link_glyph !== linkGlyph);
+            return `<g class="k link${page?.index === linked.index ? " current-page" : ""}${changed ? " unsaved" : ""}"
               role="button" tabindex="0" data-page-link="${linked.index}">
               <title>${escapeHtml(tag)} opens ${escapeHtml(linked.name)}</title>${shape}</g>`;
           }
@@ -827,14 +861,15 @@ class SwitchBotUrcPanel extends HTMLElement {
         }).join("")}
         </g>
 
+        <g transform="translate(0 -23)">
         ${key("ON", `${cap(88, 362, 18)}<text x="88" y="366" class="cap-t">ON</text>`, "On")}
         ${key("OFF", `${cap(212, 362, 18)}<text x="212" y="366" class="cap-t">OFF</text>`, "Off")}
 
         <circle cx="150" cy="427" r="58" class="cap ring"/>
-        ${key("UP", `<path d="M150 377 a58 58 0 0 1 41 17 l-25 25 a26 26 0 0 0-32 0 l-25-25 a58 58 0 0 1 41-17z" class="cap seg"/>${mark(150, 395, "M-6 3l6-6 6 6")}`, "Up")}
-        ${key("DOWN", `<path d="M150 477 a58 58 0 0 1-41-17 l25-25 a26 26 0 0 0 32 0 l25 25 a58 58 0 0 1-41 17z" class="cap seg"/>${mark(150, 459, "M-6-3l6 6 6-6")}`, "Down")}
-        ${key("LEFT", `<path d="M100 427 a58 58 0 0 1 17-41 l25 25 a26 26 0 0 0 0 32 l-25 25 a58 58 0 0 1-17-41z" class="cap seg"/>${mark(118, 427, "M3-6l-6 6 6 6")}`, "Left")}
-        ${key("RIGHT", `<path d="M200 427 a58 58 0 0 1-17 41 l-25-25 a26 26 0 0 0 0-32 l25-25 a58 58 0 0 1 17 41z" class="cap seg"/>${mark(182, 427, "M-3-6l6 6-6 6")}`, "Right")}
+        ${key("UP", direction(0), "Up")}
+        ${key("DOWN", direction(180), "Down")}
+        ${key("LEFT", direction(-90), "Left")}
+        ${key("RIGHT", direction(90), "Right")}
         ${key("OK", `${cap(150, 427, 26)}<text x="150" y="431" class="cap-t">OK</text>`, "OK")}
 
         ${key("BACK", `${cap(88, 510, 18)}${mark(88, 510, "M-2-6l-4 4 4 4M-6-2H2a4 4 0 0 1 0 8H-2")}`, "Back")}
@@ -846,6 +881,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${key("SOUNDOFF", `${cap(150, 560, 18)}${mark(150, 560, "M-8-3h3l3-3v12l-3-3h-3z")}${mark(150, 560, "M3-3l5 5m0-5l-5 5")}`, "Mute")}
         ${key("CHUP", `${rocker(212, 572, true)}${mark(212, 572, "M-5 3l5-5 5 5")}`, "Channel up")}
         ${key("CHDOWN", `${rocker(212, 612, false)}${mark(212, 612, "M-5-3l5 5 5-5")}`, "Channel down")}
+        </g>
       </svg>`;
     const known = new Set(["ON", "OFF", "UP", "DOWN", "LEFT", "RIGHT", "OK", "BACK", "HOME",
       "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN", "A", "B", "C", "D"]);
@@ -980,8 +1016,8 @@ class SwitchBotUrcPanel extends HTMLElement {
               </section>
               <aside class="editor">${this._iconPickerFor === remote.remote_id
                 ? this._renderAppearance(remote)
-                : button ? this._editor(button, remote)
-                : `<div class="empty small">Choose a button, or use the pencil on a remote to edit its appearance.</div>`}</aside>
+                : this._renderMenuIcon(page) + (button ? this._editor(button, remote)
+                  : `<div class="empty small">Choose a button, or use the pencil on a remote to edit its appearance.</div>`)}</aside>
             </div>
           ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
         ` : ""}
@@ -1663,9 +1699,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       native_type: draft.native_type || "",
       pages: [...draft.pages].sort((a, b) => a.index - b.index).map((page) => ({
         index: page.index,
+        link_glyph: page.link_glyph ?? null,
         buttons: [...page.buttons].sort((a, b) => a.index - b.index).map((key) => ({
           index: key.index, transport: key.transport, function: key.function ?? null,
-          code_hex: key.code_hex || "", record: key.record || "",
+          code_hex: key.code_hex || "", record: key.record || "", glyph: key.glyph ?? null,
         })),
       })),
     });
@@ -1965,11 +2002,31 @@ class SwitchBotUrcPanel extends HTMLElement {
   _wirePhysical() {
     const root = this.shadowRoot;
     this._wireKeyEditor(root);
+    root.querySelectorAll("[data-glyph-field]").forEach((button) => button.addEventListener("click", () => {
+      const { glyphField, glyphCode } = button.dataset;
+      const owner = glyphField === "link_glyph"
+        ? this._physical.pages.find((page) => page.index === this._page()?.index)
+        : this._draftKey(this._button())?.key;
+      if (!owner) return;
+      if (glyphCode === "") delete owner[glyphField];
+      else owner[glyphField] = Number(glyphCode);
+      this._physicalStatus = "";
+      const scrollTop = button.closest(".glyph-grid")?.scrollTop || 0;
+      this._render();
+      const next = root.querySelector(`[data-glyph-field="${glyphField}"][data-glyph-code="${glyphCode}"]`);
+      if (!next) return;
+      const picker = next.closest("details");
+      picker.open = true;
+      const grid = next.closest(".glyph-grid");
+      if (grid) grid.scrollTop = scrollTop;
+      (next.disabled ? picker.querySelector("summary") : next).focus({ preventScroll: true });
+    }));
     root.querySelectorAll("[data-native-profile]").forEach((button) => button.addEventListener("click", () => {
       const selected = this._nativeProfiles.find((item) => item.value === button.dataset.nativeProfile);
       this._physical.native_type = button.dataset.nativeProfile;
       this._physical.template = selected?.profile || button.dataset.nativeProfile;
       this._physical.control_mode = selected?.control_mode ?? 0;
+      this._physical.icon_code = selected?.icon_code ?? 1;
       this._physicalStatus = "";
       this._render();
     }));
@@ -2016,6 +2073,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _draftKey(button) {
+    if (!button) return null;
     const page = this._physical?.pages?.find((item) => item.index === button.button_page);
     const key = page?.buttons?.find((item) => item.index === button.button_index);
     return key ? { page, key } : null;
@@ -2071,10 +2129,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       ? this._physical.pages.find((item) => item.index === key.index + 1)
       : null;
     const pageControl = this._pageControl(button, key);
-    if (kind === "native" && button.button_page === 0 && !linkedPage && !pageControl) return "";
+    const glyphPicker = kind === "native" && (page.index || key.index < 4)
+      ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function)
+      : "";
+    if (kind === "native" && button.button_page === 0 && !linkedPage && !pageControl) return glyphPicker;
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
-    return `<div class="action-box key-editor">
+    return `${glyphPicker}<div class="action-box key-editor">
       <div class="action-title"><b>On the remote</b><span>${linkedPage
         ? `opens Page ${"ABCD"[linkedPage.index - 1] || linkedPage.index}`
         : "what this key sends when pressed"}</span></div>
@@ -2776,6 +2837,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .scr-row .pos{font-size:10px;font-weight:800;color:#ffffff7a;min-width:28px}
       .native-glyph{display:block;width:24px;height:24px;object-fit:contain;flex:none}
+      .glyph-picker{margin:14px 0;padding:12px 14px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px}
+      .glyph-picker summary{cursor:pointer;line-height:32px}
+      .glyph-picker summary .native-glyph{display:inline-block;vertical-align:middle;margin:0 8px 0 5px;padding:4px;background:#171c23;border-radius:6px}
+      .glyph-picker[open] summary{margin-bottom:10px}
+      .glyph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(42px,1fr));gap:6px;max-height:238px;overflow:auto;margin-top:10px;padding:2px}
+      .glyph-grid button{display:grid;place-items:center;min-height:42px;padding:4px;background:#171c23;border:1px solid #657181;border-radius:7px}
+      .glyph-grid button:hover{background:#273445}
+      .glyph-grid button[aria-pressed="true"],.glyph-grid button:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:-2px}
       .scr-row .scr-icon{width:20px;height:20px}
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
@@ -2791,7 +2860,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
       .device .cap{fill:#f7f7f9;stroke:#dadddf;stroke-width:1}
       .device .cap.ring{fill:#f4f4f7}
-      .device .cap.seg{fill:#f4f4f7;stroke:#e6e6ea}
+      .device .cap.seg{fill:#f4f4f7;stroke:#e6e6ea;stroke-linejoin:round}
       .device text.cap-t{fill:#30343a;font:700 11px/1 system-ui,sans-serif;text-anchor:middle}
       .device .mark{fill:none;stroke:#41464d;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
       .device .logo{stroke:#a00;stroke-width:1}.device .logo-mark{fill:#fff;stroke:none}

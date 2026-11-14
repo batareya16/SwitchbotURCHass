@@ -154,7 +154,7 @@ DEVTYPE = {"APPLE_TV": 0xF0, "FIRE_TV": 0xF1, "UNIVERSAL_BLE": 0xF2, "GOOGLE_TV"
 CTRL_HID = 4
 CTRL_NATIVE = 0
 # V48 DSP control-mode atlas: 0x03 selects the built-in floor-lamp illustration.
-NATIVE_FLOOR_LAMP_TEST_CONTROL_MODE = 0x03
+NATIVE_FLOOR_LAMP_CONTROL_MODE = 0x03
 # Retained for the recovered washer artwork entry and existing packet-rewrite tests.
 NATIVE_WASHER_CONTROL_MODE = 0x0E
 CTRL_IR = 1
@@ -394,10 +394,11 @@ def native_type_metadata(type_name: str) -> dict:
     """Resolve a user-facing type to its device code, layout and screen mode."""
     name = type_name.upper()
     if name == "FLOOR_LAMP":
+        mode = NATIVE_FLOOR_LAMP_CONTROL_MODE
         return {"value": name, "profile": "STRIP", "title": "Floor lamp",
-                "device_type": name, "control_mode": 0, "icon_name": "floorlamp",
-                "icon_code": ICON["floorlamp"],
-                "artwork_id": None, "preview_artwork_id": 0x15}
+                "device_type": "STRIP", "control_mode": mode, "icon_name": "light",
+                "icon_code": ICON["light"], "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode],
+                "preview_artwork_id": None}
     variants = {
         "BOT_PRESS": ("BOT", "Button bot · Press", 1),
         "BOT_SWITCH": ("BOT", "Button bot · Switch", 2),
@@ -435,17 +436,14 @@ def native_type_options() -> list[dict]:
     return options
 
 
-def native_type_picker_options(current: str | None = None) -> list[dict]:
-    """List distinct choices for local writes and retain the type already installed."""
-    current = NATIVE_TYPE_EQUIVALENTS.get(current, current)
+def native_type_picker_options() -> list[dict]:
+    """List distinct types that fit the V48 local page write."""
     options = []
     for item in native_type_options():
         name = item["value"]
-        if name in NATIVE_TYPE_EQUIVALENTS:
+        if name in NATIVE_TYPE_EQUIVALENTS or not native_device_type_supported(item["device_type"]):
             continue
-        supported = native_device_type_supported(item["device_type"])
         options.append(item | {
-            "selectable": supported or name == current,
             "equivalent_types": [alias for alias, canonical in NATIVE_TYPE_EQUIVALENTS.items()
                                  if canonical == name],
         })
@@ -1397,6 +1395,8 @@ def build_native_pages(
     key = device_type_name.upper()
     if key not in NATIVE_PROFILE_ALIASES:
         raise ValueError(f"unknown native layout {key!r}")
+    if not native_device_type_supported(key):
+        raise ValueError("WoRWS local page writes require a one-byte native device type")
     profile_name = NATIVE_PROFILE_ALIASES[key]
     profile = NATIVE_PROFILE_LAYOUTS[profile_name]
     effective_control_mode = int(profile.get("control_mode", control_mode))
@@ -1436,16 +1436,20 @@ def build_custom_native_pages(
     template: str = "FAN",
     control_mode: int | None = None,
     device_type_name: str | None = None,
+    glyphs: dict[str, int] | None = None,
 ) -> tuple[tuple[int, bytes], ...]:
     """Build editable pages while retaining the selected native screen profile."""
     template = NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
     profile = NATIVE_PROFILE_LAYOUTS.get(template)
     if profile is None:
         raise ValueError(f"unknown native screen profile {template!r}")
+    device_type_name = device_type_name or native_profile_device_type(template)
+    if not device_type_name or not native_device_type_supported(device_type_name):
+        raise ValueError("WoRWS local page writes require a one-byte native device type")
     layout = custom_native_layout(main_buttons, page_buttons, template=template)
     common = {
         "remote_index": remote_index,
-        "device_type": NATIVE_DEVTYPE[device_type_name or native_profile_device_type(template)],
+        "device_type": NATIVE_DEVTYPE[device_type_name.upper()],
         "control_type": CTRL_NATIVE,
         "control_mode": int(profile.get("control_mode", 0) if control_mode is None else control_mode),
         "icon": ICON.get(icon_name.lower(), 1),
@@ -1453,18 +1457,28 @@ def build_custom_native_pages(
         "name": name,
         "ble_key_type": 0,
     }
+    glyphs = glyphs or {}
+
+    def page_keys(page_index, keys):
+        tagged = _tag_bridge_keys(
+            keys, remote_id=event_remote_id, remote_slot=remote_index,
+            page_index=page_index, profile_id=0xFE,
+        )
+        for key in tagged:
+            glyph = glyphs.get(f"p{page_index}_k{key['keyIndex']}")
+            if glyph is not None:
+                if not key.get("cmd") and "field32" not in key:
+                    # Page links use the default field derived from the original function.
+                    key["field32"] = pad(s16(key["keyFun"]), 32)
+                key["keyFun"] = glyph
+        return tagged
+
     return tuple(
         (
             page_index,
             build_create(
                 **common,
-                keys=_tag_bridge_keys(
-                    keys,
-                    remote_id=event_remote_id,
-                    remote_slot=remote_index,
-                    page_index=page_index,
-                    profile_id=0xFE,
-                ),
+                keys=page_keys(page_index, keys),
                 page_index=page_index,
             ),
         )
@@ -1486,6 +1500,7 @@ def build_custom_native_bind_sequence(
     template: str = "FAN",
     control_mode: int | None = None,
     device_type_name: str | None = None,
+    glyphs: dict[str, int] | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
     """Return provisioning plus all pages for an editable native bridge remote."""
     pages = build_custom_native_pages(
@@ -1499,6 +1514,7 @@ def build_custom_native_bind_sequence(
         template=template,
         control_mode=control_mode,
         device_type_name=device_type_name,
+        glyphs=glyphs,
     )
     return (
         ("set_key", build_set_target_key(key_id, target_key)),

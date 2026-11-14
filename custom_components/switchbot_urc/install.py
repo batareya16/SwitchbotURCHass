@@ -22,6 +22,7 @@ from .client import (
 )
 from .const import RESP_OK
 from .inventory import deletion_verified, stable_id_for_local
+from .physical_layout import native_appearance
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -226,6 +227,10 @@ async def restore_managed_after_sync(
             )
             if not native_target or not physical_device_id:
                 raise RuntimeError("native recovery credentials are unavailable")
+            appearance = native_appearance(remote)
+            native_icon = next((name for name, code in commands.ICON.items()
+                                if code == appearance["icon_code"]),
+                               str(remote.get("icon", "light")))
             custom_layout = remote.get("custom_layout")
             if custom_layout:
                 stages = commands.build_custom_native_bind_sequence(
@@ -234,13 +239,17 @@ async def restore_managed_after_sync(
                     remote_index=index,
                     name=str(remote.get("name", "Home Control")),
                     device_id=str(remote["device_id"]),
-                    icon_name=str(remote.get("icon", "tv")),
+                    icon_name=native_icon,
                     event_remote_id=str(remote["remote_id"]),
                     main_buttons=commands.normalize_main_buttons(custom_layout["main_buttons"]),
                     page_buttons={
                         int(page): list(actions)
                         for page, actions in custom_layout["pages"].items()
                     },
+                    template=custom_layout.get("template", "FAN"),
+                    control_mode=appearance["control_mode"],
+                    device_type_name=device_type,
+                    glyphs=custom_layout.get("glyphs"),
                 )
             else:
                 stages = commands.build_native_bind_sequence(
@@ -252,11 +261,8 @@ async def restore_managed_after_sync(
                     remote_index=index,
                     name=str(remote.get("name", native_target.get("name", "HASS Bridge"))),
                     device_id=str(remote["device_id"]),
-                    icon_name=str(remote.get("icon", native_target.get("icon", "strip"))),
-                    # Native targets are direct BLE peers. Firmware only takes the
-                    # connect-and-send path for mode 0; other values can still be accepted
-                    # while binding but never cause a connection when a button is pressed.
-                    control_mode=0,
+                    icon_name=native_icon,
+                    control_mode=appearance["control_mode"],
                     event_remote_id=remote.get("remote_id"),
                 )
             responses = await client.send_command_sequence(

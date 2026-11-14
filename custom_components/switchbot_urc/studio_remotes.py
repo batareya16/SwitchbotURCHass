@@ -687,8 +687,8 @@ async def ws_remote_sources(hass, connection, msg):
             "default_key": str((known[0] if known else {}).get("target_key", "")),
             "default_device_type": str((known[0] if known else {}).get("device_type", "STRIP")),
             "default_screen_profile": next(
-                (item["value"] for item in c.native_type_picker_options() if item["selectable"]
-                 and str((known[0] if known else {}).get("device_type", "")).upper()
+                (item["value"] for item in c.native_type_picker_options()
+                 if str((known[0] if known else {}).get("device_type", "")).upper()
                  in (item["value"], *item["equivalent_types"])),
                 "STRIP",
             ),

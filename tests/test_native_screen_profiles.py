@@ -1,5 +1,6 @@
 """Native Remote Studio profile changes must preserve layouts and fail before writing."""
 
+import pytest
 from conftest import INTEGRATION, load
 
 
@@ -41,6 +42,42 @@ def test_native_profile_switch_keeps_draft_when_page_is_unsupported():
     assert draft["template"] == "BULB"
     assert len(draft["pages"]) == 5
     assert before["template"] == "FAN"
+
+
+def test_native_glyphs_round_trip_without_changing_key_commands_or_page_link():
+    remote = {"device_type": "STRIP", "device_id": "AA:BB:CC:DD:EE:FF"}
+    draft = physical.draft_for(remote)
+    main, colors = draft["pages"]
+    white = next(key for key in main["buttons"] if key["index"] == c.TAG["A"])
+    white["glyph"] = 0x0142
+    colors["link_glyph"] = 0x014B
+    colors["buttons"][0]["glyph"] = 0x0141
+    layout = physical.native_layout(physical.validate(remote, draft))
+    rebuilt = physical.draft_for({**remote, "custom_layout": layout})
+    assert physical.native_layout(rebuilt)["glyphs"] == layout["glyphs"]
+
+    args = dict(remote_index=2, name="Strip", device_id=remote["device_id"],
+                icon_name="strip", event_remote_id="12345678", template="STRIP",
+                main_buttons=layout["main_buttons"],
+                page_buttons={int(page): rows for page, rows in layout["pages"].items()})
+    original = dict(c.build_custom_native_pages(**args))
+    updated = dict(c.build_custom_native_pages(**args, glyphs=layout["glyphs"]))
+    assert original.keys() == updated.keys() == {0, 4}
+
+    changed = set()
+    for page, packet in updated.items():
+        assert c.crc16_modbus(packet[7:]) == int.from_bytes(packet[5:7], "big")
+        assert packet[7:90] == original[page][7:90]
+        for offset in range(90, len(packet), 36):
+            record = packet[offset:offset + 36]
+            old = original[page][offset:offset + 36]
+            assert record[0] == old[0]
+            assert record[3:] == old[3:]
+            if record[1:3] != old[1:3]:
+                identity = f"p{page}_k{record[0]}"
+                assert int.from_bytes(record[1:3], "big") == layout["glyphs"][identity]
+                changed.add(identity)
+    assert changed == layout["glyphs"].keys()
 
 
 def test_all_supported_profiles_can_rebuild_their_stock_editable_layout():
@@ -93,7 +130,7 @@ def test_native_type_options_follow_official_handler_control_modes():
     assert options["CURTAIN_RIGHT"]["control_mode"] == 5
     assert options["TRV"]["control_mode"] == 6
     assert options["FLOOR_LAMP"]["profile"] == "STRIP"
-    assert options["FLOOR_LAMP"]["control_mode"] == 0
+    assert options["FLOOR_LAMP"]["control_mode"] == 3
 
 
 def test_catalog_variant_uses_same_wire_fields_on_create_and_edit():
@@ -101,7 +138,7 @@ def test_catalog_variant_uses_same_wire_fields_on_create_and_edit():
         ("BOT_PRESS", bytes.fromhex("48000101")),
         ("CURTAIN_RIGHT", bytes.fromhex("63000501")),
         ("VACUUM_K20", bytes.fromhex("13000001")),
-        ("FLOOR_LAMP", bytes.fromhex("0010d0b0000003")),
+        ("FLOOR_LAMP", bytes.fromhex("72000301")),
     ):
         selected = c.native_type_metadata(name)
         device_type = selected["device_type"]
@@ -117,6 +154,35 @@ def test_catalog_variant_uses_same_wire_fields_on_create_and_edit():
             icon_name=draft["icon_name"], main_buttons=draft["main_buttons"],
             page_buttons={int(page): keys for page, keys in draft["pages"].items()})
         assert created[8:8 + len(wire_fields)] == edited[8:8 + len(wire_fields)] == wire_fields
+
+
+def test_floor_lamp_type_is_recovered_from_main_page_and_legacy_artwork_test():
+    remote = {"device_type": "STRIP", "native_type": "STRIP",
+              "device_id": "AA:BB:CC:DD:EE:FF"}
+    main, colors = c.build_native_pages(device_type_name="STRIP", remote_index=1,
+                                        name="Test", device_id=remote["device_id"])
+    floor = c.rewrite_native_page_control_mode(main, c.NATIVE_FLOOR_LAMP_CONTROL_MODE)
+    remote["physical_packets"] = [colors.hex(), floor.hex()]
+    draft = physical.draft_for(remote)
+    assert draft["native_type"] == "FLOOR_LAMP"
+    assert draft["template"] == "STRIP"
+    assert physical.validate(remote, draft)["control_mode"] == 3
+
+    remote["physical_packets"] = [main.hex(), colors.hex()]
+    remote["icon_variant_backup_packet"] = main.hex()
+    assert physical.native_appearance(remote)["native_type"] == "FLOOR_LAMP"
+    remote["floor_lamp_test_applied"] = False
+    assert physical.native_appearance(remote)["native_type"] == "STRIP"
+
+
+def test_picker_omits_extended_device_types_and_local_builder_rejects_them():
+    options = {item["value"]: item for item in c.native_type_picker_options()}
+    assert options["FLOOR_LAMP"]["artwork_id"] == 0x15
+    assert all(c.NATIVE_DEVTYPE[item["device_type"]] <= 0xFF for item in options.values())
+    assert "RGBICWW_FLOOR_LAMP" not in options
+    with pytest.raises(ValueError, match="one-byte native device type"):
+        c.build_native_pages(device_type_name="STRIP_3", remote_index=1,
+                             name="Test", device_id="AA:BB:CC:DD:EE:FF")
 
 
 def test_physical_validation_names_main_positions_missing_from_selected_profile():
