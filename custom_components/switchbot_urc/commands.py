@@ -287,6 +287,13 @@ NATIVE_CONTROL_MODE_ARTWORK = {
     0x10: 0x2A, 0x11: 0x2B, 0x12: 0x2C, 0x13: 0x2D, 0x14: 0x2E,
 }
 
+
+def native_artwork_id(device_type: int, control_mode: int) -> int:
+    """Artwork profile selected by DSP 2002363c for a native (control type 0) row."""
+    if control_mode:
+        return NATIVE_CONTROL_MODE_ARTWORK.get(control_mode, 0)
+    return NATIVE_DEVICE_ARTWORK.get(device_type, 0)
+
 NATIVE_PROFILE_TITLES = {
     "PLUG": "Outlet", "CURTAIN": "Curtains", "BLIND_TILT": "Tilt blinds",
     "CEILING": "Ceiling light", "BULB": "Bulb", "STRIP": "Light strip",
@@ -330,7 +337,7 @@ NATIVE_DEVICE_ARTWORK = {
     0x71: 0x14, 0x6E: 0x14, 0x75: 0x0C, 0x72: 0x16, 0x48: 0x13,
     0x7E: 0x09, 0x2C: 0x22, 0x2A: 0x2F, 0x2B: 0x2F, 0x37: 0x2F,
     0x38: 0x2F, 0x23: 0x0B, 0x6F: 0x21, 0x2D: 0x21, 0x24: 0x21,
-    0x3C: 0x13, 0x3B: 0x13, 0x3F: 0x13, 0x3E: 0x2E,
+    0x3C: 0x13, 0x3B: 0x13, 0x3E: 0x2E,
 }
 
 # These names resolve to identical packet fields and layouts.
@@ -397,8 +404,7 @@ def native_type_metadata(type_name: str) -> dict:
         mode = NATIVE_FLOOR_LAMP_CONTROL_MODE
         return {"value": name, "profile": "STRIP", "title": "Floor lamp",
                 "device_type": "STRIP", "control_mode": mode, "icon_name": "light",
-                "icon_code": ICON["light"], "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode],
-                "preview_artwork_id": None}
+                "icon_code": ICON["light"], "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode]}
     variants = {
         "BOT_PRESS": ("BOT", "Button bot · Press", 1),
         "BOT_SWITCH": ("BOT", "Button bot · Switch", 2),
@@ -412,20 +418,16 @@ def native_type_metadata(type_name: str) -> dict:
         return {"value": name, "profile": profile_name, "title": title,
                 "device_type": device_name, "control_mode": mode,
                 "icon_name": "light", "icon_code": ICON["light"],
-                "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode],
-                "preview_artwork_id": NATIVE_DEVICE_ARTWORK[NATIVE_DEVTYPE[device_name]]}
+                "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode]}
     profile_name = NATIVE_PROFILE_ALIASES.get(name)
     if not profile_name:
         raise ValueError(f"Unsupported native remote type: {type_name}")
     control_mode = int(NATIVE_PROFILE_LAYOUTS[profile_name].get("control_mode", 0))
     return {"value": name, "profile": profile_name,
-            "preview_artwork_id": 0x10 if profile_name == "VACUUM" else None,
             "title": NATIVE_DEVICE_TITLES.get(name, NATIVE_PROFILE_TITLES[profile_name]),
             "device_type": name, "control_mode": control_mode,
             "icon_name": "light", "icon_code": ICON["light"],
-            "artwork_id": (NATIVE_CONTROL_MODE_ARTWORK.get(control_mode)
-                           if control_mode else NATIVE_DEVICE_ARTWORK.get(
-                               NATIVE_DEVTYPE[name], NATIVE_PROFILE_ARTWORK.get(profile_name)))}
+            "artwork_id": native_artwork_id(NATIVE_DEVTYPE[name], control_mode)}
 
 
 def native_type_options() -> list[dict]:

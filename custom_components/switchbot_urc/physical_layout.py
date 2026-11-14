@@ -21,7 +21,7 @@ def source_packets(remote: dict) -> list[bytes]:
 
 
 def native_appearance(remote: dict) -> dict:
-    """Recover the Studio type and icon variant from the cached Main-page write."""
+    """Resolve Studio appearance from the device readback or the cached Main page."""
     name = str(remote.get("device_type", "")).upper()
     device_code = c.NATIVE_DEVTYPE.get(name)
     if device_code is None:
@@ -149,6 +149,10 @@ def draft_for(remote: dict) -> dict:
             draft.setdefault("template", c.NATIVE_PROFILE_ALIASES.get(
                 str(stored_template or device_type).upper(), "FAN"))
             draft.update(native_appearance(remote))
+            titles = (remote.get("custom_layout") or {}).get("page_names", {})
+            for page in draft["pages"]:
+                if page["index"]:
+                    page.setdefault("title", titles.get(str(page["index"]), ""))
         return draft
     device_type = str(remote.get("device_type", "")).upper()
     if device_type in c.DEVTYPE:
@@ -175,6 +179,8 @@ def draft_for(remote: dict) -> dict:
             number = page["index"]
             if number and (link := f"p0_k{number - 1}") in glyphs:
                 page["link_glyph"] = glyphs[link]
+            if number:
+                page["title"] = layout.get("page_names", {}).get(str(number), "")
             for key in page["buttons"]:
                 identity = f"p{number}_k{key['index']}"
                 if identity in glyphs:
@@ -195,6 +201,27 @@ def draft_for(remote: dict) -> dict:
     if not pages:
         raise ValueError("Physical pages are unavailable. Reinstall this IR profile once to cache its commands.")
     return {"kind": "ir", "pages": pages}
+
+
+def _menu_title(title: str) -> str:
+    if not isinstance(title, str):
+        raise ValueError("Enter a name as text")
+    title = title.strip()
+    if len(title) > 60 or any(not char.isprintable() for char in title):
+        raise ValueError("Enter a name of up to 60 characters on one line")
+    return title
+
+
+def rename_menu_item(draft: dict, page_index: int, row_index: int | None, title: str) -> None:
+    """Change a Studio label on an existing submenu without altering its key records."""
+    page = next((page for page in draft["pages"] if page["index"] == page_index and page_index), None)
+    if page is None:
+        raise ValueError("Menu page not found")
+    item = page if row_index is None else next(
+        (key for key in page["buttons"] if key["index"] == row_index), None)
+    if item is None:
+        raise ValueError("Menu item not found")
+    item["title"] = _menu_title(title)
 
 
 def validate(remote: dict, draft: dict) -> dict:
@@ -219,9 +246,9 @@ def validate(remote: dict, draft: dict) -> dict:
         if not c.native_device_type_supported(native_type["device_type"]):
             raise ValueError("Choose a type supported by WoRWS local page writes")
         appearance = native_appearance(remote)
-        result["control_mode"] = native_type["control_mode"]
-        icon = (appearance["icon_code"] if appearance["native_type"] == native_type["value"]
-                else native_type["icon_code"])
+        same_type = appearance["native_type"] == native_type["value"]
+        result["control_mode"] = appearance["control_mode"] if same_type else native_type["control_mode"]
+        icon = appearance["icon_code"] if same_type else native_type["icon_code"]
         result["icon_name"] = next((name for name, value in c.ICON.items() if value == icon),
                                    native_type["icon_name"])
     pages = result.get("pages")
@@ -233,6 +260,8 @@ def validate(remote: dict, draft: dict) -> dict:
         if type(number) is not int or not 0 <= number <= 4 or number in seen_pages:
             raise ValueError("Page IDs must be unique numbers from 0 to 4")
         seen_pages.add(number)
+        if "title" in page:
+            page["title"] = _menu_title(page["title"])
         buttons = page.get("buttons")
         limit = 15 if expected == "hid" and number else 18
         minimum = 0 if number == 0 and len(pages) > 1 else 1
@@ -248,6 +277,8 @@ def validate(remote: dict, draft: dict) -> dict:
             if type(index) is not int or not 0 <= index <= (18 if number == 0 else limit - 1) or index in seen:
                 raise ValueError("Button positions must be unique and within the page")
             seen.add(index)
+            if "title" in key:
+                key["title"] = _menu_title(key["title"])
             if "glyph" in key:
                 if expected != "native" or (not number and index > 3):
                     raise ValueError("This position does not support a screen icon")

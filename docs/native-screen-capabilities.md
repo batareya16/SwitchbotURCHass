@@ -328,7 +328,30 @@ It consumes control type, mode and icon in the next three bytes before copying t
 fields and cannot describe a local page. The Studio Floor lamp type uses the one-byte
 strip layout (`0x72`), native control type (`0x00`), mode `0x03` for artwork profile
 `0x15`, and icon byte `0x01` for the normal variant. The inventory query returns the
-device type and ID, so Studio uses its cached Main-page write for the mode and icon.
+device type and ID. The details query `0F 63 05` supplies the mode and icon, with the cached
+Main-page write used when details are unavailable.
+
+The V48 Native screen calls `200236b0` at `200289a1` and `20028aae`. The other Native
+artwork callback `20028f28` takes the same fields from a copy of the model and calls that
+selector at `20028f57`. For type/mode/icon `72/00/03`, `2002363c` selects profile
+`16` via the type table. At `200236ea`, icon `03` takes the alternate descriptor
+`2005a840`. Its RES offsets `414c04` and `415d88` decode to the pixels of
+`profile-16-alt.png` (light strip). For `72/03/01`, the mode table selects profile
+`15` and the normal descriptor `2005a830`. Its RES offsets `413dd8` and `414378`
+decode to `profile-15.png` (floor lamp). Both comparisons were checked against the
+V48 binaries and exported PNGs. A physical screen discrepancy with `72/00/03`
+remains unexplained by these paths.
+
+Studio's Native type picker is checked against both V48 lookup tables. The vacuum type codes
+`7d/08/13/0e` resolve to `10/08/05/0c` respectively. Bot modes `01/02` resolve to
+`0c/17`, and Curtain modes `03/04/05` resolve to `15/14/16`. EU Outlet type `3f`
+has no entry in the mode-zero table, so the selector returns profile `00`.
+
+Blind Tilt type `78` has two additional descriptors outside the normal/alternate pair:
+icon `02` loads `2005a8e0` via literal `200236ac`; icon `03` loads `2005a8c0`
+via literal `200236a4`. The Studio artwork exporter resolves their top and bottom images
+directly from V48 DSP and RES binaries. Roller Shade type `2c` enters a separate FLIX
+branch at `20023708`; the Studio preview currently uses its profile's normal illustration.
 
 For ordinary device types, icon value `1` selects the first artwork descriptor triple, while
 other values select the alternate triple. Type `0x78` additionally uses hardcoded descriptors

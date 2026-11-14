@@ -347,13 +347,13 @@ class SwitchBotUrcPanel extends HTMLElement {
               ? this._layoutState({ button_page: page.index, button_index: key.index }) : "unchanged",
             position: page.index === 0 ? positions[key.index] || "" : "",
             label: page.index === 0 ? positions[key.index] || functionLabel
-              : source?.label || functionLabel,
+              : key.title || source?.label || functionLabel,
             actions: source?.actions || [],
             mode: source?.mode || "preset",
             has_override: source?.has_override || false,
           };
         });
-        return { index: page.index, name: page.index === 0 ? "Main" : `Page ${"ABCD"[page.index - 1]}`, buttons };
+        return { index: page.index, name: page.title || (page.index === 0 ? "Main" : `Page ${"ABCD"[page.index - 1]}`), buttons };
       });
     }
     const pages = [...(this._remote()?.pages || [])];
@@ -553,25 +553,41 @@ class SwitchBotUrcPanel extends HTMLElement {
     return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction);
   }
 
+  _renderMenuNames(page, button) {
+    if (!page?.index || !this._physical) return "";
+    const menu = this._physical.pages.find((item) => item.index === page.index);
+    if (!menu) return "";
+    const row = button ? this._draftKey(button)?.key : null;
+    const hasDraft = this._physicalChanges();
+    const field = (label, title, placeholder, rowIndex) => `<form class="menu-name-form"
+      data-menu-name data-page="${page.index}" ${rowIndex == null ? "" : `data-row="${rowIndex}"`}>
+      <label>${label}<input name="title" value="${escapeHtml(title || "")}"
+        placeholder="${escapeHtml(placeholder)}" maxlength="60"></label>
+      <button class="secondary compact" type="submit" ${this._physicalBusy ? "disabled" : ""}>
+        ${hasDraft ? "Keep in draft" : "Save name"}</button>
+    </form>`;
+    return `<section class="menu-names">
+      <p class="small">Names are displayed in Remote Studio.</p>
+      ${field("Menu name", menu.title, `Page ${"ABCD"[page.index - 1]}`)}
+      ${row ? field("Selected item name", row.title, "Default name", row.index) : ""}
+    </section>`;
+  }
+
   _iconImage(name) {
     const asset = APP_ICON_ASSETS[name] || APP_ICON_ASSETS.light;
     return `<img class="ic-img" src="/switchbot_urc_static/app-icons/${asset}.webp"
       alt="" aria-hidden="true">`;
   }
 
-  _nativeArtworkSrc(profile, code = profile?.icon_code ?? 1) {
-    if (profile?.preview_artwork_id != null) {
-      const id = profile.preview_artwork_id.toString(16).padStart(2, "0");
-      return `/switchbot_urc_static/artwork/profile-${id}.png`;
+  _nativeArtworkSrc(profile, code = profile?.icon_code ?? 1, artworkId = profile?.artwork_id) {
+    if (artworkId == null) return "";
+    if (profile?.value === "BLIND_TILT" && (code === 2 || code === 3)) {
+      return `/switchbot_urc_static/artwork/blind-tilt-icon-${code}.png`;
     }
-    if (profile?.artwork_id == null) return "";
-    // Use the profile's recovered artwork as a preview even when its special icon variant
-    // path is not decoded yet. Blind Tilt uses hardcoded descriptors for codes 2/3, while
-    // Roller Shade crosses an unresolved FLIX path.
-    const unresolvedVariant = profile.value === "ROLLER_SHADE"
-      || (profile.value === "BLIND_TILT" && (code === 2 || code === 3));
+    // Roller Shade's variant selector crosses an undecoded FLIX bundle.
+    const unresolvedVariant = profile?.value === "ROLLER_SHADE";
     const suffix = code === 1 || unresolvedVariant ? "" : "-alt";
-    return `/switchbot_urc_static/artwork/profile-${Number(profile.artwork_id).toString(16).padStart(2, "0")}${suffix}.png`;
+    return `/switchbot_urc_static/artwork/profile-${artworkId.toString(16).padStart(2, "0")}${suffix}.png`;
   }
 
   _nativeProfile(type) {
@@ -595,8 +611,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<button class="native-type-choice${active ? " selected" : ""}"
         type="button" data-${dataAttribute}="${escapeHtml(item.value)}"
         aria-pressed="${!!active}">
-        <span class="native-type-art" ${item.preview_artwork_id != null
-          ? 'title="Type illustration. The physical display may differ."' : ""}>${artwork
+        <span class="native-type-art">${artwork
           ? `<img src="${artwork}" alt="">` : '<span title="Artwork not verified">—</span>'}</span>
         <span>${escapeHtml(item.title || item.value)}</span>
         ${detail ? `<span class="native-type-detail">${escapeHtml(detail)}</span>` : ""}
@@ -720,7 +735,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const nativeProfile = item.can_test_native_icon
         ? this._nativeProfile(item.native_type || item.device_type) : null;
       const artwork = item.can_test_native_icon
-        ? this._nativeArtworkSrc(nativeProfile, item.icon_code ?? undefined)
+        ? this._nativeArtworkSrc(nativeProfile, item.icon_code ?? undefined, item.artwork_id)
         : this._hidArtworkSrc(item.device_type) || this._irArtworkSrc(item);
       return `<div class="scr-row${current ? " on" : ""}">
         <button class="k pick-remote" type="button"
@@ -746,7 +761,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const editing = this._iconPickerFor === remote.remote_id;
     const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
     const choices = this._entry()?.icons || [];
-    const artwork = native ? this._nativeArtworkSrc(profile, this._physical.icon_code)
+    const installedArtwork = this._physical?.native_type === remote.native_type ? remote.artwork_id : undefined;
+    const artwork = native ? this._nativeArtworkSrc(profile, this._physical.icon_code, installedArtwork)
       : this._hidArtworkSrc(remote.device_type) || this._irArtworkSrc(remote);
     const canChooseIcon = !firmwareArtwork;
     return `<section class="appearance">
@@ -1025,7 +1041,7 @@ class SwitchBotUrcPanel extends HTMLElement {
               </section>
               <aside class="editor">${this._iconPickerFor === remote.remote_id
                 ? this._renderAppearance(remote)
-                : this._renderMenuIcon(page) + (button ? this._editor(button, remote)
+                : this._renderMenuNames(page, button) + this._renderMenuIcon(page) + (button ? this._editor(button, remote)
                   : `<div class="empty small">Choose a button, or use the pencil on a remote to edit its appearance.</div>`)}</aside>
             </div>
           ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
@@ -1711,10 +1727,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       native_type: draft.native_type || "",
       pages: [...draft.pages].sort((a, b) => a.index - b.index).map((page) => ({
         index: page.index,
+        title: page.title || "",
         link_glyph: page.link_glyph ?? null,
         buttons: [...page.buttons].sort((a, b) => a.index - b.index).map((key) => ({
           index: key.index, transport: key.transport, function: key.function ?? null,
           code_hex: key.code_hex || "", record: key.record || "", glyph: key.glyph ?? null,
+          title: key.title || "",
         })),
       })),
     });
@@ -2014,6 +2032,36 @@ class SwitchBotUrcPanel extends HTMLElement {
   _wirePhysical() {
     const root = this.shadowRoot;
     this._wireKeyEditor(root);
+    root.querySelectorAll("[data-menu-name]").forEach((form) => form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (this._physicalBusy) return;
+      const page = Number(form.dataset.page);
+      const row = form.dataset.row == null ? undefined : Number(form.dataset.row);
+      const title = form.elements.title.value.trim();
+      if (this._physicalChanges()) {
+        const menu = this._physical.pages.find((item) => item.index === page);
+        const owner = row == null ? menu : menu.buttons.find((item) => item.index === row);
+        owner.title = title;
+        this._render();
+        return;
+      }
+      this._physicalBusy = true;
+      this._render();
+      try {
+        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/rename_menu_item`,
+          entry_id: this._entryId, remote_id: this._remoteId, page, title,
+          ...(row == null ? {} : { row }) });
+        this._physical = result.layout;
+        this._physicalBaseline = structuredClone(result.layout);
+        this._error = null;
+        this._notify("Menu name saved in Remote Studio");
+      } catch (error) {
+        this._error = error?.message || String(error);
+      } finally {
+        this._physicalBusy = false;
+        this._render();
+      }
+    }));
     root.querySelectorAll("[data-glyph-field]").forEach((button) => button.addEventListener("click", () => {
       const { glyphField, glyphCode } = button.dataset;
       const owner = glyphField === "link_glyph"
@@ -2850,6 +2898,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row .pos{font-size:10px;font-weight:800;color:#ffffff7a;min-width:28px}
       .native-glyph{display:block;width:24px;height:24px;object-fit:contain;flex:none}
       .glyph-picker{margin:14px 0;padding:12px 14px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px}
+      .menu-names{display:grid;gap:10px;margin-bottom:16px}
+      .menu-names p{margin:0}
+      .menu-name-form{display:flex;align-items:end;gap:8px}
+      .menu-name-form label{display:grid;flex:1;min-width:0;gap:4px;font-size:12px;font-weight:700}
+      .menu-name-form input{min-width:0;padding:8px;border:1px solid var(--divider-color,#dfe3e8);border-radius:8px;background:var(--card-background-color,#fff);color:inherit}
       .glyph-picker summary{cursor:pointer;line-height:32px}
       .glyph-picker summary .native-glyph{display:inline-block;vertical-align:middle;margin:0 8px 0 5px;padding:4px;background:#171c23;border-radius:6px}
       .glyph-picker[open] summary{margin-bottom:10px}

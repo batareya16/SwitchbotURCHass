@@ -34,7 +34,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.43"
+FRONTEND_VERSION = "0.50.47"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -345,6 +345,10 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         device_type = str(remote.get("device_type", "Unknown"))
         if isinstance(layout, dict) and layout.get("template"):
             device_type = str(layout["template"])
+        appearance = native_appearance(remote)
+        if appearance:
+            wire_type = commands.NATIVE_DEVTYPE[str(remote["device_type"]).upper()]
+            appearance["artwork_id"] = commands.native_artwork_id(wire_type, appearance["control_mode"])
         remotes.append(
             {
                 "remote_id": remote_id,
@@ -356,7 +360,7 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
                 "icon": str(remote.get("icon", "")),
                 "icon_code": remote.get("icon_code") if isinstance(remote.get("icon_code"), int) else None,
-                **native_appearance(remote),
+                **appearance,
                 "can_test_native_icon": str(remote.get("device_type", "")).upper()
                     in commands.NATIVE_DEVTYPE,
                 "native_icon_test_active": bool(

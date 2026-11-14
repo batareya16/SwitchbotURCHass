@@ -530,11 +530,36 @@ async def ws_physical_apply(hass, connection, msg):
             connection.send_error(msg["id"], "physical_apply_failed", message)
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/physical/rename_menu_item",
+    vol.Required("entry_id"): str,
+    vol.Required("remote_id"): str,
+    vol.Required("page"): int,
+    vol.Optional("row"): int,
+    vol.Required("title"): str,
+})
+@websocket_api.async_response
+async def ws_rename_menu_item(hass, connection, msg):
+    store = hass.data.setdefault(DOMAIN, {})
+    lock = store.setdefault("_physical_locks", {}).setdefault(msg["entry_id"], asyncio.Lock())
+    async with lock:
+        try:
+            entry, remote = resolve(hass, msg)
+            draft = physical.draft_for(remote)
+            physical.rename_menu_item(draft, msg["page"], msg.get("row"), msg["title"])
+            persist(hass, entry, msg["remote_id"], physical_layout=draft)
+            connection.send_result(msg["id"], {"layout": draft})
+        except (ValueError, KeyError, TypeError) as err:
+            connection.send_error(msg["id"], "menu_rename_failed", str(err))
+
+
 def register(hass):
     websocket_api.async_register_command(hass, ws_physical_get)
     websocket_api.async_register_command(hass, ws_physical_apply)
     websocket_api.async_register_command(hass, ws_physical_import)
     websocket_api.async_register_command(hass, ws_physical_table)
+    websocket_api.async_register_command(hass, ws_rename_menu_item)
 
 
 def _adopt_native_remotes(table, remotes, catalogue) -> int:

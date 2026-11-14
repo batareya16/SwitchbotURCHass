@@ -1,5 +1,7 @@
 """Native Remote Studio profile changes must preserve layouts and fail before writing."""
 
+import csv
+
 import pytest
 from conftest import INTEGRATION, load
 
@@ -42,6 +44,22 @@ def test_native_profile_switch_keeps_draft_when_page_is_unsupported():
     assert draft["template"] == "BULB"
     assert len(draft["pages"]) == 5
     assert before["template"] == "FAN"
+
+
+def test_studio_menu_names_are_saved_without_changing_native_commands():
+    remote = {"device_type": "STRIP", "device_id": "AA:BB:CC:DD:EE:FF"}
+    draft = physical.draft_for(remote)
+    before = physical.native_layout(draft)
+    physical.rename_menu_item(draft, 4, None, " Living room colors ")
+    physical.rename_menu_item(draft, 4, 0, "Movie night")
+    saved = physical.draft_for({**remote, "physical_layout": draft})
+    assert saved["pages"][1]["title"] == "Living room colors"
+    assert saved["pages"][1]["buttons"][0]["title"] == "Movie night"
+    assert physical.native_layout(saved) == before
+    physical.rename_menu_item(saved, 4, 0, "")
+    assert saved["pages"][1]["buttons"][0]["title"] == ""
+    with pytest.raises(ValueError, match="not found"):
+        physical.rename_menu_item(saved, 4, 99, "No such row")
 
 
 def test_native_glyphs_round_trip_without_changing_key_commands_or_page_link():
@@ -120,6 +138,22 @@ def test_every_native_type_choice_has_firmware_artwork_mapping():
     assert c.native_profile_metadata("TRV")["artwork_id"] == 0x13
 
 
+def test_native_picker_matches_v48_artwork_tables():
+    docs = INTEGRATION.parents[1] / "docs"
+    with (docs / "native-default-artwork-map.csv").open() as stream:
+        defaults = {int(row["device_type"], 16): int(row["artwork_profile_id"], 16)
+                    for row in csv.DictReader(stream)}
+    with (docs / "native-control-mode-map.csv").open() as stream:
+        modes = {int(row["control_mode_code"], 16): int(row["artwork_profile_id"], 16)
+                 for row in csv.DictReader(stream)}
+    for profile in c.native_type_picker_options():
+        device = c.NATIVE_DEVTYPE[profile["device_type"]]
+        mode = profile["control_mode"]
+        expected = modes[mode] if mode else defaults.get(device, 0)
+        assert profile["artwork_id"] == expected, profile["value"]
+        assert (INTEGRATION / "frontend" / "artwork" / f"profile-{expected:02x}.png").is_file()
+
+
 def test_native_type_options_follow_official_handler_control_modes():
     options = {item["value"]: item for item in c.native_type_options()}
 
@@ -196,6 +230,13 @@ def test_device_details_distinguish_floor_lamp_and_strip_with_same_target():
     assert physical.draft_for(remote)["native_type"] == "FLOOR_LAMP"
     remote["native_appearance_readback"]["mode"] = 0
     assert physical.draft_for(remote)["native_type"] == "STRIP"
+    remote["native_appearance_readback"]["icon"] = 3
+    draft = physical.draft_for(remote)
+    assert draft["native_type"] == "STRIP"
+    assert c.native_artwork_id(0x72, draft["control_mode"]) == 0x16
+    assert draft["template"] == "STRIP"
+    edited = physical.validate(remote, draft)
+    assert (edited["control_mode"], c.ICON[edited["icon_name"]]) == (0, 3)
 
 
 def test_picker_omits_extended_device_types_and_local_builder_rejects_them():
