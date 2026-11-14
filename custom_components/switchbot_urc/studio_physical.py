@@ -122,9 +122,9 @@ def _functions_for(device_type: str, remote: dict) -> list[dict]:
     return own + rest
 
 
-def _native_profiles() -> list[dict]:
+def _native_profiles(current: str | None = None) -> list[dict]:
     profiles = []
-    for native_type in c.native_type_options():
+    for native_type in c.native_type_picker_options(current):
         name = native_type["profile"]
         profile = c.NATIVE_PROFILE_LAYOUTS[name]
         item = c.native_profile_metadata(name) | native_type
@@ -275,7 +275,7 @@ def ws_physical_get(hass, connection, msg):
         functions = _functions_for(device_type, remote)
         connection.send_result(msg["id"], {"layout": physical.draft_for(remote), "ir_sources": ir_sources(entry),
                                           "functions": functions,
-                                          "native_profiles": _native_profiles(),
+                                          "native_profiles": _native_profiles(remote.get("native_type") or device_type),
                                           "status": remote.get("physical_status", ""),
                                           "backup": remote.get("physical_backup")})
     except (ValueError, KeyError, TypeError) as err:

@@ -173,7 +173,7 @@ def _bridges(hass, entry) -> list:
 
     def add(address: str, fallback_name: str) -> None:
         compact = addressing.normalise(address)
-        if not compact or compact in seen:
+        if not addressing.is_valid(compact) or compact in seen:
             return
         # An address a controller already serves, or could derive, is that controller's
         # capacity — not a second controller. Counting it twice would offer room that the
@@ -188,10 +188,14 @@ def _bridges(hass, entry) -> list:
         match = next(
             (value for key, value in reported.items()
              if addressing.normalise(key) == compact), {})
+        try:
+            advertising_sets = int(match.get("advertising_sets") or 1)
+        except (TypeError, ValueError):
+            advertising_sets = 1
         result.append(addressing.Bridge(
             adapter=str(match.get("adapter") or fallback_name or "bridge"),
             address=addressing.format_address(compact),
-            advertising_sets=int(match.get("advertising_sets") or 1),
+            advertising_sets=advertising_sets,
             serving=[str(item) for item in match.get("serving") or [addressing.format_address(compact)]],
             extended_advertising=bool(match.get("extended_advertising", False)),
         ))
@@ -682,9 +686,13 @@ async def ws_remote_sources(hass, connection, msg):
             "icons": list(ICONS),
             "default_key": str((known[0] if known else {}).get("target_key", "")),
             "default_device_type": str((known[0] if known else {}).get("device_type", "STRIP")),
-            "default_screen_profile": c.NATIVE_PROFILE_ALIASES.get(
-                str((known[0] if known else {}).get("device_type", "STRIP")).upper(), "STRIP"),
-            "screen_profiles": c.native_type_options(),
+            "default_screen_profile": next(
+                (item["value"] for item in c.native_type_picker_options() if item["selectable"]
+                 and str((known[0] if known else {}).get("device_type", "")).upper()
+                 in (item["value"], *item["equivalent_types"])),
+                "STRIP",
+            ),
+            "screen_profiles": c.native_type_picker_options(),
             "default_icon": str((known[0] if known else {}).get("icon", "strip")),
         },
         # HID remotes need a paired host before the firmware accepts them, so the panel is

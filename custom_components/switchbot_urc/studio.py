@@ -33,7 +33,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.30"
+FRONTEND_VERSION = "0.50.38"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:

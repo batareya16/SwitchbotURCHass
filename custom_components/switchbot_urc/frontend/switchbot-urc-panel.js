@@ -262,7 +262,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _availablePageIndexes() {
     const current = new Set((this._physical?.pages || []).map((page) => page.index));
-    const profile = this._nativeProfiles.find((item) => item.value === (this._physical?.native_type || this._physical?.template));
+    const profile = this._nativeProfile(this._physical?.native_type || this._physical?.template);
     const mainButtons = this._physical?.pages?.find((page) => page.index === 0)?.buttons || [];
     const supported = this._physical?.kind === "native"
       ? (profile?.subpages || []).filter((page) => page.link_index != null)
@@ -302,7 +302,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _pages() {
     if (this._physical) {
       const remotePages = this._remote()?.pages || [];
-      const nativeProfile = this._nativeProfiles.find((item) => item.value === (this._physical.native_type || this._physical.template));
+      const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
       const positions = ["A", "B", "C", "D", "ON", "OFF", "LEFT", "RIGHT", "UP",
         "DOWN", "OK", "BACK", "HOME", "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN"];
       return this._physical.pages.map((page) => {
@@ -500,6 +500,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     return ["none", "No action"];
   }
 
+  _draftLabel(button) {
+    return { new: "Added", moved: "Moved", edited: "Edited" }[button.layout_state] || "";
+  }
+
   _nativeGlyphSrc(button) {
     const functionCode = Number(button?.button_function);
     if (!Number.isInteger(functionCode) || !NATIVE_GLYPH_FUNCTIONS.has(functionCode)) return "";
@@ -518,6 +522,10 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _nativeArtworkSrc(profile, icon) {
+    if (profile?.preview_artwork_id != null) {
+      const id = profile.preview_artwork_id.toString(16).padStart(2, "0");
+      return `/switchbot_urc_static/artwork/profile-${id}.png`;
+    }
     if (profile?.artwork_id == null) return "";
     const code = Object.keys(APP_ICON_ASSETS).indexOf(icon) + 1;
     if (!code) return "";
@@ -530,6 +538,11 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `/switchbot_urc_static/artwork/profile-${Number(profile.artwork_id).toString(16).padStart(2, "0")}${suffix}.png`;
   }
 
+  _nativeProfile(type) {
+    return this._nativeProfiles.find((item) =>
+      item.value === type || item.equivalent_types?.includes(type));
+  }
+
   _nativeTypeChoices(profiles, selected, dataAttribute) {
     const searchAttribute = dataAttribute === "native-profile"
       ? "data-native-type-search-edit" : "data-native-type-search-add";
@@ -539,16 +552,20 @@ class SwitchBotUrcPanel extends HTMLElement {
       `${item.title} ${item.value} ${item.profile} ${item.control_mode}`.toLowerCase().includes(filter)) : profiles;
     return `<label class="native-type-search">Filter types<input id="${searchId}" type="search" ${searchAttribute}
       value="${escapeHtml(this._nativeTypeSearch || "")}" placeholder="Search type or screen mode"></label>
-      <div class="native-type-grid">${visible.map((item) => {
+      <div class="native-type-grid">${[...visible].sort((a, b) =>
+        Number(a.selectable === false) - Number(b.selectable === false)).map((item) => {
       const artwork = this._nativeArtworkSrc(item, item.icon_name || "light");
       const detail = (item.label || "").split(" · ").slice(1).join(" · ");
-      return `<button class="native-type-choice${item.value === selected ? " selected" : ""}"
+      const active = item.value === selected || item.equivalent_types?.includes(selected);
+      return `<button class="native-type-choice${active ? " selected" : ""}"
         type="button" data-${dataAttribute}="${escapeHtml(item.value)}"
-        aria-pressed="${item.value === selected}">
-        <span class="native-type-art">${artwork
+        aria-pressed="${!!active}" ${item.selectable === false ? "disabled" : ""}>
+        <span class="native-type-art" ${item.preview_artwork_id != null
+          ? 'title="Type illustration. The physical display may differ."' : ""}>${artwork
           ? `<img src="${artwork}" alt="">` : '<span title="Artwork not verified">—</span>'}</span>
         <span>${escapeHtml(item.title || item.value)}</span>
         ${detail ? `<span class="native-type-detail">${escapeHtml(detail)}</span>` : ""}
+        ${item.selectable === false ? '<span class="native-type-detail">Local write unverified</span>' : ""}
       </button>`;
     }).join("")}</div>`;
   }
@@ -577,12 +594,11 @@ class SwitchBotUrcPanel extends HTMLElement {
     const [status, statusLabel] = this._status(button);
     const selected = button.button_id === this._buttonId ? " selected" : "";
     const pressed = this._isActiveButton(button) ? " pressed" : "";
-    const draft = button.layout_state && button.layout_state !== "unchanged"
-      ? ` draft-${button.layout_state}` : "";
-    return `<g class="k ${status}${selected}${pressed}${draft}" role="button" tabindex="0"
+    const draft = this._draftLabel(button);
+    return `<g class="k ${status}${selected}${pressed}${draft ? " unsaved" : ""}" role="button" tabindex="0"
       data-button="${escapeHtml(button.button_id)}"><title>${escapeHtml(label || tag)} · ${
-      escapeHtml(statusLabel)} · ${escapeHtml(button.label)}${button.layout_state && button.layout_state !== "unchanged"
-        ? ` · ${button.layout_state} in draft` : ""}</title>${body}</g>`;
+      escapeHtml(statusLabel)} · ${escapeHtml(button.label)}${draft
+        ? ` · ${draft} in draft` : ""}</title>${body}</g>`;
   }
 
   async _saveTile() {
@@ -654,16 +670,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       return keys.map((item) => {
         const [status] = this._status(item);
         const on = item.button_id === this._buttonId;
-        const layoutState = item.layout_state && item.layout_state !== "unchanged"
-          ? `<span class="draft-tag ${item.layout_state}">${item.layout_state}</span>` : "";
-        const draftClass = item.layout_state && item.layout_state !== "unchanged"
-          ? ` draft-${item.layout_state}` : "";
+        const draft = this._draftLabel(item);
         const glyph = this._nativeGlyph(item, "scr-icon");
-        return `<div class="scr-row k ${status}${on ? " on" : ""}${draftClass}" role="button" tabindex="0"
-          data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}">
+        return `<div class="scr-row k ${status}${on ? " on" : ""}${draft ? " unsaved" : ""}" role="button" tabindex="0"
+          data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}${draft ? ` · ${draft} in draft` : ""}">
           ${glyph}
           <span class="pos">${escapeHtml(item.position || `#${item.button_index + 1}`)}</span>
-          <span class="nm">${escapeHtml(item.label)}</span>${layoutState}</div>`;
+          <span class="nm">${escapeHtml(item.label)}</span></div>`;
       }).join("");
     }
     const remotes = this._entry()?.remotes || [];
@@ -671,7 +684,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     return remotes.map((item) => {
       const current = item.remote_id === this._remoteId;
       const nativeProfile = item.can_test_native_icon
-        ? this._nativeProfiles.find((candidate) => candidate.value === (item.native_type || item.device_type)) : null;
+        ? this._nativeProfile(item.native_type || item.device_type) : null;
       const artwork = item.can_test_native_icon
         ? this._nativeArtworkSrc(nativeProfile, "light")
         : this._hidArtworkSrc(item.device_type) || this._irArtworkSrc(item);
@@ -695,7 +708,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const isIr = String(remote.device_type).startsWith("IR_");
     const firmwareArtwork = isNative || isHid || isIr;
     const profile = native
-      ? this._nativeProfiles.find((item) => item.value === (this._physical.native_type || this._physical.template)) : null;
+      ? this._nativeProfile(this._physical.native_type || this._physical.template) : null;
     const editing = this._iconPickerFor === remote.remote_id;
     const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
     const choices = this._entry()?.icons || [];
@@ -756,8 +769,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const softkeys = Object.fromEntries(mainButtons.map((item) => [
       String(item.position || "").toUpperCase(), item,
     ]));
-    const profile = this._nativeProfiles.find((item) =>
-      item.value === (this._physical?.native_type || this._physical?.template));
+    const profile = this._nativeProfile(this._physical?.native_type || this._physical?.template);
     // Glyphs are drawn around their own origin and moved onto the key's centre, so a key and
     // its mark cannot drift apart the way hand-placed coordinates did.
     const mark = (cx, cy, d) => `<path d="${d}" transform="translate(${cx} ${cy})" class="mark"/>`;
@@ -825,7 +837,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${key("RIGHT", `<path d="M200 427 a58 58 0 0 1-17 41 l-25-25 a26 26 0 0 0 0-32 l25-25 a58 58 0 0 1 17 41z" class="cap seg"/>${mark(182, 427, "M-3-6l6 6-6 6")}`, "Right")}
         ${key("OK", `${cap(150, 427, 26)}<text x="150" y="431" class="cap-t">OK</text>`, "OK")}
 
-        ${key("BACK", `${cap(88, 510, 18)}${mark(88, 510, "M3-4a5 5 0 1 0 0 8M3 4l-3-3M3 4l3-3")}`, "Back")}
+        ${key("BACK", `${cap(88, 510, 18)}${mark(88, 510, "M-2-6l-4 4 4 4M-6-2H2a4 4 0 0 1 0 8H-2")}`, "Back")}
         ${key("KATA", `<circle cx="150" cy="510" r="16" fill="url(#logo)" class="logo"/><path d="M-2-7h5l-3 6h4l-7 9 2-7h-4z" transform="translate(150 510)" class="logo-mark"/>`, "SwitchBot")}
         ${key("HOME", `${cap(212, 510, 18)}${mark(212, 510, "M-6 1l6-6 6 6v5h-4v-4h-4v4h-4z")}`, "Home")}
 
@@ -843,7 +855,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       ? `<div class="screen-keys"><div class="sk-title">Positions this remote uses that the
          device has no key for</div><div class="button-grid">${extras.map((item) => {
           const [status, statusLabel] = this._status(item);
-          return `<button class="remote-button ${status} ${item.button_id === this._buttonId ? "selected" : ""}" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)}">${this._nativeGlyph(item, "glyph")}<span>${escapeHtml(item.label)}</span><i></i></button>`;
+          const draft = this._draftLabel(item);
+          return `<button class="remote-button ${status}${item.button_id === this._buttonId ? " selected" : ""}${draft ? " unsaved" : ""}"
+            data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)}${draft ? ` · ${draft} in draft` : ""}">
+            ${this._nativeGlyph(item, "glyph")}<span>${escapeHtml(item.label)}</span><i></i></button>`;
         }).join("")}</div></div>`
       : "";
     return svg + extrasRow;
@@ -882,6 +897,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       .filter((state) => state.entity_id.startsWith("light."))
       .sort((a, b) => (a.attributes.friendly_name || a.entity_id).localeCompare(b.attributes.friendly_name || b.entity_id));
     const boundLight = remote?.binding?.entity_id || "";
+    const battery = entry?.battery;
+    const charge = battery != null && String(battery).trim() ? Number(battery) : NaN;
 
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
@@ -893,7 +910,11 @@ class SwitchBotUrcPanel extends HTMLElement {
             <p>Design, map and test every physical button from one place.</p>
           </div>
           <div class="header-actions">
-            ${entry?.battery != null ? `<div class="battery"><span>▰</span>${escapeHtml(entry.battery)}%</div>` : ""}
+            ${Number.isFinite(charge) ? `<div class="battery" title="Battery level">
+              <span class="battery-icon" aria-hidden="true">
+                <span class="battery-fill" style="width:${Math.max(0, Math.min(100, charge))}%"></span>
+              </span><span>${escapeHtml(battery)}%</span>
+            </div>` : ""}
             <div class="live"><i></i> Live</div>
             <button class="secondary" id="refresh" title="Re-read the remote and pick up anything created in the SwitchBot app">${this._physicalBusy ? "Refreshing…" : "Refresh"}</button>
           </div>
@@ -955,7 +976,7 @@ class SwitchBotUrcPanel extends HTMLElement {
                       : `<span class="small">This page is full.</span>`}
                   ${page?.index ? `${this._availablePageIndexes().length ? `<label class="page-move">Move page<select id="moveCurrentPage"><option value="">Choose letter…</option>${this._availablePageIndexes().map((index) => `<option value="${index}">Page ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : `<span class="small page-capacity">No free page letter</span>`}<button class="secondary compact destructive" id="removeThisPage" title="Remove this page and every button on it">Delete page</button>` : ""}
                 </div>` : ""}
-              <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span><span><i class="none"></i>Empty</span>${this._physical ? `<span><i class="draft-new"></i>Added</span><span><i class="draft-moved"></i>Moved</span><span><i class="draft-edited"></i>Edited</span>` : ""}</div>
+              <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span>${this._physical ? '<span><i class="unsaved"></i>Unsaved change</span>' : ""}</div>
               </section>
               <aside class="editor">${this._iconPickerFor === remote.remote_id
                 ? this._renderAppearance(remote)
@@ -987,7 +1008,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._ensureCatalog();
     this._ensureCloud();
     // The diagnostics table reports each controller's capacity, which comes from here.
-    this._ensureSources();
+    if (!this._sourcesError) this._ensureSources();
   }
 
   async _openPhysical() {
@@ -1223,6 +1244,18 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderAddRemote() {
     const add = this._add;
     if (!add) return "";
+    if (add.loading || add.loadError) {
+      return `<section class="add-remote">
+        <div class="action-title"><b>Add a remote</b></div>
+        ${add.loading
+          ? '<p class="small" role="status">Loading remote options…</p>'
+          : `<p class="error" role="alert">Could not load remote options. ${escapeHtml(add.loadError)}</p>`}
+        <div class="key-actions">
+          ${add.loadError ? '<button class="primary" id="retryAddRemote">Retry</button>' : ""}
+          <button class="secondary compact" id="addRemoteCancel">Cancel</button>
+        </div>
+      </section>`;
+    }
     const sources = this._sources || {};
     const hidArtwork = this._hidArtworkSrc(add.deviceType);
     const cat = this._catalog;
@@ -1320,13 +1353,71 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   async _ensureSources() {
-    if (this._sources || this._sourcesLoading) return;
-    this._sourcesLoading = true;
-    try {
-      this._sources = await this._hass.callWS({
-        type: `${DOMAIN}/studio/remote/sources`, entry_id: this._entryId });
-    } catch (error) { this._sources = {}; }
-    this._sourcesLoading = false;
+    const entryId = this._entryId;
+    if (!entryId) return null;
+    if (this._sources && this._sourcesEntry === entryId) return this._sources;
+    if (this._sourcesRequest?.entryId === entryId) return this._sourcesRequest.promise;
+    const request = { entryId };
+    this._sourcesRequest = request;
+    this._sourcesError = "";
+    request.promise = Promise.resolve().then(async () => {
+      try {
+        const sources = await this._hass.callWS({
+          type: `${DOMAIN}/studio/remote/sources`, entry_id: entryId });
+        if (this._sourcesRequest !== request || this._entryId !== entryId) return null;
+        this._sources = sources;
+        this._sourcesEntry = entryId;
+        return sources;
+      } catch (error) {
+        if (this._sourcesRequest === request && this._entryId === entryId) {
+          this._sourcesError = error?.message || error?.code || String(error);
+        }
+        return null;
+      } finally {
+        if (this._sourcesRequest === request) {
+          this._sourcesRequest = null;
+          this._render();
+        }
+      }
+    });
+    return request.promise;
+  }
+
+  async _openAddRemote() {
+    const entryId = this._entryId;
+    const pending = { loading: true };
+    this._add = pending;
+    this._render();
+    const sources = await this._ensureSources();
+    if (entryId !== this._entryId || this._add !== pending) return;
+    if (!sources) {
+      this._add = { loadError: this._sourcesError || "No response from Home Assistant." };
+      this._render();
+      return;
+    }
+    this._error = null;
+    // Open on the first kind this installation can actually use.
+    const kind = sources.native ? "native"
+      : (sources.catalog && sources.cloud) ? "catalog"
+      : (sources.cloud_remotes || []).length ? "cloud" : "hid";
+    this._add = {
+      kind, name: "", replace: false, busy: false, error: "",
+      remoteId: (sources.cloud_remotes || [])[0]?.remote_id || "",
+      deviceType: (kind === "native"
+        ? sources.native_options?.default_screen_profile
+        : (sources.hid?.device_types || [])[0]) || "",
+      icon: (kind === "native"
+        ? "light"
+        : (sources.hid?.icons || [])[0]) || "",
+      deviceId: sources.hid?.host_mac || "",
+      buttons: [...(sources.hid?.default_buttons || [])],
+      targetId: (sources.bridges || [])[0]?.target_id || "",
+      // Let the integration pick the address by default: it knows every controller's
+      // capacity and which addresses are already bound.
+      addressMode: sources.native_options?.free ? "auto" : "stored",
+      newAddress: "",
+      targetKey: sources.native_options?.default_key || "",
+    };
     this._render();
   }
 
@@ -1334,10 +1425,19 @@ class SwitchBotUrcPanel extends HTMLElement {
     const root = this.shadowRoot;
     const add = this._add;
     if (!add) return;
+    root.getElementById("retryAddRemote")?.addEventListener("click", () => this._openAddRemote());
+    if (add.loading || add.loadError) {
+      root.getElementById("addRemoteCancel")?.addEventListener("click", () => {
+        this._add = null;
+        this._render();
+      });
+      return;
+    }
 
     root.querySelectorAll("[data-add-kind]").forEach((button) => {
       button.addEventListener("click", () => {
         add.kind = button.dataset.addKind;
+        add.nativeType = "";
         add.error = "";
         const kinds = this._sources || {};
         // Device types and icons differ per kind; carrying one tab's choice into another
@@ -1663,7 +1763,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _renderNativeProfileWarnings() {
     if (this._physical?.kind !== "native") return "";
-    const profile = this._nativeProfiles.find((item) => item.value === (this._physical.native_type || this._physical.template));
+    const profile = this._nativeProfile(this._physical.native_type || this._physical.template);
     if (!profile) return "";
     const conflicts = this._nativeProfileConflicts(profile);
     const mainKeys = profile.main_keys || [];
@@ -1706,8 +1806,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.getElementById("openCustomPage")?.addEventListener("click", () => {
       const index = button.button_index + 1;
-      const nativeProfile = this._nativeProfiles.find(
-        (item) => item.value === this._physical?.template);
+      const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
       if (this._physical.kind === "native" && !nativeProfile?.pages?.includes(index)) return;
       const home = this._physical.pages.find((item) => item.index === 0);
       if (!home || this._physical.pages.some((item) => item.index === index)) return;
@@ -1925,17 +2024,14 @@ class SwitchBotUrcPanel extends HTMLElement {
 
 
   _pageControl(button, key) {
-    // Always rendered for a Main A-D position, because "the button is simply not there" is
-    // how this looked broken: there was nothing to read and nothing to click.
     const index = key ? key.index : button.button_index;
     if (button.button_page !== 0 || index > 3) return "";
     const letter = "ABCD"[index];
     const target = index + 1;
-    const nativeProfile = this._nativeProfiles.find(
-      (item) => item.value === this._physical?.template);
+    const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
     if (this._physical.kind === "native" && !nativeProfile?.subpages?.some(
       (item) => item.index === target && item.link_index != null)) {
-      return `<p class="small">${escapeHtml(this._physical.template)} does not provide page ${letter}.</p>`;
+      return "";
     }
     const existing = this._pages().find((item) => item.index === target);
     if (existing) {
@@ -1971,9 +2067,11 @@ class SwitchBotUrcPanel extends HTMLElement {
     const rowPosition = page.index
       ? this._pageKeyEntries(page).findIndex((item) => item.key === key) : -1;
     const lastRowPosition = page.index ? page.buttons.length - 1 : -1;
-    const linkedPage = button.button_page === 0
+    const linkedPage = button.button_page === 0 && key.index < 4
       ? this._physical.pages.find((item) => item.index === key.index + 1)
       : null;
+    const pageControl = this._pageControl(button, key);
+    if (kind === "native" && button.button_page === 0 && !linkedPage && !pageControl) return "";
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
     return `<div class="action-box key-editor">
@@ -2006,10 +2104,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${button.button_page
           ? `<button class="secondary compact destructive" id="removeKey"
               title="Take this row off the page; the rows below it move up">Delete this row</button>`
-          : linkedPage ? "" : `<button class="secondary compact destructive" id="removeKey"
+          : linkedPage || kind === "native" ? "" : `<button class="secondary compact destructive" id="removeKey"
               title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`}
       </div>
-      ${this._pageControl(button, key)}
+      ${pageControl}
     </div>`;
   }
 
@@ -2156,33 +2254,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._moveSubpage(this._page()?.index, Number(event.target.value));
     });
 
-    root.getElementById("addRemote")?.addEventListener("click", async () => {
-      await this._ensureSources();
-      const sources = this._sources || {};
-      // Open on the first kind this installation can actually use.
-      const kind = sources.native ? "native"
-        : (sources.catalog && sources.cloud) ? "catalog"
-        : (sources.cloud_remotes || []).length ? "cloud" : "catalog";
-      this._add = {
-        kind, name: "", replace: false, busy: false, error: "",
-        remoteId: (sources.cloud_remotes || [])[0]?.remote_id || "",
-        deviceType: (kind === "native"
-          ? sources.native_options?.default_screen_profile
-          : (sources.hid?.device_types || [])[0]) || "",
-        icon: (kind === "native"
-          ? "light"
-          : (sources.hid?.icons || [])[0]) || "",
-        deviceId: sources.hid?.host_mac || "",
-        buttons: [...(sources.hid?.default_buttons || [])],
-        targetId: (sources.bridges || [])[0]?.target_id || "",
-        // Let the integration pick the address by default: it knows every controller's
-        // capacity and which addresses are already bound.
-        addressMode: sources.native_options?.free ? "auto" : "stored",
-        newAddress: "",
-        targetKey: sources.native_options?.default_key || "",
-      };
-      this._render();
-    });
+    root.getElementById("addRemote")?.addEventListener("click", () => this._openAddRemote());
 
     root.getElementById("recreateRemote")?.addEventListener("click", async () => {
       const remote = this._remote();
@@ -2707,11 +2779,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row .scr-icon{width:20px;height:20px}
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
-      .scr-row.draft-new,.scr-row.draft-edited{background:#267b6026}.scr-row.draft-moved{background:#32729a26}
-      .draft-tag{margin-left:auto;padding:2px 5px;border:1px solid currentColor;border-radius:4px;font-size:9px;font-weight:700;text-transform:uppercase;line-height:1.2}
-      .draft-tag.new,.draft-tag.edited{color:#83dfb2}.draft-tag.moved{color:#91cbea}
+      .scr-row.unsaved{outline:1px dashed #ffffff80;outline-offset:-1px}
+      .remote-button.unsaved{border-style:dashed}
+      .remote-button.none i{display:none}
+      .legend i.unsaved{width:12px;border:1px dashed currentColor;border-radius:3px}
       .scr-scroll .ic-img{width:18px;height:18px;flex:none;object-fit:contain}
-      .ic-btn{flex:none;width:26px;height:26px;margin-right:4px;border:0;border-radius:5px;
+      .scr-row>.ic-btn{flex:0 0 26px;width:26px;height:26px;padding:0;justify-content:center;
+        margin-right:4px;border:0;border-radius:5px;
         background:#ffffff26;color:#fff;font-size:13px;line-height:1;cursor:pointer}
       .ic-btn:hover{background:#ffffff3d}
       .device .scr-sep path{stroke:#ffffff4d;stroke-width:1;fill:none}
@@ -2730,13 +2804,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       .page-note{margin:-6px 0 12px;color:var(--secondary-text-color,#68727d)}
       .device .k.link .cap{fill:#f3f7ff;stroke:#c9d9f5;stroke-dasharray:3 3}
       .device .link-mark{stroke:#6b8cc7;stroke-width:2}
+      .battery-icon{position:relative;display:flex;align-items:stretch;width:21px;height:12px;
+        flex:none;border:1.5px solid currentColor;border-radius:3px;padding:1.5px;margin-right:3px}
+      .battery-icon::after{content:"";position:absolute;left:calc(100% + 1px);top:50%;
+        transform:translateY(-50%);width:2px;height:5px;border-radius:0 1px 1px 0;background:currentColor}
+      .battery-fill{display:block;background:currentColor;border-radius:1px}
       .device .k.preset .cap{stroke:#3c8cff;stroke-width:2;fill:#f0f6ff}
       .device .k.custom .cap{stroke:#25bd76;stroke-width:2;fill:#eefaf3}
       .device .k.disabled .cap{stroke:#ee5b66;stroke-width:2;fill:#fff2f3}
       .device .k.selected .cap{stroke:#03a9f4;stroke-width:3;fill:#e6f5fe}
-      .device .k.draft-new .cap,.device .k.draft-edited .cap{stroke:#218b65;stroke-dasharray:2 2}
-      .device .k.draft-moved .cap{stroke:#397da4;stroke-dasharray:2 2}
-      .legend i.draft-new,.legend i.draft-edited{background:#36866a}.legend i.draft-moved{background:#397da4}
       .device .k.pressed .cap{animation:keypress .85s ease}
       .device .screen-softkeys .k .cap{fill:#18191b;stroke:#ffffff38;stroke-dasharray:none}
       .device .screen-softkeys .cap-t{fill:#ddd;font-size:9px}
@@ -2745,6 +2821,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .screen-softkeys .k.disabled .cap{stroke:#ee5b66}
       .device .screen-softkeys .k:hover .cap,.device .screen-softkeys .k:focus-visible .cap,
       .device .screen-softkeys .k.selected .cap,.device .screen-softkeys .k.current-page .cap{stroke:#8bd4ff}
+      .device .k.unsaved .cap{stroke-dasharray:3 2}
       @keyframes keypress{0%,100%{fill:#f7f7f9}20%{fill:#c9f6dc}}
       .screen-keys{margin-top:16px}.sk-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--secondary-text-color,#68727d);margin-bottom:8px}
       .stage-actions{width:100%;justify-content:flex-start}.page-move{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--secondary-text-color,#68727d);font-size:12px;font-weight:700}.page-move select{width:auto;min-width:125px;height:36px;margin:0;border-radius:7px}.page-capacity{margin-left:auto}

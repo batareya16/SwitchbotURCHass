@@ -297,8 +297,25 @@ NATIVE_PROFILE_TITLES = {
 }
 
 NATIVE_DEVICE_TITLES = {
+    "LIGHT": "Light strip",
+    "CEILING_LIGHT_2": "Ceiling Light 2",
+    "STRIP_3": "Light Strip 3",
+    "RGBICWW_LIGHT_BARS": "RGBICWW Light Bars",
+    "NEON_LIGHT": "Neon Light",
+    "RGBICWW_STRIP_LIGHT": "RGBICWW Strip Light",
+    "RGBICWW_FLOOR_LAMP": "RGBICWW Floor Lamp",
+    "RGBIC_NEON_WIRE_ROPE_LIGHT": "RGBIC Neon Wire Rope Light",
+    "RGBIC_NEON_ROPE_LIGHT": "RGBIC Neon Rope Light",
+    "RGBIC_PERMANENT_OUTDOOR_LIGHT": "RGBIC Permanent Outdoor Light",
+    "FAN_3": "Standing Fan",
+    "FAN_PRO": "Fan Pro",
+    "LOCK_PRO_WIFI": "Lock Pro Wi-Fi",
+    "LOCK_2": "Lock 2",
+    "LOCK_ULTRA_2": "Lock Ultra 2",
+    "VISION_DEADBOLT": "Vision Deadbolt",
+    "VISION_DEADBOLT_PRO": "Vision Deadbolt Pro",
     "PLUG_US": "US outlet", "PLUG_JP": "Japan outlet", "CURTAIN_3": "Curtains 3",
-    "CEILING_PRO": "Ceiling light Pro", "LIGHT": "Light", "FAN_2": "Fan 2",
+    "CEILING_PRO": "Ceiling light Pro", "FAN_2": "Fan 2",
     "AIR_PURIFIER_US": "Air purifier US", "AIR_PURIFIER_JP": "Air purifier Japan",
     "AIR_PURIFIER_US_PRO": "Air purifier US Pro", "AIR_PURIFIER_JP_PRO": "Air purifier Japan Pro",
     "HUMIDIFIER_2": "Humidifier 2", "LOCK_LITE": "Lock Lite", "LOCK_PRO": "Lock Pro",
@@ -314,6 +331,12 @@ NATIVE_DEVICE_ARTWORK = {
     0x7E: 0x09, 0x2C: 0x22, 0x2A: 0x2F, 0x2B: 0x2F, 0x37: 0x2F,
     0x38: 0x2F, 0x23: 0x0B, 0x6F: 0x21, 0x2D: 0x21, 0x24: 0x21,
     0x3C: 0x13, 0x3B: 0x13, 0x3F: 0x13, 0x3E: 0x2E,
+}
+
+# These names resolve to identical packet fields and layouts.
+NATIVE_TYPE_EQUIVALENTS = {
+    "LIGHT": "STRIP", "PLUG_US": "PLUG", "FAN_2": "FAN",
+    "HUMIDIFIER_2": "HUMIDIFIER", "SWITCH_1PM": "SWITCH", "CANDLE_LAMP": "CANDLE",
 }
 
 NATIVE_PROFILE_ALIASES = {
@@ -374,7 +397,7 @@ def native_type_metadata(type_name: str) -> dict:
         return {"value": name, "profile": "STRIP", "title": "Floor lamp",
                 "device_type": name, "control_mode": 0, "icon_name": "floorlamp",
                 "icon_code": ICON["floorlamp"],
-                "artwork_id": None}
+                "artwork_id": None, "preview_artwork_id": 0x15}
     variants = {
         "BOT_PRESS": ("BOT", "Button bot · Press", 1),
         "BOT_SWITCH": ("BOT", "Button bot · Switch", 2),
@@ -388,12 +411,14 @@ def native_type_metadata(type_name: str) -> dict:
         return {"value": name, "profile": profile_name, "title": title,
                 "device_type": device_name, "control_mode": mode,
                 "icon_name": "light", "icon_code": ICON["light"],
-                "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode]}
+                "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode],
+                "preview_artwork_id": NATIVE_DEVICE_ARTWORK[NATIVE_DEVTYPE[device_name]]}
     profile_name = NATIVE_PROFILE_ALIASES.get(name)
     if not profile_name:
         raise ValueError(f"Unsupported native remote type: {type_name}")
     control_mode = int(NATIVE_PROFILE_LAYOUTS[profile_name].get("control_mode", 0))
     return {"value": name, "profile": profile_name,
+            "preview_artwork_id": 0x10 if profile_name == "VACUUM" else None,
             "title": NATIVE_DEVICE_TITLES.get(name, NATIVE_PROFILE_TITLES[profile_name]),
             "device_type": name, "control_mode": control_mode,
             "icon_name": "light", "icon_code": ICON["light"],
@@ -407,6 +432,23 @@ def native_type_options() -> list[dict]:
     options.extend(native_type_metadata(name) for name in (
         "BOT_PRESS", "BOT_SWITCH", "CURTAIN_GROUP", "CURTAIN_LEFT", "CURTAIN_RIGHT",
     ))
+    return options
+
+
+def native_type_picker_options(current: str | None = None) -> list[dict]:
+    """List distinct choices for local writes and retain the type already installed."""
+    current = NATIVE_TYPE_EQUIVALENTS.get(current, current)
+    options = []
+    for item in native_type_options():
+        name = item["value"]
+        if name in NATIVE_TYPE_EQUIVALENTS:
+            continue
+        supported = native_device_type_supported(item["device_type"])
+        options.append(item | {
+            "selectable": supported or name == current,
+            "equivalent_types": [alias for alias, canonical in NATIVE_TYPE_EQUIVALENTS.items()
+                                 if canonical == name],
+        })
     return options
 
 
