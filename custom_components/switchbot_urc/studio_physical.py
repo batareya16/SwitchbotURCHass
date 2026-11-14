@@ -435,6 +435,7 @@ async def ws_physical_apply(hass, connection, msg):
                 raise ValueError("The physical remote type differs from the cached profile")
             uploads, pages = physical.compile_pages(remote, draft, slot)
             stored_changes = {}
+            verify_appearance = False
             if draft["kind"] == "native":
                 target = targets.target_for(entry, remote)
                 key = bytes.fromhex(target.get("target_key", ""))
@@ -475,6 +476,11 @@ async def ws_physical_apply(hass, connection, msg):
                                   "floor_lamp_test_applied": False,
                                   "native_appearance_readback": None,
                                   "icon_variant_backup_packet": None}
+                previous = physical.native_appearance(remote)
+                verify_appearance = (
+                    c.NATIVE_DEVTYPE[selected_type["device_type"]], layout["control_mode"],
+                    stored_changes["icon_code"],
+                ) != (device_type, previous["control_mode"], previous["icon_code"])
             else:
                 # Deleting keys leaves the physical remote and its existing HID bond in place.
                 delete = bytes([15, 98, 4, 1, slot]) + c.device_type_bytes(device_type) + bytes([control_type]) + expected_id + b"\xff\xff"
@@ -508,14 +514,31 @@ async def ws_physical_apply(hass, connection, msg):
             after = c.parse_added_devices(await client.query(7))
             if not any(item[3] == expected_id and item[2] == expected_control for item in after):
                 raise ValueError("The remote is missing from the physical table after writing")
+            status = "Device acknowledged all pages."
+            if verify_appearance:
+                expected = (stored_changes["control_mode"], stored_changes["icon_code"])
+                prefix = f"Slot {new_slot}: sent mode 0x{expected[0]:02X}, icon 0x{expected[1]:02X}"
+                wire_type = c.NATIVE_DEVTYPE[stored_changes["device_type"]]
+                try:
+                    details = c.parse_device_appearances(await client.query(5, timeout=8, timeout_retries=0))
+                    mode, icon = details[new_slot, wire_type, expected_id]
+                    stored_changes["native_appearance_readback"] = {
+                        "slot": new_slot, "device_type": wire_type, "mode": mode, "icon": icon,
+                    }
+                    status = f"{prefix}; device stored mode 0x{mode:02X}, icon 0x{icon:02X}."
+                    if (mode, icon) != expected:
+                        _LOGGER.warning("WoRWS appearance differs after writing: %s", status)
+                except Exception as err:
+                    status = f"{prefix}; device appearance could not be read back."
+                    _LOGGER.warning("WoRWS appearance verification failed: %s %s", status, err)
             persist(hass, entry, identity, physical_layout=draft,
                     physical_packets=[packet.hex() for packet in pages],
                     physical_pending=None,
-                    physical_status="Device acknowledged all pages", **stored_changes)
+                    physical_status=status, **stored_changes)
             _migrate_button_actions(hass, entry, identity, identity_migrations,
                                     msg.get("identity_removals", []))
             _, updated = resolve(hass, msg)
-            connection.send_result(msg["id"], {"status": "Device acknowledged all pages. Test the physical buttons now.",
+            connection.send_result(msg["id"], {"status": status, "layout": physical.draft_for(updated),
                                               "backup": updated.get("physical_backup")})
         except asyncio.CancelledError:
             if mutated:

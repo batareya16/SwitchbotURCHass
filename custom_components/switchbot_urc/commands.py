@@ -153,10 +153,8 @@ DEVTYPE = {"APPLE_TV": 0xF0, "FIRE_TV": 0xF1, "UNIVERSAL_BLE": 0xF2, "GOOGLE_TV"
 # controlType: HID=4, Matter=3, IR=1, native SwitchBot device=0.
 CTRL_HID = 4
 CTRL_NATIVE = 0
-# V48 DSP control-mode atlas: 0x03 selects the built-in floor-lamp illustration.
-NATIVE_FLOOR_LAMP_CONTROL_MODE = 0x03
-# Retained for the recovered washer artwork entry and existing packet-rewrite tests.
-NATIVE_WASHER_CONTROL_MODE = 0x0E
+# V48 wire icon 0x03 selects Floor lamp after DSP row publication (+1 byte).
+NATIVE_FLOOR_LAMP_CONTROL_MODE = 0x00
 CTRL_IR = 1
 
 # Native SwitchBot-device remote types (controlType 0, NO HID-pair needed). devType bytes from
@@ -268,7 +266,7 @@ NATIVE_PROFILE_LAYOUTS: dict[str, dict] = {
         (TAG["CHUP"], 60), (TAG["CHDOWN"], 61))}},
 }
 
-# V48 DSP controlMode=0 device-type fallback table at 0x20059aa0. These IDs select
+# V48 DSP icon=0 device-type fallback table at 0x20059aa0. These IDs select
 # firmware-resident artwork descriptors, not the app's icon_32pt preview assets.
 NATIVE_PROFILE_ARTWORK = {
     "PLUG": 0x0D, "CURTAIN": 0x03, "BLIND_TILT": 0x07,
@@ -278,9 +276,9 @@ NATIVE_PROFILE_ARTWORK = {
     "LOCK": 0x21, "SWITCH": 0x13, "GARAGE_DOOR": 0x2E, "VACUUM": 0x10,
 }
 
-# V48's controlMode artwork table at 0x20047150. Profiles with a nonzero
-# control_mode select artwork from this table instead of the device-type table above.
-NATIVE_CONTROL_MODE_ARTWORK = {
+# V48 artwork table at 0x20047150, indexed by the wire icon byte.
+# DSP publishes source rows starting at +1; renderer offsets use that published base.
+NATIVE_ICON_ARTWORK = {
     0x01: 0x0C, 0x02: 0x17, 0x03: 0x15, 0x04: 0x14, 0x05: 0x16,
     0x06: 0x13, 0x07: 0x11, 0x08: 0x12, 0x09: 0x23, 0x0A: 0x24,
     0x0B: 0x25, 0x0C: 0x26, 0x0D: 0x27, 0x0E: 0x28, 0x0F: 0x29,
@@ -288,11 +286,14 @@ NATIVE_CONTROL_MODE_ARTWORK = {
 }
 
 
-def native_artwork_id(device_type: int, control_mode: int) -> int:
-    """Artwork profile selected by DSP 2002363c for a native (control type 0) row."""
-    if control_mode:
-        return NATIVE_CONTROL_MODE_ARTWORK.get(control_mode, 0)
-    return NATIVE_DEVICE_ARTWORK.get(device_type, 0)
+def native_artwork_id(device_type: int, icon_code: int, control_mode: int = 0) -> int:
+    """Resolve V48 artwork from wire fields after the DSP row's one-byte publication shift."""
+    if icon_code:
+        return NATIVE_ICON_ARTWORK.get(icon_code, 0)
+    if device_type in (0x63, 0x7B):
+        return {3: 2, 4: 3, 5: 4}.get(control_mode, 3)
+    return DEVICE_ARTWORK.get(device_type, 0)
+
 
 NATIVE_PROFILE_TITLES = {
     "PLUG": "Outlet", "CURTAIN": "Curtains", "BLIND_TILT": "Tilt blinds",
@@ -331,13 +332,24 @@ NATIVE_DEVICE_TITLES = {
     "VACUUM_K20": "Vacuum K20", "VACUUM_K20_PRO": "Vacuum K20 Pro",
 }
 
-NATIVE_DEVICE_ARTWORK = {
-    0x7D: 0x10, 0x08: 0x08, 0x13: 0x05, 0x0E: 0x0C,
-    0x67: 0x0D, 0x6A: 0x0D, 0x63: 0x03, 0x7B: 0x03, 0x78: 0x07,
-    0x71: 0x14, 0x6E: 0x14, 0x75: 0x0C, 0x72: 0x16, 0x48: 0x13,
-    0x7E: 0x09, 0x2C: 0x22, 0x2A: 0x2F, 0x2B: 0x2F, 0x37: 0x2F,
-    0x38: 0x2F, 0x23: 0x0B, 0x6F: 0x21, 0x2D: 0x21, 0x24: 0x21,
-    0x3C: 0x13, 0x3B: 0x13, 0x3E: 0x2E,
+# Full V48 device-type fallback table, shared by Native, HID and IR.
+DEVICE_ARTWORK = {
+    0x00: 0x00, 0x01: 0x1a, 0x02: 0x18, 0x03: 0x19, 0x04: 0x0f,
+    0x05: 0x05, 0x06: 0x09, 0x07: 0x0e, 0x08: 0x08, 0x09: 0x00,
+    0x0a: 0x06, 0x2a: 0x2f, 0x2b: 0x2f, 0x37: 0x2f, 0x38: 0x2f,
+    0x0b: 0x01, 0x0c: 0x0a, 0x0d: 0x10, 0x0e: 0x0c, 0x0f: 0x1a,
+    0x10: 0x18, 0x11: 0x19, 0x12: 0x0f, 0x13: 0x05, 0x14: 0x09,
+    0x15: 0x0e, 0x16: 0x08, 0x17: 0x06, 0x18: 0x01, 0x19: 0x0a,
+    0x1a: 0x10, 0x1b: 0x0c, 0x27: 0x1b, 0x48: 0x13, 0x3b: 0x13,
+    0x3c: 0x13, 0x3d: 0x13, 0x3e: 0x2e, 0x54: 0x00, 0x61: 0x00,
+    0x62: 0x00, 0x63: 0x03, 0x7b: 0x03, 0x64: 0x00, 0x23: 0x0b,
+    0x65: 0x0b, 0x66: 0x09, 0x67: 0x0d, 0x69: 0x00, 0x6a: 0x0d,
+    0x6b: 0x00, 0x6c: 0x00, 0x6d: 0x00, 0x6e: 0x14, 0x6f: 0x21,
+    0x24: 0x21, 0x2d: 0x21, 0x70: 0x00, 0x71: 0x14, 0x72: 0x16,
+    0x73: 0x00, 0x75: 0x0c, 0x78: 0x07, 0x79: 0x00, 0x7d: 0x10,
+    0x28: 0x10, 0x2e: 0x10, 0x33: 0x10, 0x7a: 0x10, 0xfd: 0x1c,
+    0x7e: 0x09, 0x2c: 0x22, 0xf0: 0x1d, 0xf1: 0x1e, 0xf2: 0x20,
+    0xf3: 0x1f, 0xf4: 0x30,
 }
 
 # These names resolve to identical packet fields and layouts.
@@ -403,8 +415,8 @@ def native_type_metadata(type_name: str) -> dict:
     if name == "FLOOR_LAMP":
         mode = NATIVE_FLOOR_LAMP_CONTROL_MODE
         return {"value": name, "profile": "STRIP", "title": "Floor lamp",
-                "device_type": "STRIP", "control_mode": mode, "icon_name": "light",
-                "icon_code": ICON["light"], "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode]}
+                "device_type": "STRIP", "control_mode": mode, "icon_name": "floorlamp",
+                "icon_code": ICON["floorlamp"], "artwork_id": NATIVE_ICON_ARTWORK[ICON["floorlamp"]]}
     variants = {
         "BOT_PRESS": ("BOT", "Button bot · Press", 1),
         "BOT_SWITCH": ("BOT", "Button bot · Switch", 2),
@@ -417,17 +429,19 @@ def native_type_metadata(type_name: str) -> dict:
         profile_name = NATIVE_PROFILE_ALIASES[device_name]
         return {"value": name, "profile": profile_name, "title": title,
                 "device_type": device_name, "control_mode": mode,
-                "icon_name": "light", "icon_code": ICON["light"],
-                "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode]}
+                "icon_name": "device", "icon_code": 0,
+                "artwork_id": native_artwork_id(NATIVE_DEVTYPE[device_name], 0, mode)}
     profile_name = NATIVE_PROFILE_ALIASES.get(name)
     if not profile_name:
         raise ValueError(f"Unsupported native remote type: {type_name}")
     control_mode = int(NATIVE_PROFILE_LAYOUTS[profile_name].get("control_mode", 0))
+    icon_name = "switch" if name == "TRV" else "device"
+    icon_code = ICON[icon_name]
     return {"value": name, "profile": profile_name,
             "title": NATIVE_DEVICE_TITLES.get(name, NATIVE_PROFILE_TITLES[profile_name]),
             "device_type": name, "control_mode": control_mode,
-            "icon_name": "light", "icon_code": ICON["light"],
-            "artwork_id": native_artwork_id(NATIVE_DEVTYPE[name], control_mode)}
+            "icon_name": icon_name, "icon_code": icon_code,
+            "artwork_id": native_artwork_id(NATIVE_DEVTYPE[name], icon_code, control_mode)}
 
 
 def native_type_options() -> list[dict]:
@@ -489,9 +503,7 @@ def native_profile_metadata(profile_name: str) -> dict:
         "value": profile_name,
         "title": NATIVE_PROFILE_TITLES.get(profile_name, profile_name.replace("_", " ").title()),
         "control_mode": int(profile.get("control_mode", 0)),
-        "artwork_id": NATIVE_CONTROL_MODE_ARTWORK.get(
-            int(profile.get("control_mode", 0)), NATIVE_PROFILE_ARTWORK.get(profile_name)
-        ),
+        "artwork_id": NATIVE_PROFILE_ARTWORK.get(profile_name, 0x13 if profile_name == "TRV" else 0),
         "pages": [0, *(item["index"] for item in subpages)],
         "main_positions": sorted({item["index"] for item in main_keys}),
         "main_keys": main_keys,
@@ -808,14 +820,14 @@ def strip_color_keys() -> list[dict]:
         for index, (key_fun, cmd) in enumerate(STRIP_COLOR_KEYS)
     ]
 
-# getDeviceIconCode in the bundled SwitchBot app. V48 does not prove that all 18
-# values render 18 different illustrations on the physical remote.
+# getDeviceIconCode in the bundled SwitchBot app. Zero keeps the device-specific artwork.
+# Nonzero wire values index the V48 artwork table after DSP row publication.
 ICON = {
     "light": 1, "desklamp": 2, "floorlamp": 3, "ceilinglamp": 4,
     "strip": 5, "switch": 6, "bathtub": 7, "coffeemachine": 8,
     "socket": 9, "tv": 10, "boiler": 11, "heater": 12,
     "cooler": 13, "washer": 14, "fridge": 15, "cookware": 16,
-    "pool": 17, "ventilator": 18,
+    "pool": 17, "ventilator": 18, "device": 0,
 }
 
 # bleKeyType for UniversalBLE keys.
@@ -980,7 +992,7 @@ def rewrite_native_page_control_mode(packet: bytes, control_mode: int) -> bytes:
 
 
 def rewrite_native_page_icon(packet: bytes, icon: int) -> bytes:
-    """Change only the built-in artwork variant byte in a native page packet."""
+    """Change only the wire icon byte and CRC in a native page packet."""
     if not 0 <= icon <= 0xFF:
         raise ValueError("icon must fit in one byte")
     if len(packet) < 90 or packet[:3] != b"\x0f\x62\x06":

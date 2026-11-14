@@ -134,7 +134,7 @@ def test_every_native_type_choice_has_firmware_artwork_mapping():
         metadata = c.native_profile_metadata(profile_name)
         assert metadata["artwork_id"] is not None, profile_name
 
-    # TRV artwork is selected by the firmware's control-mode table, not device type.
+    # TRV artwork uses wire icon 6 from the firmware illustration table.
     assert c.native_profile_metadata("TRV")["artwork_id"] == 0x13
 
 
@@ -143,13 +143,16 @@ def test_native_picker_matches_v48_artwork_tables():
     with (docs / "native-default-artwork-map.csv").open() as stream:
         defaults = {int(row["device_type"], 16): int(row["artwork_profile_id"], 16)
                     for row in csv.DictReader(stream)}
-    with (docs / "native-control-mode-map.csv").open() as stream:
-        modes = {int(row["control_mode_code"], 16): int(row["artwork_profile_id"], 16)
+    with (docs / "native-icon-map.csv").open() as stream:
+        modes = {int(row["icon_code"], 16): int(row["artwork_profile_id"], 16)
                  for row in csv.DictReader(stream)}
     for profile in c.native_type_picker_options():
         device = c.NATIVE_DEVTYPE[profile["device_type"]]
+        icon = profile["icon_code"]
         mode = profile["control_mode"]
-        expected = modes[mode] if mode else defaults.get(device, 0)
+        expected = modes[icon] if icon else (
+            {3: 2, 4: 3, 5: 4}.get(mode, 3) if device in (0x63, 0x7B)
+            else defaults.get(device, 0))
         assert profile["artwork_id"] == expected, profile["value"]
         assert (INTEGRATION / "frontend" / "artwork" / f"profile-{expected:02x}.png").is_file()
 
@@ -164,15 +167,16 @@ def test_native_type_options_follow_official_handler_control_modes():
     assert options["CURTAIN_RIGHT"]["control_mode"] == 5
     assert options["TRV"]["control_mode"] == 6
     assert options["FLOOR_LAMP"]["profile"] == "STRIP"
-    assert options["FLOOR_LAMP"]["control_mode"] == 3
+    assert options["FLOOR_LAMP"]["control_mode"] == 0
+    assert options["FLOOR_LAMP"]["icon_code"] == 3
 
 
 def test_catalog_variant_uses_same_wire_fields_on_create_and_edit():
     for name, wire_fields in (
-        ("BOT_PRESS", bytes.fromhex("48000101")),
-        ("CURTAIN_RIGHT", bytes.fromhex("63000501")),
-        ("VACUUM_K20", bytes.fromhex("13000001")),
-        ("FLOOR_LAMP", bytes.fromhex("72000301")),
+        ("BOT_PRESS", bytes.fromhex("48000100")),
+        ("CURTAIN_RIGHT", bytes.fromhex("63000500")),
+        ("VACUUM_K20", bytes.fromhex("13000000")),
+        ("FLOOR_LAMP", bytes.fromhex("72000003")),
     ):
         selected = c.native_type_metadata(name)
         device_type = selected["device_type"]
@@ -195,16 +199,16 @@ def test_floor_lamp_type_is_recovered_from_main_page_and_legacy_artwork_test():
               "device_id": "AA:BB:CC:DD:EE:FF"}
     main, colors = c.build_native_pages(device_type_name="STRIP", remote_index=1,
                                         name="Test", device_id=remote["device_id"])
-    floor = c.rewrite_native_page_control_mode(main, c.NATIVE_FLOOR_LAMP_CONTROL_MODE)
+    floor = c.rewrite_native_page_icon(main, 3)
     remote["physical_packets"] = [colors.hex(), floor.hex()]
     draft = physical.draft_for(remote)
     assert draft["native_type"] == "FLOOR_LAMP"
     assert draft["template"] == "STRIP"
-    assert physical.validate(remote, draft)["control_mode"] == 3
+    assert physical.validate(remote, draft)["control_mode"] == 0
 
     remote["physical_packets"] = [main.hex(), colors.hex()]
     remote["icon_variant_backup_packet"] = main.hex()
-    assert physical.native_appearance(remote)["native_type"] == "FLOOR_LAMP"
+    assert physical.native_appearance(remote)["native_type"] == "STRIP"
     remote["floor_lamp_test_applied"] = False
     assert physical.native_appearance(remote)["native_type"] == "STRIP"
 
@@ -214,10 +218,10 @@ def test_device_details_distinguish_floor_lamp_and_strip_with_same_target():
     def record(header):
         return bytes.fromhex(header) + device_id + bytes(64)
 
-    body = b"\x03" + record("0272000005") + record("0372000301") + record("04f2040001")
+    body = b"\x03" + record("0272000005") + record("0372000003") + record("04f2040001")
     raw = b"\x01\x00\x00\x00" + len(body).to_bytes(2, "big") + bytes(2) + body
     details = c.parse_device_appearances(raw)
-    assert details == {(2, 0x72, device_id): (0, 5), (3, 0x72, device_id): (3, 1)}
+    assert details == {(2, 0x72, device_id): (0, 5), (3, 0x72, device_id): (0, 3)}
     with pytest.raises(ValueError, match="Incomplete"):
         c.parse_device_appearances(raw[:-1])
 
@@ -226,14 +230,14 @@ def test_device_details_distinguish_floor_lamp_and_strip_with_same_target():
     remote = {"device_type": "STRIP", "device_id": device_id.hex(),
               "physical_packets": [main.hex()], "native_type": "STRIP",
               "native_appearance_readback": {"slot": 3, "device_type": 0x72,
-                                             "mode": 3, "icon": 1}}
+                                             "mode": 0, "icon": 3}}
     assert physical.draft_for(remote)["native_type"] == "FLOOR_LAMP"
-    remote["native_appearance_readback"]["mode"] = 0
+    remote["native_appearance_readback"]["icon"] = 5
     assert physical.draft_for(remote)["native_type"] == "STRIP"
     remote["native_appearance_readback"]["icon"] = 3
     draft = physical.draft_for(remote)
-    assert draft["native_type"] == "STRIP"
-    assert c.native_artwork_id(0x72, draft["control_mode"]) == 0x16
+    assert draft["native_type"] == "FLOOR_LAMP"
+    assert c.native_artwork_id(0x72, draft["icon_code"], draft["control_mode"]) == 0x15
     assert draft["template"] == "STRIP"
     edited = physical.validate(remote, draft)
     assert (edited["control_mode"], c.ICON[edited["icon_name"]]) == (0, 3)
@@ -306,3 +310,61 @@ def test_compacting_rows_removes_deleted_action_then_moves_following_actions():
         "p2_k0": [{"action": "script.first"}],
         "p2_k1": [{"action": "script.second"}],
     }
+
+
+def test_icon_selects_artwork_after_published_dsp_row_shift():
+    # Ghidra executes source-row copies, +1 publication and native argument loads.
+    # The previous fixture injected the unshifted source row into the renderer.
+    assert c.native_artwork_id(0x72, 1, 3) == 0x0C
+    assert c.native_artwork_id(0x72, 3, 0) == 0x15
+    assert c.native_artwork_id(0x72, 5, 0) == 0x16
+    assert c.native_artwork_id(0x72, 0, 0) == 0x16
+    assert c.native_artwork_id(0x63, 0, 3) == 2
+    assert c.native_artwork_id(0x63, 0, 5) == 4
+
+
+def test_stale_floor_lamp_label_cannot_override_bulb_readback():
+    remote = {"device_type": "STRIP", "native_type": "FLOOR_LAMP",
+              "device_id": "AA:BB:CC:DD:EE:FF",
+              "native_appearance_readback": {"mode": 3, "icon": 1}}
+    appearance = physical.native_appearance(remote)
+    assert appearance["native_type"] != "FLOOR_LAMP"
+    assert (appearance["control_mode"], appearance["icon_code"]) == (3, 1)
+    assert c.native_artwork_id(0x72, appearance["icon_code"], appearance["control_mode"]) == 0x0C
+
+
+@pytest.mark.parametrize("device_type,control_type,name", [
+    (0xF2, c.CTRL_HID, "UNIVERSAL_BLE"),
+    (0x18, c.CTRL_IR, "IR_24"),
+])
+def test_hid_ir_preview_uses_wire_icon_in_cached_main_page(device_type, control_type, name):
+    packet = c.build_create(
+        remote_index=3, device_type=device_type, control_type=control_type,
+        control_mode=0, icon=3, device_id="AA:BB:CC:DD:EE:FF",
+        name="Test", ble_key_type=0, keys=[])
+    remote = {"device_type": name, "icon": "light", "icon_code": 1,
+              "physical_packets": [packet.hex()]}
+    assert physical.remote_artwork_id(remote) == 0x15
+    remote["physical_packets"] = [c.rewrite_native_page_icon(packet, 14).hex()]
+    assert physical.remote_artwork_id(remote) == 0x28
+    remote["physical_packets"] = []
+    assert physical.remote_artwork_id(remote) == 0x0C
+
+
+def test_device_specific_artwork_defaults_match_entire_v48_table():
+    with (INTEGRATION.parents[1] / "docs" / "native-default-artwork-map.csv").open() as stream:
+        for row in csv.DictReader(stream):
+            device_type = int(row["device_type"], 16)
+            assert c.native_artwork_id(device_type, 0) == int(row["artwork_profile_id"], 16)
+
+
+def test_firmware_execution_report_matches_shared_artwork_resolver():
+    with (INTEGRATION.parents[1] / "docs" / "artwork-firmware-verification.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 115
+    for row in rows:
+        if row["status"] == "opaque_flix":
+            assert row["case"] == "native-catalog-ROLLER_SHADE"
+            continue
+        assert c.native_artwork_id(int(row["device_type"], 16),
+                                   int(row["icon"], 16), int(row["mode"], 16)) == int(row["profile"], 16)

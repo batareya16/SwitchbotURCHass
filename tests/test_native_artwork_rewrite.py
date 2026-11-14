@@ -21,18 +21,17 @@ def test_rewrite_native_page_control_mode_preserves_all_other_page_data():
         keys=[{"keyIndex": c.TAG["ON"], "keyFun": 5}],
     )
 
-    rewritten = c.rewrite_native_page_control_mode(packet, c.NATIVE_WASHER_CONTROL_MODE)
+    rewritten = c.rewrite_native_page_control_mode(packet, 7)
 
     assert rewritten[:5] == packet[:5]
     assert rewritten[7:10] == packet[7:10]
-    assert c.NATIVE_WASHER_CONTROL_MODE == 0x0E
-    assert rewritten[10] == c.NATIVE_WASHER_CONTROL_MODE
+    assert rewritten[10] == 7
     assert rewritten[11:] == packet[11:]
     assert int.from_bytes(rewritten[5:7], "big") == c.crc16_modbus(rewritten[7:])
     assert c.rewrite_native_page_control_mode(rewritten, 0) == packet
 
 
-def test_floor_lamp_screen_profile_is_control_mode_three():
+def test_floor_lamp_artwork_uses_icon_three_with_mode_zero():
     packet = c.build_create(
         remote_index=3,
         device_type=0x72,
@@ -45,15 +44,13 @@ def test_floor_lamp_screen_profile_is_control_mode_three():
         keys=[{"keyIndex": c.TAG["ON"], "keyFun": 5}],
     )
 
-    rewritten = c.rewrite_native_page_control_mode(
-        packet, c.NATIVE_FLOOR_LAMP_CONTROL_MODE
-    )
+    rewritten = c.rewrite_native_page_icon(packet, c.ICON["floorlamp"])
 
-    assert c.NATIVE_FLOOR_LAMP_CONTROL_MODE == 0x03
-    assert rewritten[10] == 0x03
+    assert c.NATIVE_FLOOR_LAMP_CONTROL_MODE == 0
+    assert rewritten[10:12] == bytes([0, 3])
     assert rewritten[:5] == packet[:5]
-    assert rewritten[7:10] == packet[7:10]
-    assert rewritten[11:] == packet[11:]
+    assert rewritten[7:11] == packet[7:11]
+    assert rewritten[12:] == packet[12:]
     assert int.from_bytes(rewritten[3:5], "big") == len(rewritten) - 7
     assert c.crc16_modbus(rewritten[7:]) == int.from_bytes(rewritten[5:7], "big")
 

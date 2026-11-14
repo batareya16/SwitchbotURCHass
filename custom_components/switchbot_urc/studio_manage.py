@@ -755,7 +755,7 @@ def _validate_native_test_packet(remote: dict[str, Any], slot: int, packet: byte
 
 
 def _persist_artwork_test_packet(
-    hass, entry, remote_id: str, packet: bytes | None, *, applied: bool = False
+    hass, entry, remote_id: str, packet: bytes | None, *, written_packet: bytes | None = None
 ) -> None:
     options = deepcopy(dict(entry.options))
     remote = next((item for item in options.get("remotes", [])
@@ -767,7 +767,19 @@ def _persist_artwork_test_packet(
         remote.pop("washer_artwork_backup_packet", None)
     else:
         remote["icon_variant_backup_packet"] = packet.hex()
-    remote["floor_lamp_test_applied"] = applied
+    if written_packet is not None:
+        # Record what was acknowledged. The old test flag described the incorrect 03/01 write.
+        remote["floor_lamp_test_applied"] = False
+        packets = [bytes.fromhex(value) for value in remote.get("physical_packets", [])]
+        remote["physical_packets"] = [
+            value.hex() for value in packets
+            if not (value[:3] == b"\x0f\x62\x06" and len(value) > 88 and value[88] == 0)
+        ] + [written_packet.hex()]
+        remote["control_mode"], remote["icon_code"] = written_packet[10:12]
+        remote["icon"] = next(
+            (name for name, code in c.ICON.items() if code == remote["icon_code"]),
+            remote.get("icon", "device"),
+        )
     remote.pop("native_appearance_readback", None)
     hass.config_entries.async_update_entry(entry, options=options)
 
@@ -817,11 +829,11 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             mode_offset = 1 + type_length + 1
             source_mode = body[mode_offset]
             source_icon = body[icon_offset]
-            # controlMode selects the firmware artwork profile.  The icon byte only
-            # selects that profile's normal/alternate rendering variant.
+            # V48 publishes DSP rows starting at +1. The wire icon selects the artwork
+            # profile; controlMode retains the device behavior.
             packet = c.rewrite_native_page_control_mode(
                 original_packet, c.NATIVE_FLOOR_LAMP_CONTROL_MODE)
-            packet = c.rewrite_native_page_icon(packet, 1)
+            packet = c.rewrite_native_page_icon(packet, c.ICON["floorlamp"])
 
         packet_body = packet[7:]
         packet_type_length = 4 if packet_body[1] == 0 and len(packet_body) >= 5 else 1
@@ -872,7 +884,7 @@ async def ws_native_icon_variant_test(hass, connection, msg):
             response.hex(),
         )
         _persist_artwork_test_packet(
-            hass, entry, msg["remote_id"], original_packet, applied=not msg["restore"]
+            hass, entry, msg["remote_id"], original_packet, written_packet=packet
         )
         connection.send_result(msg["id"], {"restored": msg["restore"]})
     except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures

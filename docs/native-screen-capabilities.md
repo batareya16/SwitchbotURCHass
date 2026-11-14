@@ -23,9 +23,10 @@ partially. A missing path in those decompilations is not proof that the firmware
 The DSP model registry selects screen callbacks by device type. The native BLE model uses
 `20028b28` for screen events and `200283dc` for key events; HID uses `2002e848` and `2002e33c`.
 The create record separately carries `devType`, `controlType`, `controlMode`, and `icon`. The
-screen-artwork lookup uses `controlMode` to select the illustration profile (or falls back to
-`devType` when mode is zero); `icon` selects between normal and alternate artwork variants.
-Changing the icon byte does not select a different device illustration. Transport and screen
+screen-artwork lookup uses the wire `icon` to select the illustration profile. Icon zero
+falls back to `devType`, with `controlMode` selecting Curtain subtypes. The renderer receives
+a published DSP row whose base is one byte after the source-table row. Ignoring that
+publication shift previously caused the fields to be misidentified. Transport and screen
 profile are also not freely interchangeable; see the hardware results in
 `firmware-worws/evidence/mixed-v48/README.md`.
 
@@ -63,14 +64,14 @@ The table also contains two sets of image descriptors for each profile: a large 
 32x32/24x24 variants, with an alternate set on some rows. All 398 non-null resource references in
 the [profile artwork index](native-profile-artwork-index.csv) resolve to images validated by the
 resource scanner. The [variant comparison atlas](native-control-mode-variants.png) shows both large
-illustrations for each of the 20 control-mode codes. Every one of those 20 profiles has different
+illustrations for each of the 20 wire icon codes. Every one of those 20 profiles has different
 normal and alternate large-image resource references. Many pairs look like illuminated/unlit or
 other visual states, but the image appearance alone does not establish the runtime state meaning.
 The separate control-mode and icon-variant selection stages are described below.
 
 The [complete profile atlas](native-all-profile-artwork.png) previews all 50 descriptor rows with
 correct RGB565/A8 colors. Two pairs share the same normal artwork, leaving 48 distinct normal
-image references. The known selectors reach 47 profile IDs: 20 `controlMode` values and 77
+image references. The known selectors reach 47 profile IDs: 20 nonzero wire icon values and 77
 `devType` fallback rows (32 distinct profile IDs), with overlap. Profiles `0x02`, `0x04`, and
 `0xfe` are present in the descriptor table but have no route through either known selector.
 These counts describe firmware artwork, not 50 independently writable `icon` values.
@@ -269,21 +270,11 @@ SwitchBot 10.5 APK's `res/drawable-mdpi-v4/src_common_src_assets_urc_images_icon
 resources. They show what the phone app draws for each choice; they are not decoded images from
 the remote's screen. Their colors are unchanged from the APK.
 
-For HID, the current `build_remote` writes `controlMode=0`, one of the four device types
-`F0..F3`, and the catalog icon byte. The HID screen callback calls the same artwork selector
-as native. The V48 fallback table maps Apple TV `F0 -> 1D`, Fire TV `F1 -> 1E`, Universal BLE
-`F2 -> 20`, and Google TV `F3 -> 1F`. In each of these four descriptor rows the normal and
-alternate exported images have identical pixel content. Thus the recovered HID rendering path
-offers one illustration per HID type, regardless of which catalog icon code is sent. Other
-unrecovered rendering paths and physical redraw behavior are not established by this check.
-
-For IR, the `dev_INFRARED` screen callback at `20030420` dispatches to `2002fe10`, which
-passes the same DSP model fields to `200236b0`. The integration's IR page command writes a
-device type, `controlMode=0`, and the profile's saved icon byte. The fallback table maps the
-catalog's types `1..14` to their respective descriptor IDs. Code `1` selects the normal
-resource; other values select the alternate resource on the recovered ordinary branch. Some
-pairs are identical and others differ. This does not establish that changing an installed IR
-remote's icon byte visibly redraws it without recreation or another refresh mechanism.
+For HID and IR, the recovered screen callbacks pass the same published-row offsets
+to the artwork selector. Icon zero selects the type-specific fallback. A nonzero
+icon uses the 20-entry illustration table. The fallback mappings for HID remain
+`F0 -> 1D`, `F1 -> 1E`, `F2 -> 20`, and `F3 -> 1F`. Whether an installed HID or
+IR tile redraws immediately after a write still requires its update path to be checked.
 
 | App icon name | Byte | Studio name |
 | --- | ---: | --- |
@@ -306,79 +297,56 @@ remote's icon byte visibly redraws it without recreation or another refresh mech
 | pool | `11` | pool |
 | ventilator | `12` | ventilator |
 
-ARM's create parser stores the packet's `controlType`, `controlMode`, and `icon` at model `+2`,
-`+3`, and `+4`.
-Its sender `0x7848` places them at screen-packet `+0x13`, `+0x14`, and `+0x15`. DSP model
-constructor `2002150c` repeatedly copies those exact packet bytes to model `+0x55`, `+0x56`,
-and `+0x57`, in the same order. Thus the second argument of artwork selector `2002363c`, DSP
-model `+0x56`, is **controlMode**, and the fourth argument of `200236b0`, model `+0x57`, is the
-packet **icon** byte. This corrects the earlier interpretation that the 20-entry artwork table
-directly maps the icon field.
+ARM's create parser stores the packet's `controlType`, `controlMode`, and `icon` at
+model `+2`, `+3`, and `+4`. Sender `0x7848` places them in IPC bytes `+0x13`,
+`+0x14`, and `+0x15`. The DSP constructor stores these at source-table row
+`+0x55`, `+0x56`, and `+0x57`.
 
-For control modes `1..20`, `2002363c` uses the 20-byte table at `0x20047150`; the
-[control-mode map](native-control-mode-map.csv) and
-[atlas](native-control-mode-atlas.png) resolve those codes to artwork. With control mode `0`,
-the helper instead consults a 77-entry device-type table at `0x20059aa0`; its
-[fallback mapping](native-default-artwork-map.csv) includes `0x72 -> 0x16` for a strip profile.
-Curtain types `0x63` and `0x7b` have a separate 3-entry mapping driven by model `+0x55`.
+**The source-table row and the UI row have different bases.** Slot lookup `2002262c`
+returns `source_row + 1`. Publication `200248a4` copies `0x898` bytes from
+`source_table + 1` to UI table `0x001c9650`. Consequently the renderer's
+`row+0x56` is the wire **icon**, and `row+0x55` is the wire **controlMode**.
+The fourth selector argument, `row+0x57`, follows the stored icon and is a separate
+runtime byte. Its complete state semantics have not been established.
 
-The local V48 page parser consumes exactly one device-type byte at ARM `0x34c6..0x34d0`.
-It consumes control type, mode and icon in the next three bytes before copying the ID at
-`0x34f6`. Four-byte product codes such as `0x0010d0b0` and `0x0010d0b1` shift those
-fields and cannot describe a local page. The Studio Floor lamp type uses the one-byte
-strip layout (`0x72`), native control type (`0x00`), mode `0x03` for artwork profile
-`0x15`, and icon byte `0x01` for the normal variant. The inventory query returns the
-device type and ID. The details query `0F 63 05` supplies the mode and icon, with the cached
-Main-page write used when details are unavailable.
+For icons `1..20`, `2002363c` uses the 20-byte table at `0x20047150`.
+The [icon map](native-icon-map.csv) resolves those codes to artwork. For icon zero,
+the helper uses the [device-type mapping](native-default-artwork-map.csv).
+For Curtain types `0x63` and `0x7b`, modes `3/4/5` select profiles `2/3/4`
+on this fallback path.
 
-The V48 Native screen calls `200236b0` at `200289a1` and `20028aae`. The other Native
-artwork callback `20028f28` takes the same fields from a copy of the model and calls that
-selector at `20028f57`. For type/mode/icon `72/00/03`, `2002363c` selects profile
-`16` via the type table. At `200236ea`, icon `03` takes the alternate descriptor
-`2005a840`. Its RES offsets `414c04` and `415d88` decode to the pixels of
-`profile-16-alt.png` (light strip). For `72/03/01`, the mode table selects profile
-`15` and the normal descriptor `2005a830`. Its RES offsets `413dd8` and `414378`
-decode to `profile-15.png` (floor lamp). Both comparisons were checked against the
-V48 binaries and exported PNGs. A physical screen discrepancy with `72/00/03`
-remains unexplained by these paths.
+The local V48 parser consumes exactly one device-type byte. Floor lamp therefore
+uses the Strip layout type `0x72`, native control type zero, control mode zero,
+and icon `0x03`. Its appearance does not require the extended product code.
 
-Studio's Native type picker is checked against both V48 lookup tables. The vacuum type codes
-`7d/08/13/0e` resolve to `10/08/05/0c` respectively. Bot modes `01/02` resolve to
-`0c/17`, and Curtain modes `03/04/05` resolve to `15/14/16`. EU Outlet type `3f`
-has no entry in the mode-zero table, so the selector returns profile `00`.
+| Wire type / mode / icon | Render arguments after publication | Resource |
+| --- | --- | --- |
+| `72 / 03 / 01` | `72 / 01 / 03 / 00` | Bulb, descriptor `2005a9a0` |
+| `72 / 00 / 03` | `72 / 03 / 00 / 00` | Floor lamp, descriptor `2005a820` |
 
-Blind Tilt type `78` has two additional descriptors outside the normal/alternate pair:
-icon `02` loads `2005a8e0` via literal `200236ac`; icon `03` loads `2005a8c0`
-via literal `200236a4`. The Studio artwork exporter resolves their top and bottom images
-directly from V48 DSP and RES binaries. Roller Shade type `2c` enters a separate FLIX
-branch at `20023708`; the Studio preview currently uses its profile's normal illustration.
+These results execute decoded DSP field-copy, row-lookup, publication, renderer-load,
+and selector instructions. ARM parser/sender execution produced matching 124-byte IPC
+messages for both Main and D. The fixtures mock storage, the already-valid model gate,
+and memcpy boundaries. They supply the constructor's row index at a decoded block
+and do not execute the surrounding opaque FLIX gates or a complete UI event loop.
+The previous direct-selector fixture injected an unshifted row and did not prove
+the wire-field mapping. The shifted-row fixture reproduces the user's observed Bulb.
 
-For ordinary device types, icon value `1` selects the first artwork descriptor triple, while
-other values select the alternate triple. Type `0x78` additionally uses hardcoded descriptors
-for icon values `2` and `3`; type `0x2c` crosses an undecoded FLIX bundle. The two variants often
-look like active/inactive states, but this selector branches on the stored create-packet icon
-byte, not on an explicit state argument. The [instruction-level trail](../../firmware-worws/evidence/mixed-v48/screen-artwork-ipc.md)
-records each field copy. Therefore the icon catalog labels should **not** be presented as a
-verified mapping to the firmware's 20 different device illustrations. For the standard branch,
-setting `icon=1` selects normal artwork and any other icon value selects alternate artwork; it
-does not select the corresponding named bulb/lamp/strip illustration. The reason the integration
-has these icon labels and values is not established by this screen path alone.
+The runtime byte chooses ordinary normal/alternate descriptors. Blind Tilt has additional
+branches for runtime values `2` and `3`; these values are not extra wire-icon choices.
+Roller Shade's variant branch remains opaque. An independently writable on/off runtime
+state field has not been established.
 
-The controlled `controlMode=0x0e`, `icon=1` Main-page rewrite received `01` from the device, but
-the user still saw the lamp artwork. The table query used as a preflight reports slot/type/ID,
-not the stored mode or the DSP-rendered image. The recovered ARM path queues an IPC update; the
-DSP model constructor contains undecoded FLIX. Therefore this result does not establish that an
-installed tile can switch artwork in place. Studio should not turn the atlas into a writable
-artwork picker until the update/refresh route is established and verified on the device.
-The app's 18 icon names must also not be conflated with 18 `controlMode` values: they occupy
-different packet bytes, and the decoded ordinary DSP artwork selector only distinguishes `icon=1`
-from other icon values. No instruction-level route from icon codes `2..18` to 17 distinct V48
-menu images has been recovered.
+The prior washer experiment changed mode to `0x0e` while retaining icon `1`.
+This still selects Bulb artwork. That experiment therefore supplies no evidence
+that an artwork change requires deleting the tile or adding transport retries.
+The corrected Floor lamp write has been checked in the bounded firmware fixtures,
+and still needs its first physical-device check.
 
 ## Remaining firmware work
 
 The icon investigation is not complete. The resource table now maps `keyFun` values to rendered
-firmware artwork and labels, and the control-mode map resolves all 20 supported nonzero values to
+firmware artwork and labels, and the wire-icon map resolves all 20 supported nonzero values to
 their illustrations. The
 firmware callback `20023ac0` reads the first descriptor pointer at
 table-row offset `+4` and the byte at `+8`; it never loads the second pointer at `+12`. Search of the
@@ -501,3 +469,31 @@ rtk /opt/homebrew/Cellar/ghidra/12.1.4/libexec/support/analyzeHeadless \
 ```
 
 The output and project are temporary analysis artifacts, not canonical firmware evidence.
+
+
+## Full artwork recheck, 2026-11-14
+
+The [execution report](artwork-firmware-verification.csv) contains 115 cases.
+All 115 complete page records were parsed by the V48 ARM page handler and IPC sender
+under Ghidra. The resulting 124-byte IPC messages were then supplied to decoded DSP
+constructor-field, slot-lookup, table-publication and renderer-load blocks.
+
+- Icons `01..14` (hexadecimal, 20 values), plus zero, were run through each of
+  Native, HID and IR's actual renderer argument-load blocks. All 60 nonzero cases
+  resolve to the same 20 profiles across the three transports. All 180 resource
+  pointers for their 96/32/24 sizes match the actual DSP descriptor table.
+- Native catalog types and the four HID/fourteen IR device defaults were also checked.
+  Of 115 inputs, 114 complete the resource-selection fixture. The remaining input is
+  Native Roller Shade, whose device-specific selector enters opaque FLIX at
+  `20023708`. The fixture records this explicitly and does not guess its output.
+- All 100 normal/alternate profile PNG files in the integration were compared against
+  images freshly decoded from V48 RES. Dimensions and RGBA pixels match exactly.
+- Studio now uses cached Main-page type/mode/icon fields for HID and IR artwork too.
+  The previous HID fixed-type preview and IR normal/alternate interpretation ignored
+  the actual wire icon. The normal picture is the catalog preview convention.
+  Live runtime-state variants remain a separate question.
+
+The fixture mocks the existing-model validator, storage and memory boundaries and
+does not execute the constructor's opaque FLIX gates or a radio session. This verifies
+the decoded field mapping and resources, including the different transport draw loads.
+It does not claim every physical screen update or runtime variant has been observed.

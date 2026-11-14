@@ -579,15 +579,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       alt="" aria-hidden="true">`;
   }
 
-  _nativeArtworkSrc(profile, code = profile?.icon_code ?? 1, artworkId = profile?.artwork_id) {
+  _nativeArtworkSrc(profile, artworkId = profile?.artwork_id) {
     if (artworkId == null) return "";
-    if (profile?.value === "BLIND_TILT" && (code === 2 || code === 3)) {
-      return `/switchbot_urc_static/artwork/blind-tilt-icon-${code}.png`;
-    }
-    // Roller Shade's variant selector crosses an undecoded FLIX bundle.
-    const unresolvedVariant = profile?.value === "ROLLER_SHADE";
-    const suffix = code === 1 || unresolvedVariant ? "" : "-alt";
-    return `/switchbot_urc_static/artwork/profile-${artworkId.toString(16).padStart(2, "0")}${suffix}.png`;
+    // Catalog previews use the normal illustration. Variant state is a separate DSP runtime byte.
+    return `/switchbot_urc_static/artwork/profile-${artworkId.toString(16).padStart(2, "0")}.png`;
   }
 
   _nativeProfile(type) {
@@ -619,19 +614,21 @@ class SwitchBotUrcPanel extends HTMLElement {
     }).join("")}</div>`;
   }
 
-  _hidArtworkSrc(deviceType) {
-    const id = HID_PROFILE_ARTWORK[deviceType];
+  _hidArtworkSrc(deviceType, artworkId) {
+    if (!(deviceType in HID_PROFILE_ARTWORK)) return "";
+    const id = artworkId == null ? HID_PROFILE_ARTWORK[deviceType]
+      : Number(artworkId).toString(16).padStart(2, "0");
     return id ? `/switchbot_urc_static/artwork/profile-${id}.png` : "";
   }
 
   _irArtworkSrc(remote) {
     const type = /^IR_(\d+)$/.exec(remote.device_type || "");
-    const id = type ? IR_PROFILE_ARTWORK[Number(type[1])] : null;
-    if (!id) return "";
-    const code = remote.icon_code == null
-      ? Object.keys(APP_ICON_ASSETS).indexOf(remote.icon) + 1 : Number(remote.icon_code);
-    if (!Number.isInteger(code) || code < 0 || code > 255) return "";
-    return `/switchbot_urc_static/artwork/profile-${id}${code === 1 ? "" : "-alt"}.png`;
+    const id = type ? IR_PROFILE_ARTWORK[Number(type[1])]
+      : remote.device_type === "IR_TV" ? "18" : null;
+    if (!id && remote.artwork_id == null) return "";
+    const profile = remote.artwork_id == null ? id
+      : Number(remote.artwork_id).toString(16).padStart(2, "0");
+    return `/switchbot_urc_static/artwork/profile-${profile}.png`;
   }
 
   // Each key the WoRWS actually has, by its firmware position name.
@@ -735,8 +732,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       const nativeProfile = item.can_test_native_icon
         ? this._nativeProfile(item.native_type || item.device_type) : null;
       const artwork = item.can_test_native_icon
-        ? this._nativeArtworkSrc(nativeProfile, item.icon_code ?? undefined, item.artwork_id)
-        : this._hidArtworkSrc(item.device_type) || this._irArtworkSrc(item);
+        ? this._nativeArtworkSrc(nativeProfile, item.artwork_id)
+        : this._hidArtworkSrc(item.device_type, item.artwork_id) || this._irArtworkSrc(item);
       return `<div class="scr-row${current ? " on" : ""}">
         <button class="k pick-remote" type="button"
           data-remote="${escapeHtml(item.remote_id)}"
@@ -762,8 +759,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
     const choices = this._entry()?.icons || [];
     const installedArtwork = this._physical?.native_type === remote.native_type ? remote.artwork_id : undefined;
-    const artwork = native ? this._nativeArtworkSrc(profile, this._physical.icon_code, installedArtwork)
-      : this._hidArtworkSrc(remote.device_type) || this._irArtworkSrc(remote);
+    const artwork = native ? this._nativeArtworkSrc(profile, installedArtwork)
+      : this._hidArtworkSrc(remote.device_type, remote.artwork_id) || this._irArtworkSrc(remote);
     const canChooseIcon = !firmwareArtwork;
     return `<section class="appearance">
       <div class="appearance-head"><div><b>Appearance</b><span>How this remote is shown and arranged</span></div></div>
@@ -2094,7 +2091,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       try {
         await this._applyPhysical();
         this._error = null;
-        this._notify("Screen layout saved to the remote");
+        this._notify(this._physicalStatus || "Screen layout saved to the remote");
       } catch (error) {
         this._error = error?.message || String(error);
         this._render();
@@ -2716,6 +2713,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalStatus = result.status;
       this._physicalBackup = result.backup;
       this._lastIdentityMigrations = identityMigrations;
+      this._physical = result.layout || this._physical;
       this._physicalBaseline = structuredClone(this._physical);
       this._resetPhysicalOrigins(this._physical);
       await this._load();
@@ -2764,7 +2762,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._dirty = false;
       this._jsonValid = true;
       this._error = null;
-      this._notify(layoutChanges ? "Saved and written to the remote" : "Saved");
+      this._notify(layoutChanges ? this._physicalStatus || "Saved and written to the remote" : "Saved");
       // Keep the selection across the reload so the button just edited stays open.
       const keepPage = this._pageIndex;
       const keepButton = this._buttonId;

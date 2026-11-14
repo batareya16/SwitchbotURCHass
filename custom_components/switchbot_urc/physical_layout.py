@@ -27,10 +27,11 @@ def native_appearance(remote: dict) -> dict:
     if device_code is None:
         return {}
     stored_type = remote.get("native_type")
-    mode = remote.get("control_mode")
+    defaults = c.native_type_metadata(stored_type or name)
+    mode = remote.get("control_mode", defaults["control_mode"])
     icon = remote.get("icon_code")
     if not isinstance(icon, int):
-        icon = c.ICON.get(str(remote.get("icon", "")).lower(), 1)
+        icon = c.ICON.get(str(remote.get("icon", "")).lower(), defaults["icon_code"])
     # Older Studio versions saved the original page when applying the Floor lamp test
     # but left the cached artwork fields pointing at that original page.
     legacy_floor_lamp_test = (
@@ -60,20 +61,66 @@ def native_appearance(remote: dict) -> dict:
     elif readback is not None:
         mode, icon = readback
     elif remote.get("floor_lamp_test_applied") or legacy_floor_lamp_test:
-        mode, icon = c.NATIVE_FLOOR_LAMP_CONTROL_MODE, 1
+        mode, icon = 3, 1  # The previous test sent these fields and rendered Bulb.
     elif mode is None:
         mode = c.native_type_metadata(stored_type or name)["control_mode"]
     if device_code == c.NATIVE_DEVTYPE["FLOOR_LAMP"]:
         return {"native_type": "FLOOR_LAMP", "control_mode": c.NATIVE_FLOOR_LAMP_CONTROL_MODE,
-                "icon_code": 1}
+                "icon_code": c.ICON["floorlamp"]}
     candidates = [item for item in c.native_type_picker_options()
                   if c.NATIVE_DEVTYPE[item["device_type"]] == device_code
-                  and item["control_mode"] == mode]
+                  and item["control_mode"] == mode
+                  and item["artwork_id"] == c.native_artwork_id(device_code, icon, mode)]
     preferred = c.NATIVE_TYPE_EQUIVALENTS.get(stored_type or name, stored_type or name)
+    # An old cached Floor lamp label cannot override a different illustration read from the device.
+    if device_code == 0x72 and preferred == "FLOOR_LAMP" and icon != c.ICON["floorlamp"]:
+        preferred = "STRIP"
     match = next((item for item in candidates if item["value"] == preferred),
                  candidates[0] if candidates else None)
     return {"native_type": match["value"] if match else preferred,
             "control_mode": mode, "icon_code": icon}
+
+
+def remote_artwork_id(remote: dict) -> int | None:
+    """Resolve the illustration from the cached wire fields for Native, HID or IR."""
+    if str(remote.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
+        appearance = native_appearance(remote)
+        return c.native_artwork_id(
+            c.NATIVE_DEVTYPE[str(remote["device_type"]).upper()],
+            appearance["icon_code"], appearance["control_mode"])
+    name = str(remote.get("device_type", "")).upper()
+    if name in c.DEVTYPE:
+        device_type = c.DEVTYPE[name]
+    elif name == "IR_TV":
+        device_type = 2
+    elif name.startswith("IR_") and name[3:].isdigit():
+        device_type = int(name[3:])
+    else:
+        return None
+    mode = int(remote.get("control_mode") or 0)
+    icon = remote.get("icon_code")
+    if type(icon) is not int:
+        icon = c.ICON.get(str(remote.get("icon", "")).lower(), 0)
+    try:
+        packets = source_packets(remote)
+    except (ValueError, TypeError):
+        packets = []
+    for packet in packets:
+        if len(packet) < 90 or packet[:3] != b"\x0f\x62\x06":
+            continue
+        width = 4 if packet[8] == 0 else 1
+        control = 8 + width
+        expected_control = c.CTRL_HID if name in c.DEVTYPE else c.CTRL_IR
+        if (len(packet) < 89 + width
+                or int.from_bytes(packet[8:control], "big") != device_type
+                or packet[control] != expected_control
+                or packet[87 + width] != 0
+                or int.from_bytes(packet[3:5], "big") != len(packet) - 7
+                or int.from_bytes(packet[5:7], "big") != c.crc16_modbus(packet[7:])):
+            continue
+        mode, icon = packet[control + 1:control + 3]
+        break
+    return c.native_artwork_id(device_type, icon, mode)
 
 
 # keyFun -> what the V48 firmware actually transmits, from the report table at flash 0x33a4a.
