@@ -318,6 +318,7 @@ async def ws_remote_delete(hass, connection, msg):
     vol.Required("entry_id"): str,
     vol.Required("name"): str,
     vol.Optional("device_type"): str,
+    vol.Optional("native_type"): str,
     vol.Optional("icon"): str,
     vol.Optional("target_id"): str,
     vol.Optional("new_target_address"): str,
@@ -401,11 +402,10 @@ async def ws_remote_create(hass, connection, msg):
                 "one Bluetooth 5 controller can serve several."
             )
         slot = len(table)
-        screen_profile = str(msg.get("device_type") or target.get("device_type") or "STRIP").upper()
-        screen_profile = c.NATIVE_PROFILE_ALIASES.get(screen_profile, screen_profile)
-        device_type = c.native_profile_device_type(screen_profile)
-        if device_type is None:
-            raise ValueError(f"Unsupported native screen profile: {screen_profile}")
+        selected_type = c.native_type_metadata(
+            str(msg.get("native_type") or msg.get("device_type") or "STRIP")
+        )
+        device_type = selected_type["device_type"]
         remote_id = new_remote_id(entry)
         stages = c.build_native_bind_sequence(
             key_id=0x01,
@@ -414,8 +414,8 @@ async def ws_remote_create(hass, connection, msg):
             remote_index=slot,
             name=msg["name"],
             device_id=str(target["device_id"]),
-            icon_name=str(msg.get("icon") or target.get("icon") or "strip"),
-            control_mode=0,
+            icon_name=selected_type["icon_name"],
+            control_mode=selected_type["control_mode"],
             event_remote_id=remote_id,
         )
         await install.bind_native_once(client, stages, device_id=str(target["device_id"]))
@@ -425,13 +425,16 @@ async def ws_remote_create(hass, connection, msg):
             "index": slot,
             "name": msg["name"],
             "device_type": device_type,
-            "icon": str(msg.get("icon") or target.get("icon") or "strip"),
-            "icon_code": c.ICON.get(str(msg.get("icon") or target.get("icon") or "strip").lower(), 1),
+            "native_type": selected_type["value"],
+            "control_mode": selected_type["control_mode"],
+            "icon": selected_type["icon_name"],
+            "icon_code": selected_type["icon_code"],
             "device_id": str(target["device_id"]),
             "physical_device_id": str(target["device_id"]),
             "remote_id": remote_id,
             "buttons": [],
             "custom_layout": c.editable_layout_from_native_profile(device_type),
+            "physical_packets": [packet.hex() for stage, packet in stages if stage.startswith("bind_")],
         })
         _save_remotes(hass, entry, remotes)
         served = ""
@@ -444,7 +447,7 @@ async def ws_remote_create(hass, connection, msg):
                 "name": msg["name"],
                 "device_id": str(target["device_id"]),
                 "device_type": device_type,
-                "icon": str(msg.get("icon") or target.get("icon") or "strip"),
+                "icon": "light",
                 "control_mode": 0,
                 "target_key_id": str(target.get("target_key_id", "01")),
                 "target_key": str(target["target_key"]),
@@ -681,15 +684,7 @@ async def ws_remote_sources(hass, connection, msg):
             "default_device_type": str((known[0] if known else {}).get("device_type", "STRIP")),
             "default_screen_profile": c.NATIVE_PROFILE_ALIASES.get(
                 str((known[0] if known else {}).get("device_type", "STRIP")).upper(), "STRIP"),
-            "screen_profiles": [
-                c.native_profile_metadata(name) | {"label": f"{c.NATIVE_PROFILE_TITLES[name]} · " + (
-                    "main page only" if len(profile["pages"]) == 1 else
-                    "pages " + ", ".join("Main" if int(page) == 0 else "ABCD"[int(page) - 1]
-                                         for page in sorted(profile["pages"]))
-                )}
-                for name, profile in c.NATIVE_PROFILE_LAYOUTS.items()
-                if c.native_profile_device_type(name) is not None
-            ],
+            "screen_profiles": c.native_type_options(),
             "default_icon": str((known[0] if known else {}).get("icon", "strip")),
         },
         # HID remotes need a paired host before the firmware accepts them, so the panel is

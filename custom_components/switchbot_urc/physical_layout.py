@@ -79,11 +79,12 @@ def hid_draft_from_cloud(device_type: str, items: list[dict]) -> dict:
 def draft_for(remote: dict) -> dict:
     if remote.get("physical_layout"):
         draft = deepcopy(remote["physical_layout"])
-        if draft.get("kind") == "native" and not draft.get("template"):
-            stored_template = (remote.get("custom_layout") or {}).get("template")
+        if draft.get("kind") == "native":
             device_type = str(remote.get("device_type", "")).upper()
-            draft["template"] = c.NATIVE_PROFILE_ALIASES.get(
-                str(stored_template or device_type).upper(), "FAN")
+            stored_template = (remote.get("custom_layout") or {}).get("template")
+            draft.setdefault("template", c.NATIVE_PROFILE_ALIASES.get(
+                str(stored_template or device_type).upper(), "FAN"))
+            draft["native_type"] = remote.get("native_type") or draft.get("native_type") or device_type
         return draft
     device_type = str(remote.get("device_type", "")).upper()
     if device_type in c.DEVTYPE:
@@ -96,7 +97,10 @@ def draft_for(remote: dict) -> dict:
         main = c.normalize_main_buttons(layout.get("main_buttons", {}))
         template = str(layout.get("template") or c.NATIVE_PROFILE_ALIASES.get(device_type, "FAN"))
         template = c.NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
-        return {"kind": "native", "template": template, "pages": [{"index": 0, "buttons": [
+        return {"kind": "native", "template": template,
+                "native_type": remote.get("native_type", device_type),
+                "control_mode": int(remote.get("control_mode", 0)),
+                "icon_name": remote.get("icon", "light"), "pages": [{"index": 0, "buttons": [
             {"index": c.TAG[position], "transport": "native", "function": c.custom_action_function(action)}
             for position, action in main.items()
         ]}] + [{"index": int(page), "buttons": [
@@ -128,9 +132,19 @@ def validate(remote: dict, draft: dict) -> dict:
     if expected == "native":
         template = str(result.get("template") or draft_for(remote).get("template") or "FAN").upper()
         template = c.NATIVE_PROFILE_ALIASES.get(template, template)
-        if template not in c.NATIVE_PROFILE_LAYOUTS or c.native_profile_device_type(template) is None:
+        if template not in c.NATIVE_PROFILE_LAYOUTS:
             raise ValueError(f"Unsupported native screen profile: {template}")
         result["template"] = template
+        result["native_type"] = str(result.get("native_type") or template).upper()
+        native_type = c.native_type_metadata(result["native_type"])
+        if native_type["profile"] != template:
+            legacy_type = remote.get("native_type") or remote.get("device_type")
+            if result["native_type"] != legacy_type:
+                raise ValueError("The selected remote type does not match its button layout")
+            result["native_type"] = c.native_profile_device_type(template) or template
+            native_type = c.native_type_metadata(result["native_type"])
+        result["control_mode"] = native_type["control_mode"]
+        result["icon_name"] = native_type["icon_name"]
     pages = result.get("pages")
     if not isinstance(pages, list) or not 1 <= len(pages) <= 5:
         raise ValueError("Use Main and up to four pages A–D")
@@ -337,7 +351,10 @@ def compile_recreate(
 
 def native_layout(draft: dict) -> dict:
     positions = {value: name for name, value in c.TAG.items()}
-    return {"layout_version": 2, "template": draft.get("template", "FAN"), "main_buttons": {
+    return {"layout_version": 2, "template": draft.get("template", "FAN"),
+            "native_type": draft.get("native_type", draft.get("template", "FAN")),
+            "control_mode": int(draft.get("control_mode", 0)),
+            "icon_name": draft.get("icon_name", "light"), "main_buttons": {
         positions[key["index"]]: c.custom_action_name(key["function"])
         for page in draft["pages"] if page["index"] == 0 for key in page["buttons"]
     }, "pages": {str(page["index"]): [c.custom_action_name(key["function"]) for key in sorted(page["buttons"], key=lambda k: k["index"])]

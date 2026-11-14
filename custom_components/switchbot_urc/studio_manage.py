@@ -309,7 +309,8 @@ async def ws_remote_recreate(hass, connection, msg):
     Use it when the tile on the screen is wrong or missing. IR remotes are reinstalled from
     their account record; HID remotes are deleted and rebuilt from
     the stored button list; native remotes are deleted and bound again from the stored bridge
-    credentials, which also repairs the per-address target key the delete releases.
+    credentials. A native profile missing from the device table is restored from its local
+    record without issuing another delete.
 
     A native remote can also move: `target_address` binds it to a different address and
     `auto_address` picks the next free one. That is what fixes a tile whose controller was
@@ -318,7 +319,30 @@ async def ws_remote_recreate(hass, connection, msg):
     try:
         entry = _entry(hass, msg)
         client = _client(hass, entry)
-        item = _find(await _inventory(hass, entry, client), msg["remote_id"])
+        inventory = await _inventory(hass, entry, client)
+        try:
+            item = _find(inventory, msg["remote_id"])
+        except ValueError:
+            # A failed delete-then-bind can leave the local profile intact but no physical
+            # row. Allow "Write again" to restore that saved native profile without issuing
+            # another delete.
+            managed = next((remote for remote in entry.options.get("remotes", [])
+                            if str(remote.get("remote_id") or remote.get("device_id") or "")
+                            == msg["remote_id"]), None)
+            device_type = str((managed or {}).get("device_type", "")).upper()
+            if not managed or device_type not in c.NATIVE_DEVTYPE:
+                raise
+            item = {
+                "managed_item": managed,
+                "physical": False,
+                "control_type": c.CTRL_NATIVE,
+                "device_type_byte": c.NATIVE_DEVTYPE[device_type],
+                "index": managed.get("index", 0),
+                "device_key": c.id_to_bytes(
+                    str(managed.get("physical_device_id") or managed["device_id"])
+                ).hex(),
+                "name": managed.get("name", "Remote"),
+            }
         managed = item.get("managed_item") or {}
         name = (msg.get("name") or item.get("name") or "Remote").strip()
         # The icon code is part of the page record. Its distinct visual effect on V48 is
@@ -375,20 +399,21 @@ async def ws_remote_recreate(hass, connection, msg):
                     msg.get("icon"), connection, msg["id"], kind="hid",
                 )
                 return
-            error = await install.delete_and_verify(
-                client,
-                c.build_delete(
-                    remote_index=int(item["index"]),
+            if item.get("physical"):
+                error = await install.delete_and_verify(
+                    client,
+                    c.build_delete(
+                        remote_index=int(item["index"]),
+                        device_type=int(item["device_type_byte"]),
+                        control_type=int(item["control_type"]),
+                        device_id=item["device_key"],
+                    ),
                     device_type=int(item["device_type_byte"]),
                     control_type=int(item["control_type"]),
-                    device_id=item["device_key"],
-                ),
-                device_type=int(item["device_type_byte"]),
-                control_type=int(item["control_type"]),
-                device_id=str(item["device_key"]),
-            )
-            if error:
-                raise ValueError(f"could not remove the old copy ({error})")
+                    device_id=str(item["device_key"]),
+                )
+                if error:
+                    raise ValueError(f"could not remove the old copy ({error})")
             raw = await client.query(0x07)
             if not raw:
                 raise ValueError("The remote did not answer with its device table")
@@ -448,25 +473,28 @@ async def ws_remote_recreate(hass, connection, msg):
                         f"{device_id} already carries a native tile. Move that one first, or "
                         "choose an address that is free."
                     )
-            error = await install.delete_and_verify(
-                client,
-                c.build_delete(
-                    remote_index=int(item["index"]),
+            if item.get("physical"):
+                error = await install.delete_and_verify(
+                    client,
+                    c.build_delete(
+                        remote_index=int(item["index"]),
+                        device_type=int(item["device_type_byte"]),
+                        control_type=int(item["control_type"]),
+                        device_id=item["device_key"],
+                    ),
                     device_type=int(item["device_type_byte"]),
                     control_type=int(item["control_type"]),
-                    device_id=item["device_key"],
-                ),
-                device_type=int(item["device_type_byte"]),
-                control_type=int(item["control_type"]),
-                device_id=str(item["device_key"]),
-            )
-            if error:
-                raise ValueError(f"could not remove the old copy ({error})")
+                    device_id=str(item["device_key"]),
+                )
+                if error:
+                    raise ValueError(f"could not remove the old copy ({error})")
             raw = await client.query(0x07)
             if not raw:
                 raise ValueError("The remote did not answer with its device table")
             slot = len(c.parse_added_devices(raw))
             custom_layout = managed.get("custom_layout")
+            native_icon = str(managed.get("icon") or "light")
+            native_mode = managed.get("control_mode")
             if custom_layout:
                 stages = c.build_custom_native_bind_sequence(
                     key_id=0x01,
@@ -474,13 +502,16 @@ async def ws_remote_recreate(hass, connection, msg):
                     remote_index=slot,
                     name=name,
                     device_id=device_id,
-                    icon_name=icon or "strip",
-                    event_remote_id=str(managed["remote_id"]),
+                    icon_name=native_icon,
+                    event_remote_id=str(managed.get("remote_id") or msg["remote_id"]),
                     main_buttons=c.normalize_main_buttons(custom_layout["main_buttons"]),
                     page_buttons={
                         int(page): list(actions)
                         for page, actions in custom_layout["pages"].items()
                     },
+                    template=custom_layout.get("template"),
+                    control_mode=native_mode,
+                    device_type_name=str(managed["device_type"]),
                 )
             else:
                 stages = c.build_native_bind_sequence(
@@ -490,26 +521,34 @@ async def ws_remote_recreate(hass, connection, msg):
                     remote_index=slot,
                     name=name,
                     device_id=device_id,
-                    icon_name=icon or "strip",
-                    control_mode=0,
+                    icon_name=native_icon,
+                    control_mode=native_mode or 0,
                     event_remote_id=managed.get("remote_id"),
                 )
             await install.bind_native_once(client, stages, device_id=device_id)
+            restored_id = c.id_to_bytes(device_id)
+            restored_type = c.NATIVE_DEVTYPE[str(managed["device_type"]).upper()]
+            if (slot, restored_type, c.CTRL_NATIVE, restored_id) not in c.parse_added_devices(
+                await client.query(0x07)
+            ):
+                raise ValueError("The saved Native remote was not found in its expected slot after writing")
             # The bind sequence rewrote the key for this address; siblings on the same address
             # were released by the delete above and are covered by the same association.
-            await install.reassociate_shared_target(client, device_id)
+            if item.get("physical"):
+                await install.reassociate_shared_target(client, device_id)
             if moved_from:
                 # The tile it was moved off also loses its key entry, and a sibling may still
                 # be using that address.
                 await install.reassociate_shared_target(client, moved_from)
             remotes = deepcopy(list(entry.options.get("remotes", [])))
             for remote in remotes:
-                if remote.get("remote_id") == managed.get("remote_id"):
+                if str(remote.get("remote_id") or remote.get("device_id") or "") == msg["remote_id"]:
                     remote["index"] = slot
                     remote["name"] = name
-                    if icon:
-                        remote["icon"] = icon
-                        remote["icon_code"] = c.ICON.get(icon.lower(), 1)
+                    remote["icon"] = native_icon
+                    remote["icon_code"] = c.ICON.get(native_icon, 1)
+                    remote["physical_packets"] = [packet.hex() for stage, packet in stages
+                                                  if stage.startswith("bind_")]
                     if moved_from:
                         # Both, not just one: `device_id` is what the device table is searched
                         # by, so leaving it on the old address would make this remote
@@ -535,11 +574,11 @@ async def ws_remote_recreate(hass, connection, msg):
         raise ValueError(f"Control type {item['control_type']} cannot be written again from here")
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio recreate failed")
-        connection.send_error(msg["id"], "recreate_failed", str(err))
+        connection.send_error(msg["id"], "recreate_failed", str(err) or type(err).__name__)
 
 
-def _native_main_page_source_packet(remote: dict[str, Any], slot: int) -> bytes:
-    """Use saved bytes, or rebuild only a known stock native page exactly."""
+def _native_page_source_packets(remote: dict[str, Any], slot: int) -> list[bytes]:
+    """Use cached native pages, or rebuild the known profile records exactly."""
     device_type_name = str(remote.get("device_type", "")).upper()
     if device_type_name not in c.NATIVE_DEVTYPE:
         raise ValueError("The selected remote is not a supported native profile")
@@ -575,13 +614,105 @@ def _native_main_page_source_packet(remote: dict[str, Any], slot: int) -> bytes:
             event_remote_id=str(remote.get("remote_id") or ""),
         ))
 
+    if not packets:
+        raise ValueError("A complete native page record is not available for this remote")
+    expected_type = c.device_type_bytes(c.NATIVE_DEVTYPE[device_type_name])
+    expected_id = c.id_to_bytes(str(remote.get("physical_device_id") or remote["device_id"]))
+    for packet in packets:
+        if packet[:3] != b"\x0f\x62\x06" or len(packet) <= 87 + len(expected_type):
+            raise ValueError("A cached native page packet is incomplete")
+        c.rewrite_native_page_icon(packet, packet[7 + 1 + len(expected_type) + 2])
+        body = packet[7:]
+        if (body[0] != slot or body[1:1 + len(expected_type)] != expected_type
+                or body[1 + len(expected_type)] != c.CTRL_NATIVE
+                or body[4 + len(expected_type):15 + len(expected_type)] != expected_id):
+            raise ValueError("A cached native page does not match this remote and slot")
+    return packets
+
+
+def _native_main_page_source_packet(remote: dict[str, Any], slot: int) -> bytes:
+    """Use saved bytes, or rebuild only a known stock native page exactly."""
+    packets = _native_page_source_packets(remote, slot)
     page = next((packet for packet in packets
-                 if len(packet) > 88 and packet[:3] == b"\x0f\x62\x06" and packet[88] == 0), None)
+                 if packet[87 + (4 if packet[8] == 0 else 1)] == 0), None)
     if page is None:
         raise ValueError("A complete Main-page packet is not available for this remote")
 
     _validate_native_test_packet(remote, slot, page)
     return page
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/remote/update_native_icon",
+    vol.Required("entry_id"): str,
+    vol.Required("remote_id"): str,
+    vol.Required("icon"): vol.In(ICONS),
+})
+@websocket_api.async_response
+async def ws_native_icon_update(hass, connection, msg):
+    """Rewrite native page icon fields in place without deleting the installed remote."""
+    try:
+        entry = _entry(hass, msg)
+        remote_id = msg["remote_id"]
+        remotes = deepcopy(list(entry.options.get("remotes", [])))
+        managed = next((remote for remote in remotes
+                       if str(remote.get("remote_id") or remote.get("device_id") or "")
+                       == remote_id), None)
+        if managed is None:
+            raise ValueError("The saved native page data is unavailable; refresh the remote first")
+
+        client = _client(hass, entry)
+        item = _find(await _inventory(hass, entry, client), remote_id)
+        if not item.get("physical") or item.get("control_type") != c.CTRL_NATIVE:
+            raise ValueError("This icon update is only available for an installed native remote")
+        slot = int(item["index"])
+        device_type = str(managed.get("device_type", "")).upper()
+        if device_type not in c.NATIVE_DEVTYPE:
+            raise ValueError("The saved screen profile is not available for this native remote")
+        table = c.parse_added_devices(await client.query(0x07))
+        expected_id = c.id_to_bytes(str(managed.get("physical_device_id") or managed["device_id"]))
+        if not any(row[0] == slot and row[1] == c.NATIVE_DEVTYPE[device_type]
+                   and row[2] == c.CTRL_NATIVE and row[3] == expected_id for row in table):
+            raise ValueError("The native remote changed before the icon update; refresh first")
+
+        source_packets = _native_page_source_packets(managed, slot)
+        icon_code = c.ICON[msg["icon"].lower()]
+        packets = [c.rewrite_native_page_icon(packet, icon_code)
+                   for packet in source_packets]
+        responses = await client.send_command_sequence(
+            tuple(packets), timeout=30.0, timeout_retries=0,
+            accepted_codes=tuple(frozenset({1}) for _ in packets),
+        )
+        if len(responses) != len(packets):
+            raise ValueError(
+                "The remote did not acknowledge every page icon update; it remains installed. "
+                "Retry the icon update to finish any remaining pages."
+            )
+        for index, response in enumerate(responses):
+            if not response or response[0] != 1:
+                raise ValueError(
+                    f"Page icon update {index + 1} was rejected "
+                    f"({response.hex() if response else 'timeout'}); the native remote "
+                    "remains installed. Retry to finish any remaining pages."
+                )
+
+        for remote in remotes:
+            if str(remote.get("remote_id") or remote.get("device_id") or "") != remote_id:
+                continue
+            remote.update({
+                "icon": msg["icon"],
+                "icon_code": icon_code,
+                "physical_packets": [packet.hex() for packet in packets],
+            })
+            remote.pop("icon_variant_backup_packet", None)
+            remote.pop("washer_artwork_backup_packet", None)
+            break
+        _save_remotes(hass, entry, remotes)
+        connection.send_result(msg["id"], {"slot": slot, "icon": msg["icon"]})
+    except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
+        _LOGGER.exception("Remote Studio native icon update failed")
+        connection.send_error(msg["id"], "native_icon_update_failed", str(err))
 
 
 def _validate_native_test_packet(remote: dict[str, Any], slot: int, packet: bytes) -> None:
@@ -590,15 +721,19 @@ def _validate_native_test_packet(remote: dict[str, Any], slot: int, packet: byte
     # Rewriting the current mode to itself validates the packet framing and CRC without changes.
     body = packet[7:]
     mode_offset = 1 + len(expected_type) + 1
-    if (len(packet) <= 7 + mode_offset or packet[88] != 0
+    page_offset = 87 + len(expected_type)
+    if (len(packet) <= max(7 + mode_offset, page_offset) or packet[page_offset] != 0
             or c.rewrite_native_page_control_mode(packet, body[mode_offset]) != packet):
         raise ValueError("The saved Main-page packet is malformed or has an invalid CRC")
     type_length = len(expected_type)
     control_offset = 1 + type_length
     id_offset = control_offset + 3
+    expected_id = c.id_to_bytes(
+        str(remote.get("physical_device_id") or remote["device_id"])
+    )
     if (body[0] != slot or body[1:1 + type_length] != expected_type
             or body[control_offset] != c.CTRL_NATIVE
-            or body[id_offset:id_offset + 11] != c.id_to_bytes(str(remote["device_id"]))):
+            or body[id_offset:id_offset + 11] != expected_id):
         raise ValueError("The saved Main-page packet does not match this native remote")
 
 
@@ -972,6 +1107,7 @@ async def ws_bindings_cleanup(hass, connection, msg):
 def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_rename)
     websocket_api.async_register_command(hass, ws_remote_recreate)
+    websocket_api.async_register_command(hass, ws_native_icon_update)
     websocket_api.async_register_command(hass, ws_native_icon_variant_test)
     websocket_api.async_register_command(hass, ws_pair_host)
     websocket_api.async_register_command(hass, ws_create_hid)

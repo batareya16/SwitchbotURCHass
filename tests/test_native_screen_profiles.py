@@ -71,6 +71,54 @@ def test_profile_metadata_exposes_renderable_main_and_subpage_layout():
     assert metadata["main_positions"] == sorted(metadata["main_positions"])
 
 
+def test_every_native_type_choice_has_firmware_artwork_mapping():
+    for profile_name in c.NATIVE_PROFILE_LAYOUTS:
+        device_type = c.native_profile_device_type(profile_name)
+        if device_type is None:
+            continue
+        metadata = c.native_profile_metadata(profile_name)
+        assert metadata["artwork_id"] is not None, profile_name
+
+    # TRV artwork is selected by the firmware's control-mode table, not device type.
+    assert c.native_profile_metadata("TRV")["artwork_id"] == 0x13
+
+
+def test_native_type_options_follow_official_handler_control_modes():
+    options = {item["value"]: item for item in c.native_type_options()}
+
+    assert options["BOT_PRESS"]["control_mode"] == 1
+    assert options["BOT_SWITCH"]["control_mode"] == 2
+    assert options["CURTAIN_GROUP"]["control_mode"] == 3
+    assert options["CURTAIN_LEFT"]["control_mode"] == 4
+    assert options["CURTAIN_RIGHT"]["control_mode"] == 5
+    assert options["TRV"]["control_mode"] == 6
+    assert options["FLOOR_LAMP"]["profile"] == "STRIP"
+    assert options["FLOOR_LAMP"]["control_mode"] == 0
+
+
+def test_catalog_variant_uses_same_wire_fields_on_create_and_edit():
+    for name, wire_fields in (
+        ("BOT_PRESS", bytes.fromhex("48000101")),
+        ("CURTAIN_RIGHT", bytes.fromhex("63000501")),
+        ("VACUUM_K20", bytes.fromhex("13000001")),
+        ("FLOOR_LAMP", bytes.fromhex("0010d0b0000003")),
+    ):
+        selected = c.native_type_metadata(name)
+        device_type = selected["device_type"]
+        remote = {"device_type": device_type, "native_type": name,
+                  "device_id": "AA:BB:CC:DD:EE:FF"}
+        draft = physical.native_layout(physical.validate(remote, physical.draft_for(remote)))
+        fields = {"remote_index": 1, "name": "Test", "device_id": remote["device_id"],
+                  "device_type_name": device_type, "event_remote_id": "12345678"}
+        created, *_ = c.build_native_pages(
+            **fields, control_mode=selected["control_mode"], icon_name=selected["icon_name"])
+        (_, edited), *_ = c.build_custom_native_pages(
+            **fields, template=draft["template"], control_mode=draft["control_mode"],
+            icon_name=draft["icon_name"], main_buttons=draft["main_buttons"],
+            page_buttons={int(page): keys for page, keys in draft["pages"].items()})
+        assert created[8:8 + len(wire_fields)] == edited[8:8 + len(wire_fields)] == wire_fields
+
+
 def test_physical_validation_names_main_positions_missing_from_selected_profile():
     remote = {"device_type": "FAN", "remote_id": "12345678",
               "device_id": "AA:BB:CC:DD:EE:FF"}

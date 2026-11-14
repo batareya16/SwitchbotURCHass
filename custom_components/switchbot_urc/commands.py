@@ -174,6 +174,8 @@ NATIVE_DEVTYPE = {
     "RGBIC_NEON_ROPE_LIGHT": 0x0010D0B6,
     "RGBIC_PERMANENT_OUTDOOR_LIGHT": 0x0010D0B7,
     "CEILING_LIGHT_2": 0x0011BB10, "CANDLE": 0x001122B8, "CANDLE_LAMP": 0x001122B8,
+    "VACUUM_S1_MINI": 0x7D, "VACUUM_S1_MINI_PRO": 0x08,
+    "VACUUM_K20": 0x13, "VACUUM_K20_PRO": 0x0E,
     "BOT": 0x48, "FAN": 0x7E, "FAN_2": 0x7E, "FAN_3": 0x00110760,
     "FAN_PRO": 0x0011B340, "ROLLER_SHADE": 0x2C,
     "AIR_PURIFIER_US": 0x2A, "AIR_PURIFIER_JP": 0x2B,
@@ -259,6 +261,7 @@ NATIVE_PROFILE_LAYOUTS: dict[str, dict] = {
     "LOCK": {"id": 13, "pages": {0: _page((TAG["ON"], 5), (TAG["OFF"], 6))}},
     "SWITCH": {"id": 14, "pages": {0: _page((TAG["ON"], 5), (TAG["OFF"], 6))}},
     "GARAGE_DOOR": {"id": 15, "pages": {0: _page((TAG["ON"], 5), (TAG["OFF"], 6))}},
+    "VACUUM": {"id": 17, "pages": {0: _page((TAG["ON"], 5), (TAG["OFF"], 6))}},
     "TRV": {"id": 16, "control_mode": 6, "pages": {0: _page(
         (TAG["ON"], 5), (TAG["OFF"], 6), (TAG["UP"], 60), (TAG["DOWN"], 61),
         (TAG["VOLADD"], 60), (TAG["VOLDEL"], 61),
@@ -272,7 +275,16 @@ NATIVE_PROFILE_ARTWORK = {
     "CEILING": 0x14, "BULB": 0x0C, "STRIP": 0x16,
     "BOT": 0x13, "FAN": 0x09, "ROLLER_SHADE": 0x22,
     "AIR_PURIFIER": 0x2F, "HUMIDIFIER": 0x0B,
-    "LOCK": 0x21, "SWITCH": 0x13, "GARAGE_DOOR": 0x2E,
+    "LOCK": 0x21, "SWITCH": 0x13, "GARAGE_DOOR": 0x2E, "VACUUM": 0x10,
+}
+
+# V48's controlMode artwork table at 0x20047150. Profiles with a nonzero
+# control_mode select artwork from this table instead of the device-type table above.
+NATIVE_CONTROL_MODE_ARTWORK = {
+    0x01: 0x0C, 0x02: 0x17, 0x03: 0x15, 0x04: 0x14, 0x05: 0x16,
+    0x06: 0x13, 0x07: 0x11, 0x08: 0x12, 0x09: 0x23, 0x0A: 0x24,
+    0x0B: 0x25, 0x0C: 0x26, 0x0D: 0x27, 0x0E: 0x28, 0x0F: 0x29,
+    0x10: 0x2A, 0x11: 0x2B, 0x12: 0x2C, 0x13: 0x2D, 0x14: 0x2E,
 }
 
 NATIVE_PROFILE_TITLES = {
@@ -281,10 +293,32 @@ NATIVE_PROFILE_TITLES = {
     "CANDLE": "Candle lamp", "BOT": "Button bot", "FAN": "Fan",
     "ROLLER_SHADE": "Roller shade", "AIR_PURIFIER": "Air purifier",
     "HUMIDIFIER": "Humidifier", "LOCK": "Door lock", "SWITCH": "Switch",
-    "GARAGE_DOOR": "Garage door", "TRV": "Thermostat",
+    "GARAGE_DOOR": "Garage door", "TRV": "Thermostat", "VACUUM": "Robot vacuum",
+}
+
+NATIVE_DEVICE_TITLES = {
+    "PLUG_US": "US outlet", "PLUG_JP": "Japan outlet", "CURTAIN_3": "Curtains 3",
+    "CEILING_PRO": "Ceiling light Pro", "LIGHT": "Light", "FAN_2": "Fan 2",
+    "AIR_PURIFIER_US": "Air purifier US", "AIR_PURIFIER_JP": "Air purifier Japan",
+    "AIR_PURIFIER_US_PRO": "Air purifier US Pro", "AIR_PURIFIER_JP_PRO": "Air purifier Japan Pro",
+    "HUMIDIFIER_2": "Humidifier 2", "LOCK_LITE": "Lock Lite", "LOCK_PRO": "Lock Pro",
+    "SWITCH_1PM": "Switch 1PM", "SWITCH_1PLUS": "Switch 1 Plus", "PLUG_EU": "EU outlet",
+    "VACUUM_S1_MINI": "Vacuum S1 Mini", "VACUUM_S1_MINI_PRO": "Vacuum S1 Mini Pro",
+    "VACUUM_K20": "Vacuum K20", "VACUUM_K20_PRO": "Vacuum K20 Pro",
+}
+
+NATIVE_DEVICE_ARTWORK = {
+    0x7D: 0x10, 0x08: 0x08, 0x13: 0x05, 0x0E: 0x0C,
+    0x67: 0x0D, 0x6A: 0x0D, 0x63: 0x03, 0x7B: 0x03, 0x78: 0x07,
+    0x71: 0x14, 0x6E: 0x14, 0x75: 0x0C, 0x72: 0x16, 0x48: 0x13,
+    0x7E: 0x09, 0x2C: 0x22, 0x2A: 0x2F, 0x2B: 0x2F, 0x37: 0x2F,
+    0x38: 0x2F, 0x23: 0x0B, 0x6F: 0x21, 0x2D: 0x21, 0x24: 0x21,
+    0x3C: 0x13, 0x3B: 0x13, 0x3F: 0x13, 0x3E: 0x2E,
 }
 
 NATIVE_PROFILE_ALIASES = {
+    **{name: "VACUUM" for name in (
+        "VACUUM_S1_MINI", "VACUUM_S1_MINI_PRO", "VACUUM_K20", "VACUUM_K20_PRO")},
     **{name: "PLUG" for name in ("PLUG", "PLUG_US", "PLUG_JP")},
     **{name: "CURTAIN" for name in ("CURTAIN", "CURTAIN_3")},
     "BLIND_TILT": "BLIND_TILT",
@@ -333,6 +367,49 @@ def native_profile_device_type(profile_name: str) -> str | None:
                  if template == profile_name and native_device_type_supported(name)), None)
 
 
+def native_type_metadata(type_name: str) -> dict:
+    """Resolve a user-facing type to its device code, layout and screen mode."""
+    name = type_name.upper()
+    if name == "FLOOR_LAMP":
+        return {"value": name, "profile": "STRIP", "title": "Floor lamp",
+                "device_type": name, "control_mode": 0, "icon_name": "floorlamp",
+                "icon_code": ICON["floorlamp"],
+                "artwork_id": None}
+    variants = {
+        "BOT_PRESS": ("BOT", "Button bot · Press", 1),
+        "BOT_SWITCH": ("BOT", "Button bot · Switch", 2),
+        "CURTAIN_GROUP": ("CURTAIN", "Curtains · Group", 3),
+        "CURTAIN_LEFT": ("CURTAIN", "Curtains · Open left", 4),
+        "CURTAIN_RIGHT": ("CURTAIN", "Curtains · Open right", 5),
+    }
+    if name in variants:
+        device_name, title, mode = variants[name]
+        profile_name = NATIVE_PROFILE_ALIASES[device_name]
+        return {"value": name, "profile": profile_name, "title": title,
+                "device_type": device_name, "control_mode": mode,
+                "icon_name": "light", "icon_code": ICON["light"],
+                "artwork_id": NATIVE_CONTROL_MODE_ARTWORK[mode]}
+    profile_name = NATIVE_PROFILE_ALIASES.get(name)
+    if not profile_name:
+        raise ValueError(f"Unsupported native remote type: {type_name}")
+    control_mode = int(NATIVE_PROFILE_LAYOUTS[profile_name].get("control_mode", 0))
+    return {"value": name, "profile": profile_name,
+            "title": NATIVE_DEVICE_TITLES.get(name, NATIVE_PROFILE_TITLES[profile_name]),
+            "device_type": name, "control_mode": control_mode,
+            "icon_name": "light", "icon_code": ICON["light"],
+            "artwork_id": (NATIVE_CONTROL_MODE_ARTWORK.get(control_mode)
+                           if control_mode else NATIVE_DEVICE_ARTWORK.get(
+                               NATIVE_DEVTYPE[name], NATIVE_PROFILE_ARTWORK.get(profile_name)))}
+
+
+def native_type_options() -> list[dict]:
+    options = [native_type_metadata(name) for name in NATIVE_PROFILE_ALIASES]
+    options.extend(native_type_metadata(name) for name in (
+        "BOT_PRESS", "BOT_SWITCH", "CURTAIN_GROUP", "CURTAIN_LEFT", "CURTAIN_RIGHT",
+    ))
+    return options
+
+
 def native_profile_metadata(profile_name: str) -> dict:
     """Describe the visible Main/A-D positions for Remote Studio's layout preview."""
     profile_name = NATIVE_PROFILE_ALIASES.get(profile_name.upper(), profile_name.upper())
@@ -370,7 +447,9 @@ def native_profile_metadata(profile_name: str) -> dict:
         "value": profile_name,
         "title": NATIVE_PROFILE_TITLES.get(profile_name, profile_name.replace("_", " ").title()),
         "control_mode": int(profile.get("control_mode", 0)),
-        "artwork_id": NATIVE_PROFILE_ARTWORK.get(profile_name),
+        "artwork_id": NATIVE_CONTROL_MODE_ARTWORK.get(
+            int(profile.get("control_mode", 0)), NATIVE_PROFILE_ARTWORK.get(profile_name)
+        ),
         "pages": [0, *(item["index"] for item in subpages)],
         "main_positions": sorted({item["index"] for item in main_keys}),
         "main_keys": main_keys,
@@ -1313,6 +1392,8 @@ def build_custom_native_pages(
     main_buttons: list[str] | dict[str, str],
     page_buttons: dict[int, list[str]],
     template: str = "FAN",
+    control_mode: int | None = None,
+    device_type_name: str | None = None,
 ) -> tuple[tuple[int, bytes], ...]:
     """Build editable pages while retaining the selected native screen profile."""
     template = NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
@@ -1322,9 +1403,9 @@ def build_custom_native_pages(
     layout = custom_native_layout(main_buttons, page_buttons, template=template)
     common = {
         "remote_index": remote_index,
-        "device_type": NATIVE_DEVTYPE[native_profile_device_type(template)],
+        "device_type": NATIVE_DEVTYPE[device_type_name or native_profile_device_type(template)],
         "control_type": CTRL_NATIVE,
-        "control_mode": int(profile.get("control_mode", 0)),
+        "control_mode": int(profile.get("control_mode", 0) if control_mode is None else control_mode),
         "icon": ICON.get(icon_name.lower(), 1),
         "device_id": device_id,
         "name": name,
@@ -1361,6 +1442,8 @@ def build_custom_native_bind_sequence(
     main_buttons: list[str] | dict[str, str],
     page_buttons: dict[int, list[str]],
     template: str = "FAN",
+    control_mode: int | None = None,
+    device_type_name: str | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
     """Return provisioning plus all pages for an editable native bridge remote."""
     pages = build_custom_native_pages(
@@ -1372,6 +1455,8 @@ def build_custom_native_bind_sequence(
         main_buttons=main_buttons,
         page_buttons=page_buttons,
         template=template,
+        control_mode=control_mode,
+        device_type_name=device_type_name,
     )
     return (
         ("set_key", build_set_target_key(key_id, target_key)),

@@ -124,10 +124,10 @@ def _functions_for(device_type: str, remote: dict) -> list[dict]:
 
 def _native_profiles() -> list[dict]:
     profiles = []
-    for name, profile in c.NATIVE_PROFILE_LAYOUTS.items():
-        if c.native_profile_device_type(name) is None:
-            continue
-        item = c.native_profile_metadata(name)
+    for native_type in c.native_type_options():
+        name = native_type["profile"]
+        profile = c.NATIVE_PROFILE_LAYOUTS[name]
+        item = c.native_profile_metadata(name) | native_type
         item["label"] = f"{item['title']} · " + (
             "main page only" if len(profile["pages"]) == 1 else
             "pages " + ", ".join("Main" if int(page) == 0 else "ABCD"[int(page) - 1]
@@ -161,6 +161,7 @@ async def ws_physical_import(hass, connection, msg):
         slots = [slot for slot, _, control, _ in table if control == 4]
         options = deepcopy(dict(entry.options))
         remotes = options.setdefault("remotes", [])
+        _normalize_native_types(remotes)
         imported = 0
         for slot, device_type, control, device_id in table:
             if control != 4 or any(c.id_to_bytes(item["device_id"]) == device_id for item in remotes if item.get("device_id")):
@@ -392,23 +393,37 @@ async def ws_physical_apply(hass, connection, msg):
                 key = bytes.fromhex(target.get("target_key", ""))
                 if len(key) != 16:
                     raise ValueError("The native target key is missing")
-                # Native update uses the already verified full delete/recreate path.
                 layout = physical.native_layout(draft)
-                new_slot = len(table) if recovering_native else len(table) - 1
+                selected_type = c.native_type_metadata(layout["native_type"])
+                new_slot = len(table) if recovering_native else slot
                 bind = c.build_custom_native_bind_sequence(
                     key_id=1, target_key=key, remote_index=new_slot, name=remote["name"],
-                    device_id=remote["device_id"], icon_name=remote.get("icon", "tv"),
+                    device_id=remote["device_id"], icon_name=layout["icon_name"],
                     event_remote_id=identity, main_buttons=layout["main_buttons"],
                     page_buttons={int(p): values for p, values in layout["pages"].items()},
                     template=layout["template"],
+                    control_mode=layout["control_mode"],
+                    device_type_name=selected_type["device_type"],
                 )
-                delete = c.build_delete(slot, device_type, control_type, remote["device_id"])
-                stages = ([] if recovering_native else [("delete native remote", delete, frozenset({1}))]) + [
-                    (name, packet, frozenset({1})) for name, packet in bind]
+                page_stages = [
+                    (name, packet, frozenset({1}))
+                    for name, packet in bind if packet[:3] == b"\x0f\x62\x06"
+                ]
+                if recovering_native:
+                    # A missing tile needs the full key setup and page bind. Existing tiles
+                    # keep their slot and target association; firmware updates each page record
+                    # in place when 0F 62 06 matches its slot and device ID.
+                    stages = [(name, packet, frozenset({1})) for name, packet in bind]
+                else:
+                    stages = page_stages
                 pages = [packet for _, packet in bind if packet[:3] == b"\x0f\x62\x06"]
-                stored_changes = {"device_type": c.native_profile_device_type(layout["template"]),
+                stored_changes = {"device_type": selected_type["device_type"],
                                   "custom_layout": layout,
+                                  "native_type": layout["native_type"],
+                                  "control_mode": layout["control_mode"],
                                   "index": new_slot,
+                                  "icon": layout["icon_name"],
+                                  "icon_code": c.ICON[layout["icon_name"]],
                                   "icon_variant_backup_packet": None}
             else:
                 # Deleting keys leaves the physical remote and its existing HID bond in place.
@@ -509,6 +524,55 @@ def _adopt_native_remotes(table, remotes, catalogue) -> int:
         })
         adopted += 1
     return adopted
+
+
+def _normalize_native_types(remotes) -> int:
+    """Derive a user-facing native type from the saved 0F6206 profile fields."""
+    changed = 0
+    options = c.native_type_options()
+    for remote in remotes:
+        if str(remote.get("device_type", "")).upper() not in c.NATIVE_DEVTYPE:
+            continue
+        try:
+            packets = physical.source_packets(remote)
+        except (ValueError, TypeError):
+            continue
+        if not packets:
+            continue
+        packet = next((item for item in packets if len(item) >= 90
+                       and item[:3] == b"\x0f\x62\x06"
+                       and item[88 + (3 if item[8] == 0 else 0):][:1] == b"\x00"
+                       and int.from_bytes(item[3:5], "big") == len(item) - 7
+                       and int.from_bytes(item[5:7], "big") == c.crc16_modbus(item[7:])), None)
+        if packet is None:
+            continue
+        body = packet[7:]
+        device_type_length = 4 if body[1] == 0 else 1
+        mode_offset = 1 + device_type_length + 1
+        icon_offset = mode_offset + 1
+        if len(body) <= icon_offset or body[mode_offset - 1] != c.CTRL_NATIVE:
+            continue
+        device_code = int.from_bytes(body[1:1 + device_type_length], "big")
+        control_mode = body[mode_offset]
+        icon = body[icon_offset]
+        candidates = [item for item in options
+                      if c.NATIVE_DEVTYPE[item["device_type"]] == device_code
+                      and item["control_mode"] == control_mode]
+        exact = [item for item in candidates if item["icon_code"] == icon]
+        candidates = exact or candidates
+        preferred = remote.get("native_type") or remote.get("device_type")
+        matching_type = next((item for item in candidates if item["value"] == preferred),
+                             candidates[0] if candidates else None)
+        derived = matching_type["value"] if matching_type else remote.get("native_type")
+        if not derived:
+            continue
+        if (remote.get("native_type") != derived or remote.get("icon_code") != icon
+                or remote.get("control_mode") != control_mode):
+            remote["native_type"] = derived
+            remote["icon_code"] = icon
+            remote["control_mode"] = control_mode
+            changed += 1
+    return changed
 
 
 def _drop_absent_remotes(table, remotes) -> int:
