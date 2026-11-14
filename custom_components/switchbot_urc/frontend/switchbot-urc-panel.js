@@ -560,6 +560,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const row = button ? this._draftKey(button)?.key : null;
     const hasDraft = this._physicalChanges();
     const field = (label, title, placeholder, rowIndex) => `<form class="menu-name-form"
+      data-name-key="${escapeHtml(`${this._entryId}:${this._remoteId}:${page.index}:${rowIndex ?? "menu"}`)}"
       data-menu-name data-page="${page.index}" ${rowIndex == null ? "" : `data-row="${rowIndex}"`}>
       <label>${label}<input name="title" value="${escapeHtml(title || "")}"
         placeholder="${escapeHtml(placeholder)}" maxlength="60"></label>
@@ -924,10 +925,28 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
+    const active = this.shadowRoot.activeElement;
+    const nameForm = active?.matches('input[name="title"]')
+      ? active.closest("[data-menu-name]") : null;
+    const editingName = nameForm ? {
+      key: nameForm.dataset.nameKey, value: active.value,
+      start: active.selectionStart, end: active.selectionEnd,
+      direction: active.selectionDirection,
+    } : null;
     // A throw while building the markup used to leave an empty shadow root and a blank page,
     // which hides the very message that would explain it. Render failures are shown instead.
     try {
       this._renderUnsafe();
+      if (editingName) {
+        const form = [...this.shadowRoot.querySelectorAll("[data-menu-name]")]
+          .find((item) => item.dataset.nameKey === editingName.key);
+        const input = form?.elements.title;
+        if (input) {
+          input.value = editingName.value;
+          input.focus({ preventScroll: true });
+          input.setSelectionRange(editingName.start, editingName.end, editingName.direction);
+        }
+      }
     } catch (error) {
       console.error("SwitchBot URC panel failed to render", error);
       this.shadowRoot.innerHTML = `<style>${this._styles()}</style><main><div class="error">

@@ -247,3 +247,90 @@ def test_full_server_transaction_keeps_controller_and_closes_its_link(monkeypatc
     assert commands.count(hci.OP_DISCONNECT) == 1
     assert hci.OP_RESET not in commands
     assert server._central_client is None and server._central_link is None
+
+
+def test_transient_connection_failed_to_be_established_retries_before_writing(monkeypatch):
+    monkeypatch.setattr(hci, "resolve_adapter", lambda _: ("hci0", 0, "8A:88:1B:E0:1F:92"))
+    delays = []
+    monkeypatch.setattr(hci.time, "sleep", delays.append)
+    server = hci.MultiAddressServer("hci0", ["8A:88:1B:E0:1F:92"],
+        protocol_factory=None, device_factory=None, conn_min=6, conn_max=12)
+    command = bytes.fromhex("0f6204020372001571da7d1a000000000000")
+    attempts = []
+    peers = []
+
+    class Writer:
+        def send(self, handle, pdu):
+            assert handle == 24
+            peers[0].send(pdu)
+
+        def disconnected(self, handle):
+            assert handle == 24
+
+    class Channel:
+        def command(self, opcode, payload=b"", **kwargs):
+            if opcode == hci.OP_LE_CREATE_CONN:
+                attempts.append(payload)
+                if len(attempts) < 4:
+                    server._on_event(hci.EV_LE_META, bytes([1, 0x3e]) + bytes(17))
+                else:
+                    peers.append(ManagementPeer(server._central_client, [command], [b"\x01"]))
+                    server._on_event(hci.EV_LE_META, bytes([1, 0, 24, 0, 0, 0])
+                                     + hci.address_bytes(PEER) + bytes(7))
+            elif opcode == hci.OP_DISCONNECT:
+                server._on_event(hci.EV_DISCONN_COMPLETE, bytes([0, 24, 0, 0x13]))
+            return b""
+
+    server.channel, server.writer = Channel(), Writer()
+    result = server.manage_remote(PEER, KEY.hex(), KEY_ID, [{
+        "kind": "command", "plaintext": command.hex(), "accepted_codes": [1],
+    }], crypt=crypt)
+
+    assert result["ok"]
+    assert len(attempts) == 4
+    assert all(struct.unpack_from("<HH", payload) == (0x0060, 0x0060) for payload in attempts)
+    assert delays == [0.15, 0.3, 0.6]
+    assert peers[0].received == [command]
+    assert server._central_client is None and server._central_link is None
+
+
+def test_connect_retry_limit_is_bounded_and_leaves_bridge_available(monkeypatch):
+    monkeypatch.setattr(hci, "resolve_adapter", lambda _: ("hci0", 0, "8A:88:1B:E0:1F:92"))
+    monkeypatch.setattr(hci.time, "sleep", lambda _: None)
+    server = hci.MultiAddressServer("hci0", ["8A:88:1B:E0:1F:92"],
+        protocol_factory=None, device_factory=None, conn_min=6, conn_max=12)
+    attempts = []
+
+    class Channel:
+        def command(self, opcode, payload=b"", **kwargs):
+            attempts.append(opcode)
+            if opcode == hci.OP_LE_CREATE_CONN:
+                server._on_event(hci.EV_LE_META, bytes([1, 0x3e]) + bytes(17))
+            return b""
+
+    server.channel = Channel()
+    result = server.manage_remote(PEER, KEY.hex(), KEY_ID, [{
+        "kind": "command", "plaintext": "0f620402", "accepted_codes": [1],
+    }], crypt=crypt)
+
+    assert not result["ok"] and result["failed_stage"] == "connect"
+    assert attempts.count(hci.OP_LE_CREATE_CONN) == hci.MANAGEMENT_CONNECT_ATTEMPTS
+    assert not any(opcode == hci.OP_DISCONNECT for opcode in attempts)
+    assert server._central_client is None and server._central_link is None
+
+
+def test_central_send_preserves_disconnect_reason_for_prewrite_retry(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(hci, "resolve_adapter", lambda _: ("hci0", 0, "8A:88:1B:E0:1F:92"))
+    server = hci.MultiAddressServer("hci0", ["8A:88:1B:E0:1F:92"],
+        protocol_factory=None, device_factory=None, conn_min=6, conn_max=12)
+    client = hci.AttManagementClient(PEER, lambda _: None)
+    client.handle = 24
+    client.fail("central disconnected: 0x3e", disconnected=True)
+    server._io_lock = threading.RLock()
+    server._central_client = client
+    server.writer = object()
+
+    with pytest.raises(ConnectionError, match="central disconnected: 0x3e"):
+        server._central_send(client, b"mtu")
