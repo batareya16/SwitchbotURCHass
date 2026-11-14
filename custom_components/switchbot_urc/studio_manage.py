@@ -557,6 +557,7 @@ async def ws_remote_recreate(hass, connection, msg):
                     remote["control_mode"] = native_mode
                     remote["native_type"] = appearance["native_type"]
                     remote["floor_lamp_test_applied"] = False
+                    remote.pop("native_appearance_readback", None)
                     remote["physical_packets"] = [packet.hex() for stage, packet in stages
                                                   if stage.startswith("bind_")]
                     if moved_from:
@@ -719,6 +720,7 @@ async def ws_native_icon_update(hass, connection, msg):
                 "icon_code": icon_code,
                 "physical_packets": [packet.hex() for packet in packets],
                 "floor_lamp_test_applied": False,
+                "native_appearance_readback": None,
             })
             remote.pop("icon_variant_backup_packet", None)
             remote.pop("washer_artwork_backup_packet", None)
@@ -766,6 +768,7 @@ def _persist_artwork_test_packet(
     else:
         remote["icon_variant_backup_packet"] = packet.hex()
     remote["floor_lamp_test_applied"] = applied
+    remote.pop("native_appearance_readback", None)
     hass.config_entries.async_update_entry(entry, options=options)
 
 

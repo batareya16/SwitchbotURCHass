@@ -139,31 +139,37 @@ def _native_profiles() -> list[dict]:
 
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/studio/physical/import",
-                                vol.Required("entry_id"): str})
+                                vol.Required("entry_id"): str,
+                                vol.Optional("remote_id"): str})
 @websocket_api.async_response
 async def ws_physical_import(hass, connection, msg):
-    """Read existing HID layouts from the account without rewriting TV bonds or commands."""
+    """Refresh installed remotes and read their native appearance from the device."""
     try:
         entry = hass.config_entries.async_get_entry(msg["entry_id"])
         if entry is None or entry.domain != DOMAIN:
             raise ValueError("Integration not found")
         settings = entry.data.get("cloud")
-        if not settings:
-            raise ValueError("Sign in to SwitchBot in the integration settings to import existing HID button layouts")
         client = hass.data[DOMAIN][entry.entry_id]["client"]
         table = c.parse_added_devices(await client.query(7))
+
         async def save_tokens(access_token, refresh_token):
             data = deepcopy(dict(entry.data))
             data["cloud"].update(access_token=access_token, refresh_token=refresh_token)
             hass.config_entries.async_update_entry(entry, data=data)
-        cloud = SwitchBotCloudClient(async_get_clientsession(hass), dict(settings), save_tokens)
-        metadata = cloud_items(await cloud.get_bindable_devices())
-        slots = [slot for slot, _, control, _ in table if control == 4]
+        cloud = (SwitchBotCloudClient(async_get_clientsession(hass), dict(settings), save_tokens)
+                 if settings else None)
+        metadata = []
+        if cloud:
+            try:
+                metadata = cloud_items(await cloud.get_bindable_devices())
+            except Exception as err:  # Native appearance is read over BLE.
+                _LOGGER.warning("Could not refresh SwitchBot cloud metadata: %s", err)
+                cloud = None
         options = deepcopy(dict(entry.options))
         remotes = options.setdefault("remotes", [])
         imported = 0
         for slot, device_type, control, device_id in table:
-            if control != 4 or any(c.id_to_bytes(item["device_id"]) == device_id for item in remotes if item.get("device_id")):
+            if not cloud or control != 4 or any(c.id_to_bytes(item["device_id"]) == device_id for item in remotes if item.get("device_id")):
                 continue
             payload = await cloud.get_button_data([slot])
             records = payload.get("items", []) if isinstance(payload, dict) else payload
@@ -181,13 +187,55 @@ async def ws_physical_import(hass, connection, msg):
             remote["physical_layout"] = physical.validate(remote, physical.hid_draft_from_cloud(native_type, record["buttonList"]))
             remotes.append(remote)
             imported += 1
-        imported += await _adopt_ir_remotes(cloud, table, remotes)
+        if cloud:
+            imported += await _adopt_ir_remotes(cloud, table, remotes)
         imported += _adopt_native_remotes(table, remotes, metadata)
+        appearance_error = await _refresh_native_appearances(client, table, remotes)
+        selected = next((item for item in remotes if remote_identity(item) == msg.get("remote_id")), None)
+        native_readback = None
+        if selected and str(selected.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
+            if not appearance_error:
+                native_readback = selected.get("native_appearance_readback")
+            if native_readback is None and not appearance_error:
+                appearance_error = "Could not match this Native remote to the device details."
         dropped = _drop_absent_remotes(table, remotes)
         hass.config_entries.async_update_entry(entry, options=options)
-        connection.send_result(msg["id"], {"imported": imported, "dropped": dropped})
+        connection.send_result(msg["id"], {"imported": imported, "dropped": dropped,
+                                           "appearance_error": appearance_error,
+                                           "native_readback": native_readback})
     except Exception as err:
         connection.send_error(msg["id"], "physical_import_failed", str(err))
+
+
+async def _refresh_native_appearances(client, table, remotes):
+    native_ids = {(slot, device_type, device_id) for slot, device_type, control, device_id in table
+                  if control == c.CTRL_NATIVE}
+    if not native_ids:
+        return None
+    try:
+        appearances = c.parse_device_appearances(await client.query(5, timeout=8, timeout_retries=0))
+        if appearances.keys() != native_ids:
+            raise ValueError("Native entries differ between the device details and the slot list")
+    except Exception as err:
+        _LOGGER.warning("Could not read Native remote appearance from WoRWS: %s", err)
+        return "Could not read the current Native appearance from the remote."
+
+    for remote in remotes:
+        device_type = c.NATIVE_DEVTYPE.get(str(remote.get("device_type", "")).upper())
+        if device_type is None or not remote.get("device_id"):
+            continue
+        remote.pop("native_appearance_readback", None)
+        device_id = c.id_to_bytes(remote["device_id"])
+        matches = [identity for identity in appearances if identity[1:] == (device_type, device_id)]
+        identity = (remote.get("index"), device_type, device_id)
+        if len(matches) == 1:
+            identity = matches[0]
+        if identity not in appearances:
+            continue
+        mode, icon = appearances[identity]
+        remote["native_appearance_readback"] = {
+            "slot": identity[0], "device_type": device_type, "mode": mode, "icon": icon,
+        }
 
 
 async def _adopt_ir_remotes(cloud, table, remotes) -> int:
@@ -425,6 +473,7 @@ async def ws_physical_apply(hass, connection, msg):
                                   "icon": layout["icon_name"],
                                   "icon_code": c.ICON[layout["icon_name"]],
                                   "floor_lamp_test_applied": False,
+                                  "native_appearance_readback": None,
                                   "icon_variant_backup_packet": None}
             else:
                 # Deleting keys leaves the physical remote and its existing HID bond in place.

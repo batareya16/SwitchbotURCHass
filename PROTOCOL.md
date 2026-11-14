@@ -142,6 +142,11 @@ with `00`, which is how the two widths are told apart.
 This table is the only reliable source for the slot index, and the slot — not the device id — is
 what identifies a row. The integration exposes it as `switchbot_urc.dump_device_table`.
 
+V48 also has a read-only details query, `0F 63 05`. ARM `0x2f70..0x3062` emits a count followed
+by 80-byte records `[slot][type][controlType][controlMode][icon][id:11][name:64]`. The response
+uses the same envelope as `0F 63 07` and can span several notifications. Studio checks the
+native rows against `0F 63 07` and uses the reported mode and icon for appearance.
+
 ## Native targets
 
 A native remote drives a real SwitchBot device by connecting **out** to it. The firmware path,

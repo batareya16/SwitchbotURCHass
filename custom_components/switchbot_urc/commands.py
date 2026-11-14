@@ -1326,6 +1326,24 @@ def parse_added_devices(raw: bytes) -> list[tuple[int, int, int, bytes]]:
     return items
 
 
+def parse_device_appearances(raw: bytes) -> dict[tuple[int, int, bytes], tuple[int, int]]:
+    """Read V48 0F6305 Native model modes and icons, keyed by slot, type and ID."""
+    if len(raw) < 9 or raw[:4] != b"\x01\x00\x00\x00":
+        raise ValueError("Unexpected device details response header")
+    length = int.from_bytes(raw[4:6], "big")
+    if length != len(raw) - 8 or length != 1 + raw[8] * 80:
+        raise ValueError("Incomplete or malformed device details response")
+    appearances = {}
+    for offset in range(9, len(raw), 80):
+        slot, device_type, control_type, mode, icon = raw[offset:offset + 5]
+        if control_type == CTRL_NATIVE:
+            identity = (slot, device_type, raw[offset + 5:offset + 16])
+            if identity in appearances:
+                raise ValueError("Duplicate Native entry in device details")
+            appearances[identity] = (mode, icon)
+    return appearances
+
+
 def build_set_state_ac(temp: int, mode: int, fan: int, power_on: bool) -> bytes:
     """AC set-state (0F 41 02): draws temperature/mode/fan on the remote's screen.
 

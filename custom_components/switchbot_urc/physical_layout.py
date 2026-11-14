@@ -54,7 +54,12 @@ def native_appearance(remote: dict) -> dict:
             continue
         mode, icon = packet[control + 1:control + 3]
         break
-    if remote.get("floor_lamp_test_applied") or legacy_floor_lamp_test:
+    readback = remote.get("native_appearance_readback")
+    if isinstance(readback, dict):
+        mode, icon = readback["mode"], readback["icon"]
+    elif readback is not None:
+        mode, icon = readback
+    elif remote.get("floor_lamp_test_applied") or legacy_floor_lamp_test:
         mode, icon = c.NATIVE_FLOOR_LAMP_CONTROL_MODE, 1
     elif mode is None:
         mode = c.native_type_metadata(stored_type or name)["control_mode"]

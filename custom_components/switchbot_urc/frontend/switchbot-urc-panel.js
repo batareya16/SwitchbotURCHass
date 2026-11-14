@@ -133,20 +133,29 @@ class SwitchBotUrcPanel extends HTMLElement {
     let adopted = 0;
     let dropped = 0;
     let importError = null;
+    let readback = null;
     try {
       const result = await this._hass.callWS({
-        type: `${DOMAIN}/studio/physical/import`, entry_id: this._entryId });
+        type: `${DOMAIN}/studio/physical/import`, entry_id: this._entryId,
+        ...(this._remoteId ? { remote_id: this._remoteId } : {}) });
       adopted = result?.imported || 0;
       dropped = result?.dropped || 0;
+      importError = result?.appearance_error;
+      readback = result?.native_readback;
     } catch (error) { importError = error?.message || String(error); }
     this._physical = null;
+    this._physicalFor = null;
     this._physicalBusy = false;
     await this._load();
     if (importError && !this._error) this._error = importError;
-    if (!importError && (adopted || dropped)) {
+    if (!importError && (adopted || dropped || readback)) {
       const parts = [];
       if (adopted) parts.push(`${adopted} picked up from the device`);
       if (dropped) parts.push(`${dropped} no longer on the device, forgotten`);
+      if (readback) {
+        const hex = (value) => `0x${value.toString(16).padStart(2, "0")}`;
+        parts.push(`Slot ${readback.slot}: ${this._nativeProfile(this._remote()?.native_type)?.title || this._remote()?.name || "Native remote"} · type ${hex(readback.device_type)}, screen mode ${hex(readback.mode)}, icon ${hex(readback.icon)}`);
+      }
       this._notify(parts.join("; "));
     }
     this._render();
@@ -1049,9 +1058,12 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   async _openPhysical() {
     clearTimeout(this._activeTimer);
+    const request = Symbol();
+    this._physicalRequest = request;
     try {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/get`,
         entry_id: this._entryId, remote_id: this._remoteId });
+      if (request !== this._physicalRequest) return;
       this._physical = result.layout;
       this._physicalBackup = result.backup;
       this._physicalSources = result.ir_sources;
@@ -1060,8 +1072,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalBaseline = structuredClone(result.layout);
       this._resetPhysicalOrigins(result.layout);
       this._physicalStatus = result.status || "";
-      this._error = null;
     } catch (error) {
+      if (request !== this._physicalRequest) return;
       // No editable layout for this remote: the Home Assistant mapping still works.
       this._physical = null;
       this._physicalBaseline = null;

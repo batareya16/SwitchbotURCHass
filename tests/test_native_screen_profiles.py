@@ -175,6 +175,29 @@ def test_floor_lamp_type_is_recovered_from_main_page_and_legacy_artwork_test():
     assert physical.native_appearance(remote)["native_type"] == "STRIP"
 
 
+def test_device_details_distinguish_floor_lamp_and_strip_with_same_target():
+    device_id = c.id_to_bytes("AA:BB:CC:DD:EE:FF")
+    def record(header):
+        return bytes.fromhex(header) + device_id + bytes(64)
+
+    body = b"\x03" + record("0272000005") + record("0372000301") + record("04f2040001")
+    raw = b"\x01\x00\x00\x00" + len(body).to_bytes(2, "big") + bytes(2) + body
+    details = c.parse_device_appearances(raw)
+    assert details == {(2, 0x72, device_id): (0, 5), (3, 0x72, device_id): (3, 1)}
+    with pytest.raises(ValueError, match="Incomplete"):
+        c.parse_device_appearances(raw[:-1])
+
+    main, *_ = c.build_native_pages(device_type_name="STRIP", remote_index=3,
+                                   name="Floor lamp", device_id=device_id.hex())
+    remote = {"device_type": "STRIP", "device_id": device_id.hex(),
+              "physical_packets": [main.hex()], "native_type": "STRIP",
+              "native_appearance_readback": {"slot": 3, "device_type": 0x72,
+                                             "mode": 3, "icon": 1}}
+    assert physical.draft_for(remote)["native_type"] == "FLOOR_LAMP"
+    remote["native_appearance_readback"]["mode"] = 0
+    assert physical.draft_for(remote)["native_type"] == "STRIP"
+
+
 def test_picker_omits_extended_device_types_and_local_builder_rejects_them():
     options = {item["value"]: item for item in c.native_type_picker_options()}
     assert options["FLOOR_LAMP"]["artwork_id"] == 0x15
