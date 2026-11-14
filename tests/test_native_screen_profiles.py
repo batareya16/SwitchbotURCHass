@@ -243,6 +243,31 @@ def test_device_details_distinguish_floor_lamp_and_strip_with_same_target():
     assert (edited["control_mode"], c.ICON[edited["icon_name"]]) == (0, 3)
 
 
+def test_native_appearance_match_normalizes_saved_slot_and_resolves_duplicate_target_ids():
+    device_id = c.id_to_bytes("AA:BB:CC:DD:EE:FF")
+    appearances = {
+        (2, 0x72, device_id): (0, 5),
+        (3, 0x72, device_id): (0, 3),
+    }
+    remote = {"index": "3", "device_type": "STRIP", "device_id": device_id.hex()}
+
+    assert physical.match_native_appearance(remote, appearances, 0x72) == (
+        3, 0x72, device_id
+    )
+    remote["index"] = "8"
+    assert physical.match_native_appearance(remote, appearances, 0x72) is None
+
+
+def test_native_appearance_match_uses_unique_id_when_cached_slot_is_stale():
+    device_id = c.id_to_bytes("AA:BB:CC:DD:EE:FF")
+    appearances = {(3, 0x72, device_id): (0, 3)}
+    remote = {"index": 2, "device_type": "STRIP", "device_id": device_id.hex()}
+
+    assert physical.match_native_appearance(remote, appearances, 0x72) == (
+        3, 0x72, device_id
+    )
+
+
 def test_picker_omits_extended_device_types_and_local_builder_rejects_them():
     options = {item["value"]: item for item in c.native_type_picker_options()}
     assert options["FLOOR_LAMP"]["artwork_id"] == 0x15

@@ -225,12 +225,8 @@ async def _refresh_native_appearances(client, table, remotes):
         if device_type is None or not remote.get("device_id"):
             continue
         remote.pop("native_appearance_readback", None)
-        device_id = c.id_to_bytes(remote["device_id"])
-        matches = [identity for identity in appearances if identity[1:] == (device_type, device_id)]
-        identity = (remote.get("index"), device_type, device_id)
-        if len(matches) == 1:
-            identity = matches[0]
-        if identity not in appearances:
+        identity = physical.match_native_appearance(remote, appearances, device_type)
+        if identity is None:
             continue
         mode, icon = appearances[identity]
         remote["native_appearance_readback"] = {

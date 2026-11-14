@@ -81,6 +81,23 @@ def native_appearance(remote: dict) -> dict:
             "control_mode": mode, "icon_code": icon}
 
 
+def match_native_appearance(remote: dict, appearances: dict, device_type: int):
+    """Match a saved Native tile to device readback, tolerating JSON string slots."""
+    if not remote.get("device_id"):
+        return None
+    try:
+        device_id = c.id_to_bytes(remote["device_id"])
+        slot = int(remote["index"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    identity = (slot, device_type, device_id)
+    if identity in appearances:
+        return identity
+    matches = [key for key in appearances if key[1:] == (device_type, device_id)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def remote_artwork_id(remote: dict) -> int | None:
     """Resolve the illustration from the cached wire fields for Native, HID or IR."""
     if str(remote.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
