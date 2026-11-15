@@ -191,6 +191,7 @@ async def ws_physical_import(hass, connection, msg):
             imported += await _adopt_ir_remotes(cloud, table, remotes)
         imported += _adopt_native_remotes(table, remotes, metadata)
         appearance_error = await _refresh_native_appearances(client, table, remotes)
+        dropped = _drop_absent_remotes(table, remotes)
         selected = next((item for item in remotes if remote_identity(item) == msg.get("remote_id")), None)
         native_readback = None
         if selected and str(selected.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
@@ -198,7 +199,14 @@ async def ws_physical_import(hass, connection, msg):
                 native_readback = selected.get("native_appearance_readback")
             if native_readback is None and not appearance_error:
                 appearance_error = "Could not match this Native remote to the device details."
-        dropped = _drop_absent_remotes(table, remotes)
+                _LOGGER.warning(
+                    "Native appearance match failed: remote_id=%s slot=%s type=%s "
+                    "device_id=%s physical_device_id=%s native_rows=%s",
+                    remote_identity(selected), selected.get("index"), selected.get("device_type"),
+                    selected.get("device_id"), selected.get("physical_device_id"),
+                    [(slot, hex(kind), identifier.hex())
+                     for slot, kind, control, identifier in table if control == c.CTRL_NATIVE],
+                )
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], {"imported": imported, "dropped": dropped,
                                            "appearance_error": appearance_error,
@@ -228,9 +236,15 @@ async def _refresh_native_appearances(client, table, remotes):
         identity = physical.match_native_appearance(remote, appearances, device_type)
         if identity is None:
             continue
+        remote["index"] = identity[0]
+        if device_type != identity[1]:
+            type_name = next((name for name, code in c.NATIVE_DEVTYPE.items()
+                              if code == identity[1]), None)
+            if type_name is not None:
+                remote["device_type"] = type_name
         mode, icon = appearances[identity]
         remote["native_appearance_readback"] = {
-            "slot": identity[0], "device_type": device_type, "mode": mode, "icon": icon,
+            "slot": identity[0], "device_type": identity[1], "mode": mode, "icon": icon,
         }
 
 
@@ -591,7 +605,8 @@ def _adopt_native_remotes(table, remotes, catalogue) -> int:
     bridge event metadata is invented for them.
     """
     known = {
-        c.id_to_bytes(item["device_id"]) for item in remotes if item.get("device_id")
+        c.id_to_bytes(item.get("physical_device_id") or item["device_id"])
+        for item in remotes if item.get("physical_device_id") or item.get("device_id")
     }
     adopted = 0
     for slot, device_type, control, device_id in table:
@@ -630,7 +645,7 @@ def _drop_absent_remotes(table, remotes) -> int:
     present = {row[3] for row in table}
     kept, dropped = [], 0
     for item in remotes:
-        identity = item.get("device_id")
+        identity = item.get("physical_device_id") or item.get("device_id")
         if not identity:
             kept.append(item)
             continue

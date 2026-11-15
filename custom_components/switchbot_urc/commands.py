@@ -202,6 +202,21 @@ FAN_VERTICAL_PAGE = _page((0, 136), (1, 137), (2, 138), (3, 139))
 FAN_HORIZONTAL_PAGE = _page((0, 140), (1, 141), (2, 142), (3, 143))
 FAN_LIGHT_PAGE = _page((0, 133), (1, 134), (2, 135))
 
+# DSP 20041480 recognizes these functions as submenu links. The Main position
+# selects the page, and the Native list sender addresses keys as page*20+row.
+NATIVE_MENU_FUNCTIONS = {1: 119, 2: 123, 3: 124, 4: 125}
+
+
+def native_menu_function(profile_name: str, page_index: int) -> int:
+    """Keep a stock submenu glyph when present, otherwise use a built-in menu link."""
+    if page_index not in NATIVE_MENU_FUNCTIONS:
+        raise ValueError("Native menu pages must be A, B, C or D")
+    main = NATIVE_PROFILE_LAYOUTS[profile_name]["pages"][0]
+    main = main() if callable(main) else main
+    link = next((key for key in main if key["keyIndex"] == page_index - 1
+                 and not key.get("cmd")), None)
+    return int(link["keyFun"]) if link else NATIVE_MENU_FUNCTIONS[page_index]
+
 # Native layouts recovered from BleKeyHandlerFactory and its handlers in urc-bundle.js.
 # Page numbers match Main/A/B/C/D = 0/1/2/3/4.  A false third tuple item is a submenu link.
 NATIVE_PROFILE_LAYOUTS: dict[str, dict] = {
@@ -486,17 +501,14 @@ def native_profile_metadata(profile_name: str) -> dict:
 
     main_keys = describe(profile["pages"][0])
     subpages = []
-    for raw_index, raw_keys in profile["pages"].items():
-        page_index = int(raw_index)
-        if not page_index:
-            continue
+    for page_index in NATIVE_MENU_FUNCTIONS:
+        raw_keys = profile["pages"].get(page_index, [])
         link_index = page_index - 1
-        link = next((item for item in main_keys
-                     if item["index"] == link_index and not item["actionable"]), None)
         subpages.append({
             "index": page_index,
-            "link_index": link_index if link else None,
-            "link_position": link["position"] if link else "",
+            "link_index": link_index,
+            "link_position": positions[link_index],
+            "link_function": native_menu_function(profile_name, page_index),
             "keys": describe(raw_keys),
         })
     return {
@@ -730,14 +742,7 @@ def custom_native_layout(
         )
     page_links = {}
     for page_index in enabled_pages:
-        if page_index not in profile["pages"]:
-            raise ValueError(f"{template} does not support page {page_index}")
-        key_index = page_index - 1
-        link = next((item for item in profile_main
-                     if int(item.get("keyIndex", -1)) == key_index and not item.get("cmd")), None)
-        if link is None:
-            raise ValueError(f"{template} has no screen key for page {page_index}")
-        page_links[page_index] = int(link.get("keyFun", 0))
+        page_links[page_index] = native_menu_function(template, page_index)
     pages: dict[int, list[dict]] = {
         0: [
             _button(TAG[position], custom_action_function(action))

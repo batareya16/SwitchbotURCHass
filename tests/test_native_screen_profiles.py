@@ -27,20 +27,14 @@ def test_native_builder_keeps_selected_profile_and_uses_its_page_link():
                and record[3] == 0 for record in main_records)
 
 
-def test_native_profile_switch_keeps_draft_when_page_is_unsupported():
+def test_native_profile_switch_preserves_all_custom_menu_pages():
     remote = {"device_type": "FAN", "remote_id": "12345678",
               "device_id": "AA:BB:CC:DD:EE:FF"}
     draft = physical.draft_for(remote)
     draft["template"] = "BULB"
-    before = physical.native_layout(physical.validate(remote, physical.draft_for(remote)))
-
-    try:
-        physical.validate(remote, draft)
-    except ValueError as err:
-        assert "does not support page" in str(err)
-    else:
-        raise AssertionError("incompatible pages should be rejected")
-
+    before = physical.draft_for(remote)
+    edited = physical.validate(remote, draft)
+    assert edited["pages"] == before["pages"]
     assert draft["template"] == "BULB"
     assert len(draft["pages"]) == 5
     assert before["template"] == "FAN"
@@ -165,8 +159,50 @@ def test_vacuum_softkeys_round_trip_with_bridge_events_and_custom_glyphs():
 def test_all_native_profiles_offer_abcd_without_creating_subpages():
     for template in c.NATIVE_PROFILE_LAYOUTS:
         assert {0, 1, 2, 3} <= set(c.native_profile_metadata(template)["main_positions"])
-    with pytest.raises(ValueError, match="does not support page"):
-        c.custom_native_layout({"ON": "ON"}, {1: ["ON"]}, template="VACUUM")
+    assert set(c.custom_native_layout({"ON": "ON"}, {}, template="VACUUM")) == {0}
+
+
+def test_vacuum_can_bind_four_custom_menus_with_distinct_page_events():
+    remote = {"device_type": "VACUUM_S1_MINI", "remote_id": "12345678",
+              "device_id": "AA:BB:CC:DD:EE:FF"}
+    draft = physical.draft_for(remote)
+    for page in range(1, 5):
+        draft["pages"].append({"index": page, "title": f"Menu {page}", "buttons": [
+            {"index": 0, "transport": "native", "function": 5},
+            {"index": 1, "transport": "native", "function": 6},
+        ]})
+    layout = physical.native_layout(physical.validate(remote, draft))
+    packets = c.build_custom_native_pages(
+        remote_index=3, name="Vacuum", device_id=remote["device_id"],
+        icon_name=layout["icon_name"], event_remote_id=remote["remote_id"],
+        main_buttons=layout["main_buttons"],
+        page_buttons={int(page): values for page, values in layout["pages"].items()},
+        template=layout["template"],
+    )
+    assert [page for page, packet in packets] == [0, 1, 2, 3, 4]
+    main = packets[0][1]
+    records = {main[offset]: main[offset:offset + 36]
+               for offset in range(90, len(main), 36)}
+    for page, packet in packets[1:]:
+        link = records[page - 1]
+        assert int.from_bytes(link[1:3], "big") == c.NATIVE_MENU_FUNCTIONS[page]
+        assert link[4:6] == c.s16(c.NATIVE_MENU_FUNCTIONS[page])
+        assert packet[88] == page
+        assert packet[94:107] == (c.BRIDGE_EVENT_MAGIC_V3 + bytes([0xFE])
+                                 + bytes.fromhex("12345678") + bytes([3, page, 0, 0, 5]))
+    assert c.native_profile_metadata("VACUUM")["pages"] == [0, 1, 2, 3, 4]
+
+
+def test_custom_menu_cannot_silently_drop_an_empty_page_or_overwrite_its_key():
+    remote = {"device_type": "VACUUM_S1_MINI", "device_id": "AA:BB:CC:DD:EE:FF"}
+    draft = physical.draft_for(remote)
+    draft["pages"].append({"index": 1, "buttons": []})
+    with pytest.raises(ValueError, match="Page 1 must have"):
+        physical.validate(remote, draft)
+    draft["pages"][1]["buttons"].append({"index": 0, "transport": "native", "function": 5})
+    draft["pages"][0]["buttons"].append({"index": 0, "transport": "native", "function": 6})
+    with pytest.raises(ValueError, match="reserved for page links"):
+        physical.validate(remote, draft)
 
 
 def test_every_native_type_choice_has_firmware_artwork_mapping():

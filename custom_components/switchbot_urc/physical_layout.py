@@ -82,20 +82,26 @@ def native_appearance(remote: dict) -> dict:
 
 
 def match_native_appearance(remote: dict, appearances: dict, device_type: int):
-    """Match a saved Native tile to device readback, tolerating JSON string slots."""
-    if not remote.get("device_id"):
+    """Find the physical row by target ID, using the saved slot for shared targets."""
+    address = remote.get("physical_device_id") or remote.get("device_id")
+    if not address:
         return None
     try:
-        device_id = c.id_to_bytes(remote["device_id"])
-        slot = int(remote["index"])
-    except (KeyError, TypeError, ValueError):
+        device_id = c.id_to_bytes(str(address))
+    except (TypeError, ValueError):
         return None
-
-    identity = (slot, device_type, device_id)
-    if identity in appearances:
-        return identity
-    matches = [key for key in appearances if key[1:] == (device_type, device_id)]
-    return matches[0] if len(matches) == 1 else None
+    try:
+        slot = int(remote.get("index"))
+    except (TypeError, ValueError):
+        slot = None
+    matches = [key for key in appearances if key[2] == device_id]
+    if len(matches) == 1:
+        return matches[0]
+    slotted = [key for key in matches if key[0] == slot]
+    if len(slotted) == 1:
+        return slotted[0]
+    typed = [key for key in matches if key[1] == device_type]
+    return typed[0] if len(typed) == 1 else None
 
 
 def remote_artwork_id(remote: dict) -> int | None:
@@ -376,7 +382,6 @@ def validate(remote: dict, draft: dict) -> dict:
         raise ValueError("The Main page is required")
     if expected == "native":
         profile = c.NATIVE_PROFILE_LAYOUTS[result["template"]]
-        supported_pages = {int(page) for page in profile["pages"]}
         main_keys = profile["pages"][0]
         main_keys = main_keys() if callable(main_keys) else main_keys
         supported_positions = {0, 1, 2, 3} | {int(key["keyIndex"]) for key in main_keys}
@@ -390,20 +395,6 @@ def validate(remote: dict, draft: dict) -> dict:
                 f"{result['template']} has no Main-page position for {labels}. "
                 "Move those buttons to an available position; the saved layout is still intact."
             )
-        unsupported = sorted(seen_pages - supported_pages)
-        if unsupported:
-            raise ValueError(
-                f"{result['template']} does not support page(s) {', '.join(map(str, unsupported))}. "
-                "The saved layout is still intact; remove those pages or choose a profile that supports them."
-            )
-        for page_number in seen_pages - {0}:
-            nav_index = page_number - 1
-            if not any(int(key.get("keyIndex", -1)) == nav_index and not key.get("cmd")
-                       for key in main_keys):
-                raise ValueError(
-                    f"{result['template']} has no screen key for page {page_number}; "
-                    "the saved layout is still intact."
-                )
     if expected in ("native", "hid", "ir"):
         main = next(page for page in pages if page["index"] == 0)
         reserved = {number - 1 for number in seen_pages if number}

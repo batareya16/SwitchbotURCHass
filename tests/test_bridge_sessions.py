@@ -113,6 +113,95 @@ class TestFramesThatAreNotPresses:
         assert seen["buttons"] == []
 
 
+class TestReconnectSessions:
+    def make_device(self, bridge, history, address="8A:88:1B:E0:1F:91"):
+        seen = {"notifies": [], "buttons": []}
+        dev = bridge.SwitchBotDevice(
+            KEY, seen["notifies"].append,
+            lambda *event: seen["buttons"].append(event),
+            session_history=history, target_address=lambda: address,
+        )
+        return dev, seen
+
+    def test_queued_press_is_recovered_before_new_handshake(self, bridge):
+        history = bridge.NativeSessionHistory()
+        old, _ = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        queued = frame(bridge, old, old._iv)
+        new, seen = self.make_device(bridge, history)
+        new.on_write(queued)
+        assert len(seen["buttons"]) == 1
+        ack = seen["notifies"][-1]
+        assert ack[1:4] == queued[1:4]
+        assert bridge.aes_ctr(KEY, old._iv, ack[4:]) == b"\x01"
+
+    def test_delivered_frame_is_only_acknowledged_after_reconnect(self, bridge):
+        history = bridge.NativeSessionHistory()
+        old, original = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        queued = frame(bridge, old, old._iv)
+        old.on_write(queued)
+        assert len(original["buttons"]) == 1
+        new, seen = self.make_device(bridge, history)
+        new.on_write(HANDSHAKE)
+        new.on_write(queued)
+        new.on_write(queued)
+        assert seen["buttons"] == []
+        assert len(seen["notifies"]) == 3
+
+    def test_target_addresses_do_not_share_sessions(self, bridge):
+        history = bridge.NativeSessionHistory()
+        old, _ = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        new, seen = self.make_device(bridge, history, "8A:88:1B:E0:1F:92")
+        new.on_write(frame(bridge, old, old._iv))
+        assert seen == {"notifies": [], "buttons": []}
+
+    def test_same_button_in_a_new_session_is_a_new_press(self, bridge):
+        history = bridge.NativeSessionHistory()
+        old, _ = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        old.on_write(frame(bridge, old, old._iv))
+        new, seen = self.make_device(bridge, history)
+        new.on_write(HANDSHAKE)
+        new.on_write(frame(bridge, new, new._iv))
+        assert len(seen["buttons"]) == 1
+
+    def test_unknown_session_and_wrong_key_id_remain_unacknowledged(self, bridge):
+        history = bridge.NativeSessionHistory()
+        old, _ = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        new, seen = self.make_device(bridge, history)
+        queued = frame(bridge, old, old._iv)
+        new.on_write(queued[:1] + b"\x02" + queued[2:])
+        new.on_write(bytes.fromhex("5701b15078cea310c39637db75cd02c0"))
+        assert seen == {"notifies": [], "buttons": []}
+
+    def test_expired_sessions_cannot_recover_a_press(self, bridge, monkeypatch):
+        now = [100.0]
+        monkeypatch.setattr(bridge.time, "monotonic", lambda: now[0])
+        history = bridge.NativeSessionHistory()
+        old, _ = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        queued = frame(bridge, old, old._iv)
+        now[0] += 61
+        new, seen = self.make_device(bridge, history)
+        new.on_write(queued)
+        assert seen == {"notifies": [], "buttons": []}
+
+    def test_history_and_frame_limits_are_bounded(self, bridge):
+        history = bridge.NativeSessionHistory()
+        for target in range(40):
+            for session in range(40):
+                history.issue(str(target), session.to_bytes(16, "big"), 1)
+        assert len(history._targets) == 32
+        assert all(len(sessions) == 32 for sessions in history._targets.values())
+        iv = (39).to_bytes(16, "big")
+        for command in range(65):
+            history.remember("39", iv, bytes([command]))
+        assert iv not in history.candidates("39", 1)
+
+
 class TestTheSessionLabelIsOnlyAHint:
     """The remote has been seen labelling a frame with a session it never asked for.
 

@@ -550,7 +550,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!owner) return "";
     const profile = this._nativeProfile(this._physical.native_type || this._physical.template);
     const defaultFunction = profile?.main_keys?.find((key) =>
-      key.index === page.index - 1 && !key.actionable)?.function;
+      key.index === page.index - 1 && !key.actionable)?.function
+      ?? profile?.subpages?.find((item) => item.index === page.index)?.link_function;
     return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction);
   }
 
@@ -863,7 +864,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${Array.from("ABCD", (tag, index) => {
           const linked = pages.find((item) => item.index === index + 1);
           const linkFunction = profile?.main_keys?.find((item) =>
-            item.index === index && !item.actionable)?.function;
+            item.index === index && !item.actionable)?.function
+            ?? profile?.subpages?.find((item) => item.index === index + 1)?.link_function;
           const linkGlyph = this._physical?.pages.find((item) => item.index === linked?.index)?.link_glyph;
           const glyphSrc = this._nativeGlyphSrc(linked
             ? { button_function: linkFunction, button_glyph: linkGlyph }
@@ -1820,6 +1822,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const usedPages = new Set(pages.filter((page) => page.index).map((page) => page.index));
     const actionableMain = new Set((profile.main_keys || [])
       .filter((slot) => slot.actionable).map((slot) => slot.index));
+    for (let index = 0; index < 4; index++) actionableMain.add(index);
     const availableMain = (profile.main_positions || []).filter((index) =>
       actionableMain.has(index) &&
       !main.some((key) => key.index === index) && !reserved.has(index));
