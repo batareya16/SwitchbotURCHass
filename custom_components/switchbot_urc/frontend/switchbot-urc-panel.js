@@ -566,7 +566,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!menu) return "";
     const row = button ? this._draftKey(button)?.key : null;
     const field = (label, title, placeholder, rowIndex) => `<form class="menu-name-form"
-      data-name-key="${escapeHtml(`${this._entryId}:${this._remoteId}:${page.index}:${rowIndex ?? "menu"}`)}"
       data-menu-name data-page="${page.index}" ${rowIndex == null ? "" : `data-row="${rowIndex}"`}>
       <label>${label}<input name="title" value="${escapeHtml(title || "")}"
         placeholder="${escapeHtml(placeholder)}" maxlength="60"></label>
@@ -586,7 +585,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <h2>${escapeHtml(page.name)}</h2><p class="small">${page.buttons.length} row${page.buttons.length === 1 ? "" : "s"}</p></div></div>
       <div class="page-tools">
         <button class="primary compact" id="addKeyToPage" ${this._freeIndexOnPage(page.index) === null || this._physicalBusy ? "disabled" : ""}>＋ Add row</button>
-        <button class="secondary compact" data-physical-apply ${!this._physicalChanges() || this._physicalBusy ? "disabled" : ""}>${this._physicalBusy ? "Writing…" : "Save page to remote"}</button>
+        ${this._renderSaveButton()}
         ${this._physicalChanges() ? '<button class="secondary compact" id="physicalDiscard">Discard changes</button>' : ""}
         ${this._physicalBackup ? '<button class="secondary compact" id="physicalRestore">Load previous layout</button>' : ""}
         ${freePages.length ? `<label class="page-move">Move to<select id="moveCurrentPage"><option value="">Choose key…</option>${freePages.map((index) => `<option value="${index}">Key ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : ""}
@@ -958,27 +957,12 @@ class SwitchBotUrcPanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const active = this.shadowRoot.activeElement;
-    const nameForm = active?.matches('input[name="title"]')
-      ? active.closest("[data-menu-name]") : null;
-    const editingName = nameForm ? {
-      key: nameForm.dataset.nameKey, value: active.value,
-      start: active.selectionStart, end: active.selectionEnd,
-      direction: active.selectionDirection,
-    } : null;
+    // Keep the actual input mounted while typing, including during background updates.
+    if (active?.matches('[data-menu-name] input[name="title"]')) return;
     // A throw while building the markup used to leave an empty shadow root and a blank page,
     // which hides the very message that would explain it. Render failures are shown instead.
     try {
       this._renderUnsafe();
-      if (editingName) {
-        const form = [...this.shadowRoot.querySelectorAll("[data-menu-name]")]
-          .find((item) => item.dataset.nameKey === editingName.key);
-        const input = form?.elements.title;
-        if (input) {
-          input.value = editingName.value;
-          input.focus({ preventScroll: true });
-          input.setSelectionRange(editingName.start, editingName.end, editingName.direction);
-        }
-      }
     } catch (error) {
       console.error("SwitchBot URC panel failed to render", error);
       this.shadowRoot.innerHTML = `<style>${this._styles()}</style><main><div class="error">
@@ -2081,12 +2065,11 @@ class SwitchBotUrcPanel extends HTMLElement {
         : menu?.buttons.find((item) => item.index === Number(form.dataset.row));
       if (!owner) return;
       owner.title = input.value;
-      root.querySelectorAll("[data-physical-apply]").forEach((save) => {
-        save.disabled = this._physicalBusy || !this._physicalChanges();
-      });
+      this._updateSaveButton();
     }));
     root.querySelectorAll("[data-menu-name]").forEach((form) => form.addEventListener("submit", (event) => {
       event.preventDefault();
+      this._save();
     }));
     root.querySelectorAll("[data-glyph-field]").forEach((button) => button.addEventListener("click", () => {
       const { glyphField, glyphCode } = button.dataset;
@@ -2357,13 +2340,31 @@ class SwitchBotUrcPanel extends HTMLElement {
           this._draftActions.length > 1 ? ", all of them on one press" : ""}</span></div><div id="visualActionEditor"></div><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false">${escapeHtml(JSON.stringify(this._draftActions, null, 2))}</textarea><div class="json-help">This uses standard Home Assistant script action syntax.</div></details></div>` : ""}
       </div>
       `}
-      <div class="save-row"><span id="saveStatus"></span><button class="primary" id="saveButton" ${
-        this._mode === "actions" && !this._jsonValid ? "disabled" : ""}>${
-        this._physicalChanges() ? "Save and write to remote" : "Save"}</button></div>`;
+      ${button.button_page && this._physical ? "" : `<div class="save-row">${this._renderSaveButton()}</div>`}`;
+  }
+
+  _canSave() {
+    if (this._physicalBusy || this._saving) return false;
+    const validMapping = this._mode !== "actions" || (this._jsonValid && this._draftActions.length > 0);
+    return (!this._dirty || validMapping) && Boolean(this._physicalChanges() || this._dirty);
+  }
+
+  _renderSaveButton() {
+    return `<button class="primary compact" id="saveButton" ${this._canSave() ? "" : "disabled"}>${this._saving ? "Saving…" : "Save"}</button>`;
+  }
+
+  _updateSaveButton() {
+    const save = this.shadowRoot.getElementById("saveButton");
+    if (save) save.disabled = !this._canSave();
   }
 
   _wireEvents() {
     const root = this.shadowRoot;
+    root.querySelector("main")?.addEventListener("click", (event) => {
+      const active = root.activeElement;
+      if (active?.matches('[data-menu-name] input[name="title"]')
+          && !active.closest("form").contains(event.target)) active.blur();
+    }, true);
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote",
                       "recreateRemote", "nativeIconVariantTest", "nativeIconVariantRestore", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
@@ -2642,15 +2643,12 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._dirty = true;
         this._jsonValid = true;
         event.target.classList.remove("invalid");
-        const save = root.getElementById("saveButton");
-        if (save) save.disabled = this._mode === "actions" && parsed.length === 0;
       } catch (_error) {
         this._dirty = true;
         this._jsonValid = false;
         event.target.classList.add("invalid");
-        const save = root.getElementById("saveButton");
-        if (save) save.disabled = true;
       }
+      this._updateSaveButton();
     });
   }
 
@@ -2680,8 +2678,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._jsonValid = true;
       const textarea = this.shadowRoot.getElementById("actionsJson");
       if (textarea) textarea.value = JSON.stringify(this._draftActions, null, 2);
-      const save = this.shadowRoot.getElementById("saveButton");
-      if (save) save.disabled = this._draftActions.length === 0;
+      this._updateSaveButton();
     });
     this._actionSelectorEl = selector;
     host.innerHTML = "";
@@ -2751,36 +2748,28 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   async _save() {
-    const root = this.shadowRoot;
-    const status = root.getElementById("saveStatus");
-    const save = root.getElementById("saveButton");
+    if (!this._canSave()) return;
     const button = this._button();
-    if (!button) return;
-    if (this._mode === "actions" && !this._jsonValid) {
-      if (status) status.textContent = "Fix the invalid JSON before saving";
-      return;
-    }
     const layoutChanges = this._physicalChanges();
+    const saveMapping = button && this._dirty;
     const keepPage = this._pageIndex;
-    const keepButton = layoutChanges
+    const keepButton = layoutChanges && button
       ? `p${button.button_page}_k${button.button_index}` : this._buttonId;
     const mode = this._mode;
     const actions = structuredClone(this._draftActions);
     const entryId = this._entryId;
     const remoteId = this._remoteId;
+    this.shadowRoot.activeElement?.blur();
+    this._saving = true;
+    this._error = null;
+    this._render();
     try {
-      if (save) save.disabled = true;
-      if (status) status.textContent = "Saving…";
-
       // New rows have no HA button identity until the physical page has been saved.
       if (layoutChanges) {
-        if (status) status.textContent = "Writing the layout to the remote…";
         await this._applyPhysical();
       }
 
-      // The Home Assistant mapping. An empty custom-action list is not a valid mapping, so it
-      // is skipped rather than rejected: the user may only have changed the layout or a name.
-      if (!(mode === "actions" && !actions.length)) {
+      if (saveMapping) {
         const updated = await this._hass.callWS({
           type: `${DOMAIN}/studio/save_button_action`,
           entry_id: entryId,
@@ -2803,13 +2792,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._normalizeSelection();
       this._render();
     } catch (error) {
-      this._physicalBusy = false;
       this._error = error?.message || String(error);
       this._mode = mode;
       this._draftActions = actions;
-      this._dirty = true;
-      if (status) status.textContent = this._error;
-      if (save) save.disabled = false;
+      this._dirty = Boolean(saveMapping);
+    } finally {
+      this._saving = false;
       this._render();
     }
   }

@@ -418,14 +418,16 @@ async def ws_physical_apply(hass, connection, msg):
             await client.ensure_strict_sequence_support()
             stage = "read device table"
             table = c.parse_added_devices(await client.query(7))
-            expected_id = c.id_to_bytes(remote["device_id"])
+            bound_address = remote.get("physical_device_id") if draft["kind"] == "native" else None
+            bound_address = bound_address or remote["device_id"]
+            expected_id = c.id_to_bytes(bound_address)
             matches = [item for item in table if item[3] == expected_id]
             if len(matches) > 1:
                 # Several native profiles can be installed against one target address, and the
                 # firmware stores the same eleven-byte id for every one of them, so the id no
                 # longer picks out a row. Fall back to the slot recorded when this remote was
                 # installed; only give up when that does not resolve it either.
-                narrowed = [item for item in matches if item[0] == remote.get("index")]
+                narrowed = [item for item in matches if str(item[0]) == str(remote.get("index"))]
                 if len(narrowed) == 1:
                     matches = narrowed
             recovering_native = not matches and draft["kind"] == "native" and remote.get("physical_backup") and remote.get("physical_pending")
@@ -456,7 +458,7 @@ async def ws_physical_apply(hass, connection, msg):
                 new_slot = len(table) if recovering_native else slot
                 bind = c.build_custom_native_bind_sequence(
                     key_id=1, target_key=key, remote_index=new_slot, name=remote["name"],
-                    device_id=remote["device_id"], icon_name=layout["icon_name"],
+                    device_id=bound_address, icon_name=layout["icon_name"],
                     event_remote_id=identity, main_buttons=layout["main_buttons"],
                     page_buttons={int(p): values for p, values in layout["pages"].items()},
                     template=layout["template"],

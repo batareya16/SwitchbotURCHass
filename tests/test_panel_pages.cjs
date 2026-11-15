@@ -20,6 +20,7 @@ function panel() {
   instance._pageIndex = 1;
   instance._buttonId = 'p1_k0';
   instance._mode = 'actions';
+  instance._dirty = true;
   instance._draftActions = [{action: 'light.turn_on', target: {entity_id: 'light.desk'}}];
   instance._jsonValid = true;
   instance._physical = {kind: 'native', template: 'VACUUM', pages: [
@@ -94,7 +95,7 @@ test('menu settings and row settings have distinct names and shared page control
   instance._renderMenuIcon = () => '<div>Menu icon</div>';
   instance._pageEditing = true;
   let html = instance._renderPageEditor(instance._page(), instance._button(), instance._remote());
-  for (const label of ['Add row', 'Save page to remote', 'Delete menu', 'Menu name', 'Menu icon']) {
+  for (const label of ['Add row', 'id="saveButton"', '>Save</button>', 'Delete menu', 'Menu name', 'Menu icon']) {
     assert.ok(html.includes(label));
   }
   assert.ok(!html.includes('Row name'));
@@ -105,6 +106,36 @@ test('menu settings and row settings have distinct names and shared page control
   assert.ok(html.includes('Row command and HA actions'));
   assert.ok(!html.includes('Menu name'));
   assert.ok(!html.includes('Menu icon'));
+});
+
+test('ordinary Save writes a one-row menu with no selected row or HA edits', async () => {
+  const instance = panel();
+  instance._pageEditing = true;
+  instance._buttonId = null;
+  instance._dirty = false;
+  const requests = [];
+  instance._hass = {async callWS(request) {
+    requests.push(request);
+    return {layout: instance._physical, status: 'Saved'};
+  }};
+  await instance._save();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].type, 'switchbot_urc/studio/physical/apply');
+  assert.equal(requests[0].layout.pages[1].buttons.length, 1);
+});
+
+test('a background render leaves the focused Row name input mounted', () => {
+  const instance = panel();
+  const input = {matches: (selector) => selector === '[data-menu-name] input[name="title"]'};
+  instance.shadowRoot.activeElement = input;
+  let renders = 0;
+  instance._renderUnsafe = () => renders++;
+  Panel.prototype._render.call(instance);
+  assert.equal(renders, 0);
+  assert.equal(instance.shadowRoot.activeElement, input);
+  instance.shadowRoot.activeElement = null;
+  Panel.prototype._render.call(instance);
+  assert.equal(renders, 1);
 });
 
 test('adding the first row selects its editor and gives it a new physical identity', () => {
