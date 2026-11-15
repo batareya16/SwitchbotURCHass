@@ -379,7 +379,7 @@ def validate(remote: dict, draft: dict) -> dict:
         supported_pages = {int(page) for page in profile["pages"]}
         main_keys = profile["pages"][0]
         main_keys = main_keys() if callable(main_keys) else main_keys
-        supported_positions = {int(key["keyIndex"]) for key in main_keys}
+        supported_positions = {0, 1, 2, 3} | {int(key["keyIndex"]) for key in main_keys}
         main = next((page for page in pages if page["index"] == 0), {"buttons": []})
         positions = {index: name for name, index in c.TAG.items()}
         unsupported_positions = sorted({key["index"] for key in main["buttons"]} - supported_positions)

@@ -505,7 +505,8 @@ def native_profile_metadata(profile_name: str) -> dict:
         "control_mode": int(profile.get("control_mode", 0)),
         "artwork_id": NATIVE_PROFILE_ARTWORK.get(profile_name, 0x13 if profile_name == "TRV" else 0),
         "pages": [0, *(item["index"] for item in subpages)],
-        "main_positions": sorted({item["index"] for item in main_keys}),
+        # Native DSP constructs A-D from nonempty key records for every product.
+        "main_positions": sorted({0, 1, 2, 3} | {item["index"] for item in main_keys}),
         "main_keys": main_keys,
         "subpages": subpages,
     }
@@ -719,6 +720,7 @@ def custom_native_layout(
     profile_main = profile_main() if callable(profile_main) else profile_main
     profile_positions = {name for name, index in TAG.items()
                          if any(int(item.get("keyIndex", -1)) == index for item in profile_main)}
+    profile_positions.update("ABCD")
     page_positions = {"ABCD"[page - 1] for page in enabled_pages if 1 <= page <= 4}
     hidden_positions = sorted(set(normalized_main) - profile_positions - page_positions)
     if hidden_positions and not legacy_layout:

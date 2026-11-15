@@ -162,7 +162,10 @@ read from `ARM.bin` V48:
    After discovery it writes the queued data.
 5. The GATT UUIDs above are present in `ARM.bin` and match the bridge exactly.
 
-Key index is bounded by `cmp r6,#0x64` in `11d9c`: up to 100 keys per native profile.
+The `cmp r6,#0x64` in `11d9c` bounds the remote index (`r0`, copied to `r6`),
+not the key index (`r1`, copied to `r5`). The DSP key-record lookup `2002238c`
+separately accepts key indexes `0..99`. The earlier attribution of the key bound
+to the ARM comparison was incorrect.
 
 The command a native key sends is plain target-device traffic such as `57 0F 49 01 01`, not the
 `57 95 …` phone-control envelope, and no session handshake precedes it. A target must answer the

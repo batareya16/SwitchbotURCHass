@@ -342,7 +342,8 @@ class SwitchBotUrcPanel extends HTMLElement {
             button_function: key.function ?? source?.button_function ?? profileKey?.function ?? 0,
             button_glyph: key.glyph,
             default_function: source?.default_function ?? profileKey?.function,
-            can_add_command: this._physical.kind !== "native" || !!profileKey?.actionable,
+            can_add_command: this._physical.kind !== "native" || !!profileKey?.actionable
+              || (page.index === 0 && key.index < 4 && !profileKey),
             layout_state: page.buttons.includes(key)
               ? this._layoutState({ button_page: page.index, button_index: key.index }) : "unchanged",
             position: page.index === 0 ? positions[key.index] || "" : "",
@@ -2208,7 +2209,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     const glyphPicker = kind === "native" && (page.index || key.index < 4)
       ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function)
       : "";
-    if (kind === "native" && button.button_page === 0 && !linkedPage && !pageControl) return glyphPicker;
+    const nativeSoftkey = kind === "native" && page.index === 0 && key.index < 4 && !linkedPage;
+    if (kind === "native" && button.button_page === 0 && !linkedPage && !pageControl
+        && !nativeSoftkey) return glyphPicker;
     const transports = kind === "native" ? ["native"] : kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", native: "Native / bridge", hid: "HID", ir: "IR" };
     return `${glyphPicker}<div class="action-box key-editor">
@@ -2218,7 +2221,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${transports.length > 1 ? `<label>Command type<select data-key-field="transport">${
         transports.map((item) => `<option value="${item}" ${key.transport === item ? "selected" : ""}>${label[item]}</option>`).join("")
       }</select></label>` : ""}
-      ${key.transport === "hid" ? `<label>This key sends<select data-key-field="function">${
+      ${key.transport === "hid" || nativeSoftkey ? `<label>This key sends<select data-key-field="function">${
         (this._physicalFunctions || []).map((item) =>
           `<option value="${item.value}" ${key.function === item.value ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")
       }</select></label>` : ""}
@@ -2241,7 +2244,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${button.button_page
           ? `<button class="secondary compact destructive" id="removeKey"
               title="Take this row off the page; the rows below it move up">Delete this row</button>`
-          : linkedPage || kind === "native" ? "" : `<button class="secondary compact destructive" id="removeKey"
+          : linkedPage || (kind === "native" && !nativeSoftkey) ? "" : `<button class="secondary compact destructive" id="removeKey"
               title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`}
       </div>
       ${pageControl}

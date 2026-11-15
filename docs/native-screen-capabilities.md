@@ -40,8 +40,9 @@ The known `0F 62 06` record writes one page at a time and carries:
 repeated: [keyIndex][keyFun:16-bit BE][keyType][field:32]
 ```
 
-The documented page indexes are `0..4`: main plus four subpages. The native sender independently
-bounds a key index at 100. Neither fact establishes how many controls are visible at once.
+The documented page indexes are `0..4`: main plus four subpages. The DSP key-record lookup
+`2002238c` independently bounds a key index at 100. Neither fact establishes how many controls
+are visible at once.
 
 The native screen path (`200288e4`) asks the model/profile lookup (`200236b0`) for screen-key
 metadata, then loops over four positions and passes each position's `keyFun` to the drawing path
@@ -402,7 +403,7 @@ rtk python3 firmware-worws/scripts/scan_res_images.py \
 | Limit | Evidence | What it means |
 | --- | --- | --- |
 | Five page indexes (`0..4`) | `0F 62 06` record path documented in `PROTOCOL.md` | Main and at most four encoded subpages are currently known |
-| Up to 100 native key indexes | ARM sender `11d9c`, compare against `0x64` | Command storage/dispatch bound; not a visible-button count |
+| Up to 100 native key indexes | DSP record lookup `2002238c`, comparison against `0x63` | Record lookup bound; not a visible-button count |
 | Four screen positions per draw pass | DSP paths `200288e4` and `2002e720` | Visible controls processed in that pass; total page/list capacity remains unknown |
 
 The current integration's validation limits (for example 18 buttons on a native page) are software

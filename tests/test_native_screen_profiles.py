@@ -126,6 +126,49 @@ def test_profile_metadata_exposes_renderable_main_and_subpage_layout():
     assert metadata["main_positions"] == sorted(metadata["main_positions"])
 
 
+def test_vacuum_softkeys_round_trip_with_bridge_events_and_custom_glyphs():
+    remote = {"device_type": "VACUUM_S1_MINI", "remote_id": "12345678",
+              "device_id": "AA:BB:CC:DD:EE:FF"}
+    draft = physical.draft_for(remote)
+    original_buttons = list(draft["pages"][0]["buttons"])
+    for index in range(4):
+        draft["pages"][0]["buttons"].append({
+            "index": index, "transport": "native", "function": 321 + index,
+            "glyph": 0x0141,
+        })
+    layout = physical.native_layout(physical.validate(remote, draft))
+    pages = c.build_custom_native_pages(
+        remote_index=3, name="Vacuum", device_id=remote["device_id"],
+        icon_name=layout["icon_name"], event_remote_id=remote["remote_id"],
+        main_buttons=layout["main_buttons"], page_buttons={},
+        template=layout["template"], glyphs=layout["glyphs"],
+    )
+    assert len(pages) == 1
+    packet = pages[0][1]
+    assert packet[8] == c.NATIVE_DEVTYPE["VACUUM_S1_MINI"]
+    assert packet[89] == len(original_buttons) + 4
+    records = {packet[offset]: packet[offset:offset + 36]
+               for offset in range(90, len(packet), 36)}
+    for index in range(4):
+        record = records[index]
+        assert int.from_bytes(record[1:3], "big") == 0x0141
+        assert record[4:17] == (
+            c.BRIDGE_EVENT_MAGIC_V3 + bytes([0xFE]) + bytes.fromhex("12345678")
+            + bytes([3, 0, index]) + (321 + index).to_bytes(2, "big")
+        )
+    saved = physical.draft_for({**remote, "custom_layout": layout,
+                                "icon": layout["icon_name"]})
+    assert physical.native_layout(saved) == layout
+    assert all(key in saved["pages"][0]["buttons"] for key in original_buttons)
+
+
+def test_all_native_profiles_offer_abcd_without_creating_subpages():
+    for template in c.NATIVE_PROFILE_LAYOUTS:
+        assert {0, 1, 2, 3} <= set(c.native_profile_metadata(template)["main_positions"])
+    with pytest.raises(ValueError, match="does not support page"):
+        c.custom_native_layout({"ON": "ON"}, {1: ["ON"]}, template="VACUUM")
+
+
 def test_every_native_type_choice_has_firmware_artwork_mapping():
     for profile_name in c.NATIVE_PROFILE_LAYOUTS:
         device_type = c.native_profile_device_type(profile_name)
