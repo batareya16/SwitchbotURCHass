@@ -89,20 +89,21 @@ test('saving an existing HA mapping does not rewrite an unchanged physical page'
   assert.equal(requests[0].type, 'switchbot_urc/studio/save_button_action');
 });
 
-test('menu settings and row settings have distinct names and shared page controls', () => {
+test('menu and row settings omit custom name fields and share page controls', () => {
   const instance = panel();
   instance._editor = () => '<div>Row command and HA actions</div>';
   instance._renderMenuIcon = () => '<div>Menu icon</div>';
   instance._pageEditing = true;
   let html = instance._renderPageEditor(instance._page(), instance._button(), instance._remote());
-  for (const label of ['Add row', 'id="saveButton"', '>Save</button>', 'Delete menu', 'Menu name', 'Menu icon']) {
+  for (const label of ['Add row', 'id="saveButton"', '>Save</button>', 'Delete menu', 'Menu icon']) {
     assert.ok(html.includes(label));
   }
   assert.ok(!html.includes('Row name'));
+  assert.ok(!html.includes('Menu name'));
   assert.ok(!html.includes('Row command and HA actions'));
   instance._pageEditing = false;
   html = instance._renderPageEditor(instance._page(), instance._button(), instance._remote());
-  assert.ok(html.includes('Row name'));
+  assert.ok(!html.includes('Row name'));
   assert.ok(html.includes('Row command and HA actions'));
   assert.ok(!html.includes('Menu name'));
   assert.ok(!html.includes('Menu icon'));
@@ -124,18 +125,12 @@ test('ordinary Save writes a one-row menu with no selected row or HA edits', asy
   assert.equal(requests[0].layout.pages[1].buttons.length, 1);
 });
 
-test('a background render leaves the focused Row name input mounted', () => {
+test('the icon picker shows the firmware caption alongside the icon', () => {
   const instance = panel();
-  const input = {matches: (selector) => selector === '[data-menu-name] input[name="title"]'};
-  instance.shadowRoot.activeElement = input;
-  let renders = 0;
-  instance._renderUnsafe = () => renders++;
-  Panel.prototype._render.call(instance);
-  assert.equal(renders, 0);
-  assert.equal(instance.shadowRoot.activeElement, input);
-  instance.shadowRoot.activeElement = null;
-  Panel.prototype._render.call(instance);
-  assert.equal(renders, 1);
+  const html = instance._renderGlyphPicker({glyph: 321}, 'glyph', 'Button icon', 5);
+  assert.match(html, /<summary>.*White<\/span><\/summary>/);
+  assert.match(html, /data-glyph-code="321"\s+aria-label="White \(0x0141\)" aria-pressed="true">\s*<img [^>]*keyfun-0141\.png[^>]*><span>White<\/span>/);
+  assert.match(html, /data-glyph-code="0"\s+aria-label="No caption \(0x0000\)"/);
 });
 
 test('adding the first row selects its editor and gives it a new physical identity', () => {

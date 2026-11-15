@@ -22,29 +22,216 @@ const IR_PROFILE_ARTWORK = {
   1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
   8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
 };
-const NATIVE_GLYPH_FUNCTIONS = new Set([
-  0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x000c, 0x000d, 0x000f,
-  0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017, 0x0018, 0x0019,
-  0x001a, 0x001b, 0x001c, 0x001e, 0x001f, 0x0020, 0x0021, 0x0027, 0x0028, 0x0029,
-  0x002a, 0x002b, 0x002c, 0x002d, 0x002e, 0x002f, 0x0030, 0x0031, 0x0032, 0x0033,
-  0x0034, 0x0035, 0x0036, 0x0037, 0x0038, 0x0039, 0x003a, 0x003b, 0x003c, 0x003d,
-  0x003e, 0x0046, 0x0047, 0x0048, 0x0049, 0x004a, 0x004b, 0x004c, 0x004d, 0x004e,
-  0x0050, 0x0051, 0x0052, 0x0053, 0x0054, 0x0055, 0x0059, 0x005a, 0x005b, 0x005c,
-  0x005e, 0x0064, 0x0065, 0x0066, 0x0067, 0x0068, 0x0069, 0x006a, 0x006b, 0x006c,
-  0x006d, 0x006e, 0x006f, 0x0070, 0x0071, 0x0072, 0x0073, 0x0074, 0x0075, 0x0076,
-  0x0077, 0x0078, 0x0079, 0x007a, 0x007b, 0x007c, 0x007d, 0x007e, 0x007f, 0x0080,
-  0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008a,
-  0x008b, 0x008c, 0x008d, 0x008e, 0x008f, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094,
-  0x0095, 0x0096, 0x0097, 0x0098, 0x0099, 0x009a, 0x00c8, 0x00c9, 0x00ca, 0x00cb,
-  0x00d2, 0x00d3, 0x00d4, 0x00d5, 0x00d6, 0x00dc, 0x00dd, 0x00de, 0x00df, 0x00e0,
-  0x012c, 0x012d, 0x012e, 0x012f, 0x0137, 0x0138, 0x0139, 0x013a, 0x013b, 0x013c,
-  0x013d, 0x013e, 0x0140, 0x0141, 0x0142, 0x0143, 0x014a, 0x014b, 0x014c, 0x014d,
-  0x014e, 0x014f, 0x0150, 0x0151, 0x0152, 0x0153, 0x0154, 0x0155, 0x0156, 0x0157,
-  0x0158, 0x0159, 0x02bc, 0x0320, 0x0321, 0x0322, 0x0384, 0x0385, 0x0387, 0x0388,
-  0x0389, 0x038a, 0x038b, 0x038c, 0x038d, 0x038e, 0x038f, 0x0390, 0x0391, 0x0392,
-  0x0393, 0x0394, 0x0395, 0x0396, 0x05dc, 0x0640, 0x06a4, 0x07d0, 0x07d1, 0x07d2,
-  0x07d3, 0x0834, 0x0835, 0x0836, 0x0837, 0x0838, 0x0839,
-]);
+// English captions from docs/native-glyph-resource-index.csv (WoRWS V48).
+const NATIVE_GLYPH_LABELS = {
+  "0": null,
+  "1": null,
+  "2": null,
+  "3": null,
+  "4": null,
+  "5": "ON",
+  "6": "OFF",
+  "12": "Back",
+  "13": "Menu",
+  "15": "Vol+",
+  "16": "Vol-",
+  "17": "Ch+",
+  "18": "Ch-",
+  "19": "Mute",
+  "20": "Play",
+  "21": "Play",
+  "22": "Pause",
+  "23": "OFF",
+  "24": "Record",
+  "25": "Rewind",
+  "26": "Forward",
+  "27": "Play Last Track",
+  "28": "Play Next Track",
+  "30": null,
+  "31": null,
+  "32": null,
+  "33": null,
+  "39": "More Buttons",
+  "40": "0",
+  "41": "1",
+  "42": "2",
+  "43": "3",
+  "44": "4",
+  "45": "5",
+  "46": "6",
+  "47": "7",
+  "48": "8",
+  "49": "9",
+  "50": "Auto",
+  "51": "Cool",
+  "52": "Dry",
+  "53": "Fan",
+  "54": "Heat",
+  "55": "Humidify",
+  "56": "Mode",
+  "57": "Sleep",
+  "58": "Comfort",
+  "59": "Mode",
+  "60": "Temp+",
+  "61": "Temp-",
+  "62": "Warm",
+  "70": null,
+  "71": "Auto",
+  "72": "Fan Speed 1",
+  "73": "Fan Speed 2",
+  "74": "Fan Speed 3",
+  "75": "Fan Speed 4",
+  "76": "Fan Speed 5",
+  "77": null,
+  "78": null,
+  "80": "Auto",
+  "81": "Auto",
+  "82": "Swing 1",
+  "83": "Swing 2",
+  "84": "Swing 3",
+  "85": "Swing 4",
+  "89": "Swing",
+  "90": "Timer",
+  "91": "30 Min",
+  "92": "Schedules",
+  "94": "Timer",
+  "100": "More Buttons",
+  "101": "Blue",
+  "102": "Red",
+  "103": "Green",
+  "104": "Yellow",
+  "105": "Power",
+  "106": "Rec List",
+  "107": "Zoom In",
+  "108": "Zoom Out",
+  "109": "Preference",
+  "110": "Settings",
+  "111": "Eject",
+  "112": "Child Lock",
+  "113": "Ion",
+  "114": "Source",
+  "115": null,
+  "116": "Menu",
+  "117": "Auto",
+  "118": "Home",
+  "119": "Normal",
+  "120": "Natural",
+  "121": "Sleep",
+  "122": "Baby",
+  "123": null,
+  "124": null,
+  "125": null,
+  "126": null,
+  "127": null,
+  "128": null,
+  "129": "Level 4",
+  "130": "Level 3",
+  "131": "Level 2",
+  "132": "Level 1",
+  "133": "Nightlight ON",
+  "134": "Nightlight Dim",
+  "135": "Nightlight OFF",
+  "136": "V. Swing 30°",
+  "137": "V. Swing 60°",
+  "138": "V. Swing 90°",
+  "139": "Turn off",
+  "140": "H. Swing 30°",
+  "141": "H. Swing 60°",
+  "142": "H. Swing 90°",
+  "143": "Turn off",
+  "144": "Normal-Level 1",
+  "145": "Normal-Level 2",
+  "146": "Normal-Level 3",
+  "147": "Normal-Level 4",
+  "148": "Normal-Level 5",
+  "149": "Normal-Level 6",
+  "150": "Normal-Level 7",
+  "151": "Normal-Level 8",
+  "152": "Normal-Level 9",
+  "153": "Shutter",
+  "154": "Heat",
+  "200": "10",
+  "201": "11",
+  "202": "12",
+  "203": "3-Digit Input",
+  "210": "Source",
+  "211": "BS",
+  "212": "CS",
+  "213": "DTTV",
+  "214": "Stream",
+  "220": "Program Info",
+  "221": "Data",
+  "222": "CC",
+  "223": "Display",
+  "224": "Audio",
+  "300": "Brighter",
+  "301": "Darker",
+  "302": "Warmer",
+  "303": "Whiter",
+  "311": "Night",
+  "312": "All",
+  "313": "Midnight",
+  "314": "Sleep",
+  "315": "Reading",
+  "316": "Leisure",
+  "317": "Dining",
+  "318": "+/- is valid only in Cool/Heat mode.",
+  "320": "White",
+  "321": "White",
+  "322": "Warmer",
+  "323": "Cooler",
+  "330": "Color Bulb",
+  "331": "Color 1",
+  "332": "Color 2",
+  "333": "Color 3",
+  "334": "Color 4",
+  "335": "Color 5",
+  "336": "Color 6",
+  "337": "Color 7",
+  "338": "Color 8",
+  "339": "Color 9",
+  "340": "Color 10",
+  "341": "Color 11",
+  "342": "Color 12",
+  "343": "Color 13",
+  "344": "Color 14",
+  "345": "Color 15",
+  "700": "Screen",
+  "800": "TV ON",
+  "801": "TV OFF",
+  "802": "TV Power",
+  "900": "Recharge",
+  "901": "Clean",
+  "903": "Vac & Mop",
+  "904": "Auto",
+  "905": "Quiet",
+  "906": "Standard",
+  "907": "Strong",
+  "908": "Max",
+  "909": "Moist",
+  "910": "Wet",
+  "911": null,
+  "912": null,
+  "913": null,
+  "914": null,
+  "915": null,
+  "916": null,
+  "917": "Manual Control",
+  "918": "Spot Clean",
+  "1500": "Fully open",
+  "1600": "Close Up",
+  "1700": "Close Down",
+  "2000": "Mute",
+  "2001": "Mute",
+  "2002": "Back",
+  "2003": null,
+  "2100": "Mute",
+  "2101": "Play",
+  "2102": "Forward",
+  "2103": "Rewind",
+  "2104": "Home",
+  "2105": "Menu"
+};
 
 const escapeHtml = (value) =>
   String(value ?? "")
@@ -522,7 +709,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _nativeGlyphSrc(button) {
     const functionCode = button?.button_glyph ?? button?.button_function;
-    if (!Number.isInteger(functionCode) || !NATIVE_GLYPH_FUNCTIONS.has(functionCode)) return "";
+    if (!Number.isInteger(functionCode) || !Object.hasOwn(NATIVE_GLYPH_LABELS, functionCode)) return "";
     return `/switchbot_urc_static/native-glyphs/keyfun-${functionCode.toString(16).padStart(4, "0")}.png`;
   }
 
@@ -533,17 +720,21 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _renderGlyphPicker(owner, field, label, defaultFunction) {
     const selected = owner[field];
+    const current = selected ?? defaultFunction;
+    const caption = NATIVE_GLYPH_LABELS[current];
     const preview = this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
     return `<details class="glyph-picker">
-      <summary>${preview}<b>${label}</b></summary>
+      <summary>${preview}<b>${label}</b>${caption ? ` <span>· ${escapeHtml(caption)}</span>` : ""}</summary>
       <button class="secondary compact" data-glyph-field="${field}" data-glyph-code=""
         ${selected === undefined ? "disabled" : ""}>Reset to default</button>
       <div class="glyph-grid" role="group" aria-label="${label}">
-        ${[...NATIVE_GLYPH_FUNCTIONS].map((code) => {
-          const name = `Icon 0x${code.toString(16).padStart(4, "0")}`;
+        ${Object.entries(NATIVE_GLYPH_LABELS).map(([value, caption]) => {
+          const code = Number(value);
+          const iconId = `0x${code.toString(16).padStart(4, "0")}`;
+          const name = caption || "No caption";
           return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
-            aria-label="${escapeHtml(name)}" title="${escapeHtml(name)}" aria-pressed="${code === (selected ?? defaultFunction)}">
-            ${this._nativeGlyph({ button_function: code })}</button>`;
+            aria-label="${escapeHtml(name)} (${iconId})" aria-pressed="${code === current}">
+            ${this._nativeGlyph({ button_function: code })}<span>${escapeHtml(name)}</span></button>`;
         }).join("")}
       </div>
     </details>`;
@@ -558,23 +749,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       key.index === page.index - 1 && !key.actionable)?.function
       ?? profile?.subpages?.find((item) => item.index === page.index)?.link_function;
     return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction);
-  }
-
-  _renderMenuNames(page, button, rowOnly = false) {
-    if (!page?.index || !this._physical) return "";
-    const menu = this._physical.pages.find((item) => item.index === page.index);
-    if (!menu) return "";
-    const row = button ? this._draftKey(button)?.key : null;
-    const field = (label, title, placeholder, rowIndex) => `<form class="menu-name-form"
-      data-menu-name data-page="${page.index}" ${rowIndex == null ? "" : `data-row="${rowIndex}"`}>
-      <label>${label}<input name="title" value="${escapeHtml(title || "")}"
-        placeholder="${escapeHtml(placeholder)}" maxlength="60"></label>
-    </form>`;
-    return `<section class="menu-names">
-      <p class="small">Names are displayed in Remote Studio. Save the page to keep your changes.</p>
-      ${rowOnly ? "" : field("Menu name", menu.title, `Page ${"ABCD"[page.index - 1]}`)}
-      ${rowOnly && row ? field("Row name", row.title, "Default name", row.index) : ""}
-    </section>`;
   }
 
   _renderPageEditor(page, button, remote) {
@@ -596,10 +770,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button data-page-editor="menu" class="${editingMenu ? "selected" : ""}">Menu settings</button>
         <button data-page-editor="row" class="${!editingMenu ? "selected" : ""}" ${button ? "" : "disabled"}>${button ? `Row ${page.buttons.findIndex((item) => item.button_id === button.button_id) + 1}` : "Select a row"}</button>
       </div>
-      ${editingMenu ? this._renderMenuNames(page, null) + this._renderMenuIcon(page)
+      ${editingMenu ? this._renderMenuIcon(page)
         + (page.buttons.length ? '<p class="small">Select a row on the remote to edit its command and Home Assistant actions.</p>'
           : '<div class="explanation"><b>This menu is empty.</b><span>Add a row, configure it, then save the page to the remote.</span></div>')
-        : this._renderMenuNames(page, button, true) + this._editor(button, remote)}
+        : this._editor(button, remote)}
       ${this._error ? `<p class="error" role="alert">${escapeHtml(this._error)}</p>` : ""}
     </section>`;
   }
@@ -956,9 +1130,6 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    const active = this.shadowRoot.activeElement;
-    // Keep the actual input mounted while typing, including during background updates.
-    if (active?.matches('[data-menu-name] input[name="title"]')) return;
     // A throw while building the markup used to leave an empty shadow root and a blank page,
     // which hides the very message that would explain it. Render failures are shown instead.
     try {
@@ -2058,19 +2229,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._pageEditing = element.dataset.pageEditor === "menu";
       this._render();
     }));
-    root.querySelectorAll("[data-menu-name] input").forEach((input) => input.addEventListener("input", () => {
-      const form = input.closest("form");
-      const menu = this._physical.pages.find((item) => item.index === Number(form.dataset.page));
-      const owner = form.dataset.row == null ? menu
-        : menu?.buttons.find((item) => item.index === Number(form.dataset.row));
-      if (!owner) return;
-      owner.title = input.value;
-      this._updateSaveButton();
-    }));
-    root.querySelectorAll("[data-menu-name]").forEach((form) => form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      this._save();
-    }));
     root.querySelectorAll("[data-glyph-field]").forEach((button) => button.addEventListener("click", () => {
       const { glyphField, glyphCode } = button.dataset;
       const owner = glyphField === "link_glyph"
@@ -2360,11 +2518,6 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _wireEvents() {
     const root = this.shadowRoot;
-    root.querySelector("main")?.addEventListener("click", (event) => {
-      const active = root.activeElement;
-      if (active?.matches('[data-menu-name] input[name="title"]')
-          && !active.closest("form").contains(event.target)) active.blur();
-    }, true);
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote",
                       "recreateRemote", "nativeIconVariantTest", "nativeIconVariantRestore", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
@@ -2919,8 +3072,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row .pos{font-size:10px;font-weight:800;color:#ffffff7a;min-width:28px}
       .native-glyph{display:block;width:24px;height:24px;object-fit:contain;flex:none}
       .glyph-picker{margin:14px 0;padding:12px 14px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px}
-      .menu-names{display:grid;gap:10px;margin-bottom:16px}
-      .menu-names p{margin:0}
       .page-editor{display:grid;gap:18px}
       .page-editor .editor-head h2{margin-bottom:4px}
       .page-kicker{font-size:12px;color:var(--secondary-text-color,#68727d)}
@@ -2928,15 +3079,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       .page-tools .page-move{display:grid;gap:4px;font-size:12px;color:var(--secondary-text-color,#68727d)}
       .page-tools select{margin:0;min-width:140px}
       .page-editor-tabs{margin-bottom:4px}
-      .page-editor>.menu-names{margin:0}
-      .menu-name-form{display:flex;align-items:end;gap:8px}
-      .menu-name-form label{display:grid;flex:1;min-width:0;gap:4px;font-size:12px;font-weight:700}
-      .menu-name-form input{min-width:0;padding:8px;border:1px solid var(--divider-color,#dfe3e8);border-radius:8px;background:var(--card-background-color,#fff);color:inherit}
       .glyph-picker summary{cursor:pointer;line-height:32px}
       .glyph-picker summary .native-glyph{display:inline-block;vertical-align:middle;margin:0 8px 0 5px;padding:4px;background:#171c23;border-radius:6px}
       .glyph-picker[open] summary{margin-bottom:10px}
-      .glyph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(42px,1fr));gap:6px;max-height:238px;overflow:auto;margin-top:10px;padding:2px}
-      .glyph-grid button{display:grid;place-items:center;min-height:42px;padding:4px;background:#171c23;border:1px solid #657181;border-radius:7px}
+      .glyph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,104px),1fr));gap:8px;max-height:320px;overflow:auto;margin-top:10px;padding:2px}
+      .glyph-grid button{display:grid;justify-items:center;align-content:start;gap:6px;min-height:66px;padding:8px 6px;background:#171c23;color:#eaf0f4;border:1px solid #657181;border-radius:7px;cursor:pointer}
+      .glyph-grid button span{font-size:12px;line-height:1.25;overflow-wrap:anywhere}
       .glyph-grid button:hover{background:#273445}
       .glyph-grid button[aria-pressed="true"],.glyph-grid button:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:-2px}
       .scr-row .scr-icon{width:20px;height:20px}

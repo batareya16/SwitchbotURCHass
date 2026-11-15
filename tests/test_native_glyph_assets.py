@@ -1,6 +1,7 @@
 """The Remote Studio glyph catalogue must match its exported firmware assets."""
 
 import csv
+import json
 import re
 import struct
 from pathlib import Path
@@ -23,16 +24,21 @@ def test_native_glyph_function_ids_match_index_and_png_assets():
 
     source = (FRONTEND / "switchbot-urc-panel.js").read_text(encoding="utf-8")
     match = re.search(
-        r"const NATIVE_GLYPH_FUNCTIONS = new Set\(\[(.*?)\]\);", source, re.S
+        r"const NATIVE_GLYPH_LABELS = (\{.*?\});", source, re.S
     )
     assert match
-    configured = {int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{4})", match[1])}
+    configured = {int(code): label for code, label in json.loads(match[1]).items()}
+    assert configured == {
+        int(row["keyFun"], 16): row["ui_label_en"] or None
+        for row in rows
+        if row["primary_res_file_offset"]
+    }
     assets = {
         int(path.stem.removeprefix("keyfun-"), 16): path
         for path in (FRONTEND / "native-glyphs").glob("keyfun-*.png")
     }
 
-    assert configured == set(indexed) == set(assets)
+    assert set(configured) == set(indexed) == set(assets)
     for function, path in assets.items():
         data = path.read_bytes()
         assert data.startswith(b"\x89PNG\r\n\x1a\n")
