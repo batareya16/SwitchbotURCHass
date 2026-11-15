@@ -63,6 +63,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._remoteId = null;
     this._pageIndex = 0;
     this._buttonId = null;
+    this._pageEditing = true;
     this._mode = "preset";
     this._draftActions = [];
     this._activeButton = null;
@@ -237,6 +238,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       code_hex: "",
     });
     this._buttonId = `p${page.index}_k${free}`;
+    this._pageEditing = false;
+    this._selectButton(this._button(), false);
     this._render();
   }
 
@@ -336,6 +339,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           const functionLabel = this._profileFunctionLabel(key.function);
           return {
             ...source,
+            draft_only: !source,
             button_id: identity,
             button_page: page.index,
             button_index: key.index,
@@ -429,6 +433,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _selectButton(button, rerender = true) {
     this._buttonId = button?.button_id || null;
     if (button && rerender) {
+      this._pageEditing = false;
       this._iconPickerFor = null;
       this._iconDraft = null;
       this._tileNameDraft = null;
@@ -555,24 +560,48 @@ class SwitchBotUrcPanel extends HTMLElement {
     return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction);
   }
 
-  _renderMenuNames(page, button) {
+  _renderMenuNames(page, button, rowOnly = false) {
     if (!page?.index || !this._physical) return "";
     const menu = this._physical.pages.find((item) => item.index === page.index);
     if (!menu) return "";
     const row = button ? this._draftKey(button)?.key : null;
-    const hasDraft = this._physicalChanges();
     const field = (label, title, placeholder, rowIndex) => `<form class="menu-name-form"
       data-name-key="${escapeHtml(`${this._entryId}:${this._remoteId}:${page.index}:${rowIndex ?? "menu"}`)}"
       data-menu-name data-page="${page.index}" ${rowIndex == null ? "" : `data-row="${rowIndex}"`}>
       <label>${label}<input name="title" value="${escapeHtml(title || "")}"
         placeholder="${escapeHtml(placeholder)}" maxlength="60"></label>
-      <button class="secondary compact" type="submit" ${this._physicalBusy ? "disabled" : ""}>
-        ${hasDraft ? "Keep in draft" : "Save name"}</button>
     </form>`;
     return `<section class="menu-names">
-      <p class="small">Names are displayed in Remote Studio.</p>
-      ${field("Menu name", menu.title, `Page ${"ABCD"[page.index - 1]}`)}
-      ${row ? field("Selected item name", row.title, "Default name", row.index) : ""}
+      <p class="small">Names are displayed in Remote Studio. Save the page to keep your changes.</p>
+      ${rowOnly ? "" : field("Menu name", menu.title, `Page ${"ABCD"[page.index - 1]}`)}
+      ${rowOnly && row ? field("Row name", row.title, "Default name", row.index) : ""}
+    </section>`;
+  }
+
+  _renderPageEditor(page, button, remote) {
+    const editingMenu = this._pageEditing || !button;
+    const freePages = this._availablePageIndexes();
+    return `<section class="page-editor">
+      <div class="editor-head"><div><span class="page-kicker">Menu · key ${"ABCD"[page.index - 1]}</span>
+        <h2>${escapeHtml(page.name)}</h2><p class="small">${page.buttons.length} row${page.buttons.length === 1 ? "" : "s"}</p></div></div>
+      <div class="page-tools">
+        <button class="primary compact" id="addKeyToPage" ${this._freeIndexOnPage(page.index) === null || this._physicalBusy ? "disabled" : ""}>＋ Add row</button>
+        <button class="secondary compact" data-physical-apply ${!this._physicalChanges() || this._physicalBusy ? "disabled" : ""}>${this._physicalBusy ? "Writing…" : "Save page to remote"}</button>
+        ${this._physicalChanges() ? '<button class="secondary compact" id="physicalDiscard">Discard changes</button>' : ""}
+        ${this._physicalBackup ? '<button class="secondary compact" id="physicalRestore">Load previous layout</button>' : ""}
+        ${freePages.length ? `<label class="page-move">Move to<select id="moveCurrentPage"><option value="">Choose key…</option>${freePages.map((index) => `<option value="${index}">Key ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : ""}
+        <button class="secondary compact destructive" id="removeThisPage" ${this._physicalBusy ? "disabled" : ""}>Delete menu</button>
+      </div>
+      ${this._physicalStatus ? `<p class="small" role="status">${escapeHtml(this._physicalStatus)}</p>` : ""}
+      <div class="mode-tabs page-editor-tabs">
+        <button data-page-editor="menu" class="${editingMenu ? "selected" : ""}">Menu settings</button>
+        <button data-page-editor="row" class="${!editingMenu ? "selected" : ""}" ${button ? "" : "disabled"}>${button ? `Row ${page.buttons.findIndex((item) => item.button_id === button.button_id) + 1}` : "Select a row"}</button>
+      </div>
+      ${editingMenu ? this._renderMenuNames(page, null) + this._renderMenuIcon(page)
+        + (page.buttons.length ? '<p class="small">Select a row on the remote to edit its command and Home Assistant actions.</p>'
+          : '<div class="explanation"><b>This menu is empty.</b><span>Add a row, configure it, then save the page to the remote.</span></div>')
+        : this._renderMenuNames(page, button, true) + this._editor(button, remote)}
+      ${this._error ? `<p class="error" role="alert">${escapeHtml(this._error)}</p>` : ""}
     </section>`;
   }
 
@@ -1028,7 +1057,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           </div>
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
-          ${this._renderApplyBar()}
+          ${page?.index && !this._iconPickerFor ? "" : this._renderApplyBar()}
           ${this._iconPickerFor ? "" : this._renderNativeProfileWarnings()}
           ${this._renderCloud()}
           ${this._renderDeviceTable()}
@@ -1040,27 +1069,15 @@ class SwitchBotUrcPanel extends HTMLElement {
               <button class="secondary" id="quickBind">Apply preset</button>
             </section>
             <nav class="pages">${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
-            ${page?.index ? `<p class="small page-note">Opened by key
-              <b>${"ABCD"[page.index - 1] || page.index}</b> on Main. That is a property of the
-              layout, not a Home Assistant action: a key either opens a page or sends a command,
-              never both.</p>` : ""}
             <div class="workspace">
               <section class="remote-stage">
                 <div class="device-wrap">${this._renderFace(page)}</div>
-                ${this._physical?.pages?.some((item) => item.index === page?.index) ? `
-                <div class="stage-actions">
-                  ${!page?.index
-                    ? `<span class="small">Pick a key above to give it a command.</span>`
-                    : this._freeIndexOnPage(page.index) !== null
-                      ? `<button class="secondary compact" id="addKeyToPage" title="Put a new row on this page's screen list">Add a row</button>`
-                      : `<span class="small">This page is full.</span>`}
-                  ${page?.index ? `${this._availablePageIndexes().length ? `<label class="page-move">Move page<select id="moveCurrentPage"><option value="">Choose letter…</option>${this._availablePageIndexes().map((index) => `<option value="${index}">Page ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : `<span class="small page-capacity">No free page letter</span>`}<button class="secondary compact destructive" id="removeThisPage" title="Remove this page and every button on it">Delete page</button>` : ""}
-                </div>` : ""}
               <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span>${this._physical ? '<span><i class="unsaved"></i>Unsaved change</span>' : ""}</div>
               </section>
               <aside class="editor">${this._iconPickerFor === remote.remote_id
                 ? this._renderAppearance(remote)
-                : this._renderMenuNames(page, button) + this._renderMenuIcon(page) + (button ? this._editor(button, remote)
+                : page?.index && this._physical ? this._renderPageEditor(page, button, remote)
+                : (button ? this._editor(button, remote)
                   : `<div class="empty small">Choose a button, or use the pencil on a remote to edit its appearance.</div>`)}</aside>
             </div>
           ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
@@ -1904,6 +1921,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       delete this._physicalOrigins[`p0_k${button.button_index}`];
       this._pageIndex = index;
       this._buttonId = null;
+      this._pageEditing = true;
       this._physicalStatus = "";
       this._render();
     });
@@ -2052,35 +2070,23 @@ class SwitchBotUrcPanel extends HTMLElement {
   _wirePhysical() {
     const root = this.shadowRoot;
     this._wireKeyEditor(root);
-    root.querySelectorAll("[data-menu-name]").forEach((form) => form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (this._physicalBusy) return;
-      const page = Number(form.dataset.page);
-      const row = form.dataset.row == null ? undefined : Number(form.dataset.row);
-      const title = form.elements.title.value.trim();
-      if (this._physicalChanges()) {
-        const menu = this._physical.pages.find((item) => item.index === page);
-        const owner = row == null ? menu : menu.buttons.find((item) => item.index === row);
-        owner.title = title;
-        this._render();
-        return;
-      }
-      this._physicalBusy = true;
+    root.querySelectorAll("[data-page-editor]").forEach((element) => element.addEventListener("click", () => {
+      this._pageEditing = element.dataset.pageEditor === "menu";
       this._render();
-      try {
-        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/rename_menu_item`,
-          entry_id: this._entryId, remote_id: this._remoteId, page, title,
-          ...(row == null ? {} : { row }) });
-        this._physical = result.layout;
-        this._physicalBaseline = structuredClone(result.layout);
-        this._error = null;
-        this._notify("Menu name saved in Remote Studio");
-      } catch (error) {
-        this._error = error?.message || String(error);
-      } finally {
-        this._physicalBusy = false;
-        this._render();
-      }
+    }));
+    root.querySelectorAll("[data-menu-name] input").forEach((input) => input.addEventListener("input", () => {
+      const form = input.closest("form");
+      const menu = this._physical.pages.find((item) => item.index === Number(form.dataset.page));
+      const owner = form.dataset.row == null ? menu
+        : menu?.buttons.find((item) => item.index === Number(form.dataset.row));
+      if (!owner) return;
+      owner.title = input.value;
+      root.querySelectorAll("[data-physical-apply]").forEach((save) => {
+        save.disabled = this._physicalBusy || !this._physicalChanges();
+      });
+    }));
+    root.querySelectorAll("[data-menu-name]").forEach((form) => form.addEventListener("submit", (event) => {
+      event.preventDefault();
     }));
     root.querySelectorAll("[data-glyph-field]").forEach((button) => button.addEventListener("click", () => {
       const { glyphField, glyphCode } = button.dataset;
@@ -2111,6 +2117,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     }));
     root.querySelectorAll("[data-physical-apply]").forEach((element) => element.addEventListener("click", async () => {
+      if (this._dirty && this._button()) {
+        await this._save();
+        return;
+      }
       try {
         await this._applyPhysical();
         this._error = null;
@@ -2224,7 +2234,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${transports.length > 1 ? `<label>Command type<select data-key-field="transport">${
         transports.map((item) => `<option value="${item}" ${key.transport === item ? "selected" : ""}>${label[item]}</option>`).join("")
       }</select></label>` : ""}
-      ${key.transport === "hid" || nativeSoftkey ? `<label>This key sends<select data-key-field="function">${
+      ${key.transport === "hid" || nativeSoftkey || (kind === "native" && page.index) ? `<label>This key sends<select data-key-field="function">${
         (this._physicalFunctions || []).map((item) =>
           `<option value="${item.value}" ${key.function === item.value ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")
       }</select></label>` : ""}
@@ -2238,9 +2248,6 @@ class SwitchBotUrcPanel extends HTMLElement {
           >${escapeHtml(key.code_hex || "")}</textarea></label>
         ${this._renderCatalogPicker()}` : ""}
       <div class="key-actions">
-        ${button.button_page ? `<button class="secondary compact destructive" id="removePage" title="Remove this page and every button on it">Delete this page</button>` : ""}
-        ${this._freeIndexOnPage(button.button_page) !== null
-          ? `<button class="secondary compact" id="addKey" title="Put a new row on this page's screen list">Add a row</button>` : ""}
         ${button.button_page ? `<div class="row-order"><span>Screen order</span>
           <button class="secondary compact" id="moveRowUp" ${rowPosition <= 0 ? "disabled" : ""} title="Move this row up">↑</button>
           <button class="secondary compact" id="moveRowDown" ${rowPosition >= lastRowPosition ? "disabled" : ""} title="Move this row down">↓</button></div>` : ""}
@@ -2310,14 +2317,6 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _editor(button, remote) {
-    if (button.draft_only) {
-      return `
-        <div class="editor-head"><div><h2>${escapeHtml(button.label)}</h2></div></div>
-        ${this._renderKeyEditor(button)}
-        <div class="explanation"><b>Not on the remote yet.</b><span>Save writes this page to the
-        remote. Home Assistant actions can be assigned once it is there, because they are keyed on
-        the button identity the remote reports when it is pressed.</span></div>`;
-    }
     const [status, statusLabel] = this._status(button);
     const actionSummary = button.actions.length
       ? `${button.actions.length} action${button.actions.length === 1 ? "" : "s"}`
@@ -2334,6 +2333,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <div><dt>Remote</dt><dd>${escapeHtml(remote.remote_id)}</dd></div>
       </dl>
       ${this._renderKeyEditor(button)}
+      ${button.draft_only ? '<p class="small">New button. Saving writes the layout to the remote before saving its Home Assistant actions.</p>' : ""}
       ${remote?.reachability?.level === "none" ? `<div class="explanation">
         <b>No Home Assistant mapping for this remote.</b><span>${escapeHtml(remote.reachability.text)}
         A mapping saved here would never run, so it is not offered — what the key is on the
@@ -2528,6 +2528,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._pageIndex = Number(element.dataset.page);
         this._buttonId = null;
         this._normalizeSelection();
+        this._pageEditing = true;
         this._render();
       }),
     );
@@ -2536,6 +2537,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._pageIndex = Number(element.dataset.pageLink);
         this._buttonId = null;
         this._normalizeSelection();
+        this._pageEditing = true;
         this._render();
       };
       element.addEventListener("click", open);
@@ -2753,35 +2755,41 @@ class SwitchBotUrcPanel extends HTMLElement {
     const status = root.getElementById("saveStatus");
     const save = root.getElementById("saveButton");
     const button = this._button();
-    const page = this._page();
     if (!button) return;
     if (this._mode === "actions" && !this._jsonValid) {
       if (status) status.textContent = "Fix the invalid JSON before saving";
       return;
     }
     const layoutChanges = this._physicalChanges();
+    const keepPage = this._pageIndex;
+    const keepButton = layoutChanges
+      ? `p${button.button_page}_k${button.button_index}` : this._buttonId;
+    const mode = this._mode;
+    const actions = structuredClone(this._draftActions);
+    const entryId = this._entryId;
+    const remoteId = this._remoteId;
     try {
       if (save) save.disabled = true;
       if (status) status.textContent = "Saving…";
 
-      // The Home Assistant mapping. An empty custom-action list is not a valid mapping, so it
-      // is skipped rather than rejected: the user may only have changed the layout or a name.
-      if (!(this._mode === "actions" && !this._draftActions.length)) {
-        const updated = await this._hass.callWS({
-          type: `${DOMAIN}/studio/save_button_action`,
-          entry_id: this._entryId,
-          remote_id: this._remoteId,
-          button_id: this._buttonId,
-          mode: this._mode,
-          actions: this._mode === "actions" ? this._draftActions : [],
-        });
-        this._replaceEntry(updated);
-      }
-
-      // Only touch the remote when its own layout actually differs.
+      // New rows have no HA button identity until the physical page has been saved.
       if (layoutChanges) {
         if (status) status.textContent = "Writing the layout to the remote…";
         await this._applyPhysical();
+      }
+
+      // The Home Assistant mapping. An empty custom-action list is not a valid mapping, so it
+      // is skipped rather than rejected: the user may only have changed the layout or a name.
+      if (!(mode === "actions" && !actions.length)) {
+        const updated = await this._hass.callWS({
+          type: `${DOMAIN}/studio/save_button_action`,
+          entry_id: entryId,
+          remote_id: remoteId,
+          button_id: keepButton,
+          mode,
+          actions: mode === "actions" ? actions : [],
+        });
+        this._replaceEntry(updated);
       }
 
       this._dirty = false;
@@ -2789,16 +2797,18 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._error = null;
       this._notify(layoutChanges ? this._physicalStatus || "Saved and written to the remote" : "Saved");
       // Keep the selection across the reload so the button just edited stays open.
-      const keepPage = this._pageIndex;
-      const keepButton = this._buttonId;
-      if (!layoutChanges) await this._load();
+      await this._load();
       this._pageIndex = keepPage;
       this._buttonId = keepButton;
       this._normalizeSelection();
       this._render();
     } catch (error) {
       this._physicalBusy = false;
-      if (status) status.textContent = error?.message || String(error);
+      this._error = error?.message || String(error);
+      this._mode = mode;
+      this._draftActions = actions;
+      this._dirty = true;
+      if (status) status.textContent = this._error;
       if (save) save.disabled = false;
       this._render();
     }
@@ -2923,6 +2933,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       .glyph-picker{margin:14px 0;padding:12px 14px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px}
       .menu-names{display:grid;gap:10px;margin-bottom:16px}
       .menu-names p{margin:0}
+      .page-editor{display:grid;gap:18px}
+      .page-editor .editor-head h2{margin-bottom:4px}
+      .page-kicker{font-size:12px;color:var(--secondary-text-color,#68727d)}
+      .page-tools{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:16px;border:1px solid var(--divider-color,#dfe3e8);border-radius:14px}
+      .page-tools .page-move{display:grid;gap:4px;font-size:12px;color:var(--secondary-text-color,#68727d)}
+      .page-tools select{margin:0;min-width:140px}
+      .page-editor-tabs{margin-bottom:4px}
+      .page-editor>.menu-names{margin:0}
       .menu-name-form{display:flex;align-items:end;gap:8px}
       .menu-name-form label{display:grid;flex:1;min-width:0;gap:4px;font-size:12px;font-weight:700}
       .menu-name-form input{min-width:0;padding:8px;border:1px solid var(--divider-color,#dfe3e8);border-radius:8px;background:var(--card-background-color,#fff);color:inherit}
