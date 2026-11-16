@@ -5,6 +5,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check out the SwitchBot URC Bridge
+        uses: actions/checkout@v4
+        with:
+          repository: batareya16/switchbot-urc-addon
+          ref: 415ae5dbcbb8b08f74ba87452e0808c7caaefab6
+          path: addons
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

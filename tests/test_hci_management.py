@@ -6,6 +6,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from test_hci_inventory import Peer, PEER, TABLE, hci
 
+pytestmark = pytest.mark.skipif(hci is None, reason="add-on absent")
+
 KEY = bytes.fromhex("00112233445566778899aabbccddeeff")
 IV = bytes.fromhex("2cd84b0b02f6115938f43787ced2bd95")
 KEY_ID = 0x95
