@@ -761,7 +761,9 @@ class UrcClient:
         """Route management through the add-on when it owns the controller the remote is bound to."""
         return self._management_proxy is not None and self._force_preferred_adapter
 
-    async def _run_proxy_steps(self, steps: list[dict]) -> list[bytes]:
+    async def _run_proxy_steps(
+        self, steps: list[dict], *, allow_missing_readback: bool = False,
+    ) -> list[bytes]:
         """Execute a management step list on the add-on and return per-step responses."""
         assert self._management_proxy is not None
         result = await self._management_proxy(
@@ -769,9 +771,15 @@ class UrcClient:
         )
         if result is None:
             raise UrcConnectionSetupError("native bridge did not return a management result")
+        responses = result.get("responses", [])
         if not result.get("ok"):
             stage = str(result.get("failed_stage", ""))
             error = str(result.get("error", "")) or "unknown bridge management error"
+            if (allow_missing_readback
+                    and len(responses) == len(steps) - 1
+                    and str(result.get("stage_detail", "")).startswith("query_")):
+                _LOGGER.warning("WoRWS readback failed after write acknowledgements: %s", error)
+                return [bytes.fromhex(str(item)) for item in responses]
             if stage in ("connect", "handshake"):
                 # No command reached the device yet, so this is safe to retry (and matches the
                 # local handshake-timeout path). Surfaced as a handshake timeout for callers.
@@ -783,13 +791,14 @@ class UrcClient:
             raise UrcConnectionSetupError(
                 f"native bridge management failed at {stage or 'command'}: {error}"
             )
-        responses = result.get("responses", [])
         self._proxy_strict_accepted_codes = result.get("strict_accepted_codes") is True
         if len(responses) < len(steps):
             raise UrcConnectionSetupError("native bridge returned an incomplete management result")
         return [bytes.fromhex(str(item)) for item in responses]
 
-    async def _run_proxy_steps_with_refresh(self, steps: list[dict]) -> list[bytes]:
+    async def _run_proxy_steps_with_refresh(
+        self, steps: list[dict], *, allow_missing_readback: bool = False,
+    ) -> list[bytes]:
         """Run steps via the add-on; on a handshake failure, refresh cloud credentials and retry.
 
         A handshake failure happens before any command is written, so retrying the whole step list
@@ -797,13 +806,13 @@ class UrcClient:
         credential rotation the local BLE path already has.
         """
         try:
-            responses = await self._run_proxy_steps(steps)
+            responses = await self._run_proxy_steps(steps, allow_missing_readback=allow_missing_readback)
         except UrcHandshakeTimeout:
             if self._credential_refresh_cb is not None and await self._refresh_credentials():
                 _LOGGER.warning(
                     "retrying add-on management once with refreshed WoRWS communication key"
                 )
-                return await self._run_proxy_steps(steps)
+                return await self._run_proxy_steps(steps, allow_missing_readback=allow_missing_readback)
             raise
         # A session whose very first command is rejected with 0x04 was unusable: the remote
         # could not decrypt it, so nothing was applied and every later step was skipped. This
@@ -816,7 +825,7 @@ class UrcClient:
                 "add-on management session rejected its first command with 0x04; retrying once "
                 "with a new connection and handshake"
             )
-            responses = await self._run_proxy_steps(steps)
+            responses = await self._run_proxy_steps(steps, allow_missing_readback=allow_missing_readback)
         return responses
 
     async def ensure_strict_sequence_support(self) -> None:
@@ -1081,15 +1090,24 @@ class UrcClient:
         retry_first_timeout: bool = False,
         timeout_retries: int = 0,
         accepted_codes: list[frozenset[int]] | tuple[frozenset[int], ...] | None = None,
+        *,
+        readback_subcommand: int | None = None,
     ) -> list[bytes]:
-        """Run an ordered encrypted transaction, via the add-on proxy when available."""
+        """Run encrypted commands and optionally append a readback from the same session."""
+        if readback_subcommand is not None and (not plaintexts or not 0 <= readback_subcommand <= 0xFF):
+            raise ValueError("readback requires at least one command and a valid subcommand")
         if self._use_management_proxy:
             # One management session on the add-on's controller: handshake once, then every page
             # in order. The caller validates each response (bind pages, IR sync acks, etc.).
+            steps = [
+                {"kind": "command", "plaintext": p.hex(), "timeout": timeout,
+                 **({"accepted_codes": sorted(accepted_codes[index])} if accepted_codes is not None else {})}
+                for index, p in enumerate(plaintexts)
+            ]
+            if readback_subcommand is not None:
+                steps.append({"kind": "query", "subcmd": readback_subcommand, "timeout": 8.0})
             return await self._run_proxy_steps_with_refresh(
-                [{"kind": "command", "plaintext": p.hex(), "timeout": timeout,
-                  **({"accepted_codes": sorted(accepted_codes[index])} if accepted_codes is not None else {})}
-                 for index, p in enumerate(plaintexts)]
+                steps, allow_missing_readback=readback_subcommand is not None,
             )
         async with self._management_window():
             return await self._send_command_sequence_in_window(
@@ -1098,6 +1116,7 @@ class UrcClient:
                 retry_first_timeout=retry_first_timeout,
                 timeout_retries=timeout_retries,
                 accepted_codes=accepted_codes,
+                readback_subcommand=readback_subcommand,
             )
 
     async def _send_command_sequence_in_window(
@@ -1107,6 +1126,8 @@ class UrcClient:
         retry_first_timeout: bool = False,
         timeout_retries: int = 0,
         accepted_codes: list[frozenset[int]] | tuple[frozenset[int], ...] | None = None,
+        *,
+        readback_subcommand: int | None = None,
     ) -> list[bytes]:
         """Run an ordered transaction in one fresh session, then release the BLE connection.
 
@@ -1207,6 +1228,15 @@ class UrcClient:
                     )
                     if not resp or resp[0] not in success:
                         break
+                else:
+                    if readback_subcommand is not None:
+                        try:
+                            raw = await self._query_on_connected(readback_subcommand, 8.0)
+                        except Exception as err:
+                            _LOGGER.warning("WoRWS readback failed after write acknowledgements: %s", err)
+                        else:
+                            if raw:
+                                results.append(raw)
                 return results
             finally:
                 await self.disconnect()

@@ -8,6 +8,25 @@ from conftest import INTEGRATION, load
 
 c = load(INTEGRATION / "commands.py")
 physical = load(INTEGRATION / "physical_layout.py")
+
+
+def test_native_row_deletion_clears_the_vacated_position_after_compaction():
+    previous = {"pages": [
+        {"index": 0, "buttons": [{"index": 4}]},
+        {"index": 4, "buttons": [{"index": 0}, {"index": 1}, {"index": 2}]},
+    ]}
+    updated = {"pages": [previous["pages"][0],
+                         {"index": 4, "buttons": [{"index": 0}, {"index": 1}]}]}
+
+    assert physical.removed_native_keys(previous, updated) == [(4, 2)]
+    assert physical.removed_native_keys(updated, {"pages": [previous["pages"][0]]}) == [
+        (0, 3), (4, 0), (4, 1),
+    ]
+    assert physical.removed_native_keys(updated, updated) == []
+    assert c.build_delete_native_key(
+        remote_index=3, device_type=0x72, device_id=bytes.fromhex("1571da7d1a000000000000"),
+        page=4, index=2,
+    ) == bytes.fromhex("0f6204010372001571da7d1a0000000000000402")
 bindings = load(INTEGRATION / "bindings.py")
 
 

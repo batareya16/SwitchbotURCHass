@@ -1088,6 +1088,23 @@ def build_hid_ir_transfer(*, device_id: str, key_name: str, code: bytes) -> tupl
     )
 
 
+def build_delete_native_key(
+    *, remote_index: int, device_type: int, device_id: bytes, page: int, index: int,
+) -> bytes:
+    """Clear one key with V48 0F 62 04 01.
+
+    ARM 33c4 encodes page*20 + index. DSP 20022533 clears that key record.
+    """
+    if not 0 <= remote_index < MAX_REMOTE_SLOTS or not 0 <= device_type <= 0xFF:
+        raise ValueError("invalid native remote slot or device type")
+    if len(device_id) != 11 or not 0 <= page <= 4 or not 0 <= index < 20:
+        raise ValueError("invalid native remote ID or key position")
+    return (
+        bytes([0x0F, 0x62, 0x04, 1, remote_index, device_type, CTRL_NATIVE])
+        + device_id + bytes([page, index])
+    )
+
+
 def build_delete_hid_keys(*, remote_index: int, device_type_name: str, device_id: str) -> bytes:
     """Official getDeleteHIDKeysCmd(page=255), preserving the remote entry/bond."""
     device_type = DEVTYPE.get(device_type_name.upper())

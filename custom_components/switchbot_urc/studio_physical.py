@@ -30,8 +30,9 @@ def cached_device_table(hass, entry):
     return hass.data.get(DOMAIN, {}).get("_studio_device_tables", {}).get(entry.entry_id)
 
 
-async def read_device_table(hass, entry, client):
-    raw = await client.query(7)
+async def read_device_table(hass, entry, client, *, raw=None):
+    if not raw:
+        raw = await client.query(7)
     if not raw:
         raise ValueError("The remote did not answer with its device table.")
     table = c.parse_added_devices(raw)
@@ -419,6 +420,7 @@ async def ws_physical_apply(hass, connection, msg):
             entry, remote = resolve(hass, msg)
             identity = msg["remote_id"]
             draft = physical.validate(remote, msg["layout"])
+            previous_layout = physical.draft_for(remote)
             current_binding = next((item for item in entry.options.get("bindings", [])
                                     if isinstance(item, dict)
                                     and str(item.get("remote_id", "")) == str(identity)), None)
@@ -490,7 +492,15 @@ async def ws_physical_apply(hass, connection, msg):
                     # in place when 0F 62 06 matches its slot and device ID.
                     stages = [(name, packet, frozenset({1})) for name, packet in bind]
                 else:
-                    stages = page_stages
+                    # 0F 62 06 updates only the records it carries. Explicitly clear
+                    # positions left empty after a deletion, move or row compaction.
+                    stages = page_stages + [
+                        (f"clear page {page} key {index}", c.build_delete_native_key(
+                            remote_index=slot, device_type=c.NATIVE_DEVTYPE[selected_type["device_type"]],
+                            device_id=expected_id, page=page, index=index,
+                        ), frozenset({1}))
+                        for page, index in physical.removed_native_keys(previous_layout, draft)
+                    ]
                 pages = [packet for _, packet in bind if packet[:3] == b"\x0f\x62\x06"]
                 stored_changes = {"device_type": selected_type["device_type"],
                                   "custom_layout": layout,
@@ -517,7 +527,7 @@ async def ws_physical_apply(hass, connection, msg):
                     if len(space) < 9 or sum(len(bytes.fromhex(k.get("code_hex", ""))) for p in draft["pages"] for k in p["buttons"]) >= int.from_bytes(space[5:9], "big"):
                         raise ValueError("Not enough confirmed device storage for these IR codes")
             # Persist a recoverable snapshot before the first mutating command.
-            persist(hass, entry, identity, physical_backup={"layout": physical.draft_for(remote),
+            persist(hass, entry, identity, physical_backup={"layout": previous_layout,
                 "packets": [packet.hex() for packet in physical.source_packets(remote)]},
                 physical_original_packets=remote.get("physical_original_packets") or [packet.hex() for packet in physical.source_packets(remote)],
                 physical_pending=draft,
@@ -527,20 +537,22 @@ async def ws_physical_apply(hass, connection, msg):
             responses = await client.send_command_sequence(
                 tuple(packet for _, packet, _ in stages), timeout=45, timeout_retries=0,
                 accepted_codes=tuple(accepted for _, _, accepted in stages),
+                readback_subcommand=7,
             )
             for (name, _, accepted), response in zip(stages, responses):
                 if not response or response[0] not in accepted:
                     stage = name
                     raise ValueError(f"{name}: response {response.hex() if response else 'timeout'}")
-            if len(responses) != len(stages):
+            if len(responses) < len(stages):
                 stage = stages[len(responses)][0]
                 raise ValueError(f"{stage}: no acknowledgement")
             # Read-back of table identity proves the tile remains installed; it does not read keys.
             stage = "verify remote remains installed"
-            after = await read_device_table(hass, entry, client)
+            readback = responses[len(stages)] if len(responses) > len(stages) else None
+            after = await read_device_table(hass, entry, client, raw=readback)
             if not any(item[3] == expected_id and item[2] == expected_control for item in after):
                 raise ValueError("The remote is missing from the physical table after writing")
-            status = "Device acknowledged all pages."
+            status = "Device acknowledged the layout update."
             if verify_appearance:
                 expected = (stored_changes["control_mode"], stored_changes["icon_code"])
                 prefix = f"Slot {new_slot}: sent mode 0x{expected[0]:02X}, icon 0x{expected[1]:02X}"

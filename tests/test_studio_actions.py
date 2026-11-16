@@ -4,6 +4,7 @@ Studio reported actions appearing only after switching tabs, and earlier ones no
 all. These exercise the serialisation the panel reads, with Home Assistant stubbed out, so the
 question "does the backend hand the actions over" can be answered without a running instance.
 """
+import asyncio
 import sys
 import types
 
@@ -92,6 +93,33 @@ def studio():
 
 
 ACTIONS = [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]
+
+
+@pytest.mark.parametrize("readback_received", [True, False])
+def test_layout_write_reads_back_in_the_same_bridge_session(studio, readback_received):
+    from switchbot_urc.client import UrcClient
+
+    requests = []
+    raw_table = bytes.fromhex("01000000000140bf00")
+
+    async def manage(_address, _key, _key_id, steps):
+        requests.append(steps)
+        if readback_received:
+            return {"ok": True, "responses": ["01", raw_table.hex()]}
+        return {"ok": False, "responses": ["01"], "failed_stage": "command",
+                "stage_detail": "query_0F6307", "error": "timed out"}
+
+    client = UrcClient(types.SimpleNamespace(address="B0:E9:FE:53:11:45"),
+                       types.SimpleNamespace(key=bytes(16), key_id=95), management_proxy_cb=manage)
+    client._force_preferred_adapter = True
+    responses = asyncio.run(client.send_command_sequence(
+        [bytes.fromhex("0f6206")], accepted_codes=[frozenset({1})], readback_subcommand=7,
+    ))
+
+    assert len(requests) == 1
+    assert [step["kind"] for step in requests[0]] == ["command", "query"]
+    assert requests[0][1]["subcmd"] == 7
+    assert responses == ([b"\x01", raw_table] if readback_received else [b"\x01"])
 
 
 def binding(remote_id="abc123", **actions):

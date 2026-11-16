@@ -561,6 +561,17 @@ def compile_recreate(
     return stages, pages, draft
 
 
+def removed_native_keys(previous: dict, draft: dict) -> list[tuple[int, int]]:
+    """Find vacated wire positions, including implicit Main links to removed pages."""
+    def positions(layout):
+        return {
+            (page["index"], button["index"])
+            for page in layout["pages"] for button in page["buttons"]
+        } | {(0, page["index"] - 1) for page in layout["pages"] if page["index"]}
+
+    return sorted(positions(previous) - positions(draft))
+
+
 def native_layout(draft: dict) -> dict:
     positions = {value: name for name, value in c.TAG.items()}
     glyphs = {}
