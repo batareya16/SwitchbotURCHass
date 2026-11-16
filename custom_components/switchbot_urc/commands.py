@@ -209,6 +209,14 @@ FAN_LIGHT_PAGE = _page((0, 133), (1, 134), (2, 135))
 # DSP 20041480 recognizes these functions as submenu links. The Main position
 # selects the page, and the Native list sender addresses keys as page*20+row.
 NATIVE_MENU_FUNCTIONS = {1: 119, 2: 123, 3: 124, 4: 125}
+# Stock Native page-link functions confirmed by the V48 DSP classifier at 20041480.
+# The shared classifier accepts additional codes outside the stock Native layouts.
+NATIVE_MENU_GLYPHS = frozenset({100, 119, 123, 124, 125, 126, 320, 330})
+
+
+def validate_native_menu_glyph(glyph: int) -> None:
+    if type(glyph) is not int or glyph not in NATIVE_MENU_GLYPHS:
+        raise ValueError("Choose a Native menu icon or reset to the default menu icon")
 
 
 def native_menu_function(profile_name: str, page_index: int) -> int:
@@ -1541,6 +1549,8 @@ def build_custom_native_pages(
         for key in tagged:
             glyph = glyphs.get(f"p{page_index}_k{key['keyIndex']}")
             if glyph is not None:
+                if page_index == 0 and key["keyIndex"] + 1 in page_buttons:
+                    validate_native_menu_glyph(glyph)
                 if not key.get("cmd") and "field32" not in key:
                     # Page links use the default field derived from the original function.
                     key["field32"] = pad(s16(key["keyFun"]), 32)

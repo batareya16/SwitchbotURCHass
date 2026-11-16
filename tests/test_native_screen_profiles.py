@@ -62,7 +62,7 @@ def test_native_glyphs_round_trip_without_changing_key_commands_or_page_link():
     main, colors = draft["pages"]
     white = next(key for key in main["buttons"] if key["index"] == c.TAG["A"])
     white["glyph"] = 0x0142
-    colors["link_glyph"] = 0x014B
+    colors["link_glyph"] = 119
     colors["buttons"][0]["glyph"] = 0x0141
     layout = physical.native_layout(physical.validate(remote, draft))
     rebuilt = physical.draft_for({**remote, "custom_layout": layout})
@@ -90,6 +90,29 @@ def test_native_glyphs_round_trip_without_changing_key_commands_or_page_link():
                 assert int.from_bytes(record[1:3], "big") == layout["glyphs"][identity]
                 changed.add(identity)
     assert changed == layout["glyphs"].keys()
+
+
+@pytest.mark.parametrize("glyph", [118, 2104, 331])
+def test_native_submenu_rejects_icons_that_are_not_page_links(glyph):
+    remote = {"device_type": "STRIP", "device_id": "AA:BB:CC:DD:EE:FF"}
+    draft = physical.draft_for(remote)
+    colors = next(page for page in draft["pages"] if page["index"] == 4)
+    colors["link_glyph"] = glyph
+    with pytest.raises(ValueError, match="Native menu icon"):
+        physical.validate(remote, draft)
+
+    layout = physical.native_layout(draft)
+    with pytest.raises(ValueError, match="Native menu icon"):
+        c.build_custom_native_pages(
+            remote_index=2, name="Strip", device_id=remote["device_id"],
+            icon_name="strip", event_remote_id="12345678", template="STRIP",
+            main_buttons=layout["main_buttons"],
+            page_buttons={4: layout["pages"]["4"]}, glyphs=layout["glyphs"],
+        )
+
+    del colors["link_glyph"]
+    reset = physical.native_layout(physical.validate(remote, draft))
+    assert "p0_k3" not in reset["glyphs"]
 
 
 def test_native_menu_rows_sharing_a_function_have_independent_actions():

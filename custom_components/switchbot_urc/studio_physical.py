@@ -342,6 +342,7 @@ def ws_physical_get(hass, connection, msg):
         connection.send_result(msg["id"], {"layout": physical.draft_for(remote), "ir_sources": ir_sources(entry),
                                           "functions": functions,
                                           "native_profiles": _native_profiles(),
+                                          "native_menu_glyphs": sorted(c.NATIVE_MENU_GLYPHS),
                                           "status": remote.get("physical_status", ""),
                                           "backup": remote.get("physical_backup")})
     except (ValueError, KeyError, TypeError) as err:

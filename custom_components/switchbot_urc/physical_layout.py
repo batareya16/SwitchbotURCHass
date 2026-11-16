@@ -380,6 +380,7 @@ def validate(remote: dict, draft: dict) -> dict:
             if expected != "native" or not number:
                 raise ValueError("Only Native submenu links support a menu icon")
             _validate_glyph(page["link_glyph"])
+            c.validate_native_menu_glyph(page["link_glyph"])
         if "link_record" in page:
             record = bytes.fromhex(str(page["link_record"]))
             if expected != "ir" or not number or len(record) != 36:

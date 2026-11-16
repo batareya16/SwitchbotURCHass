@@ -270,6 +270,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._jsonValid = true;
     this._physical = null;
     this._nativeProfiles = [];
+    this._nativeMenuGlyphs = [];
     this._physicalOrigins = {};
     this._lastIdentityMigrations = [];
     this._physicalSources = [];
@@ -798,18 +799,21 @@ class SwitchBotUrcPanel extends HTMLElement {
     return src ? `<img class="native-glyph ${className}" src="${src}" alt="" aria-hidden="true">` : "";
   }
 
-  _renderGlyphPicker(owner, field, label, defaultFunction) {
+  _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null) {
     const selected = owner[field];
     const current = selected ?? defaultFunction;
     const caption = NATIVE_GLYPH_LABELS[current];
     const preview = this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
+    const unsupported = selected !== undefined && allowedCodes && !allowedCodes.includes(selected);
     return `<details class="glyph-picker">
       <summary>${preview}<b>${label}</b>${caption ? ` <span>· ${escapeHtml(caption)}</span>` : ""}</summary>
+      ${unsupported ? '<p class="small" role="status">Choose a menu icon or reset to the default before saving.</p>' : ""}
       <button class="secondary compact" data-glyph-field="${field}" data-glyph-code=""
         ${selected === undefined ? "disabled" : ""}>Reset to default</button>
       <div class="glyph-grid" role="group" aria-label="${label}">
         ${Object.entries(NATIVE_GLYPH_LABELS).map(([value, caption]) => {
           const code = Number(value);
+          if (allowedCodes && !allowedCodes.includes(code)) return "";
           const iconId = `0x${code.toString(16).padStart(4, "0")}`;
           const name = caption || "No caption";
           return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
@@ -828,7 +832,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const defaultFunction = profile?.main_keys?.find((key) =>
       key.index === page.index - 1 && !key.actionable)?.function
       ?? profile?.subpages?.find((item) => item.index === page.index)?.link_function;
-    return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction);
+    return this._renderGlyphPicker(owner, "link_glyph", "Menu icon", defaultFunction, this._nativeMenuGlyphs);
   }
 
   _renderPageEditor(page, button, remote) {
@@ -1322,6 +1326,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalSources = result.ir_sources;
       this._physicalFunctions = result.functions || [];
       this._nativeProfiles = result.native_profiles || [];
+      this._nativeMenuGlyphs = result.native_menu_glyphs || [];
       this._physicalBaseline = structuredClone(result.layout);
       this._resetPhysicalOrigins(result.layout);
       const draft = this._layoutDraftsByRemote.get(this._draftScope());
