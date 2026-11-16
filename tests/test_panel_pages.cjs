@@ -138,6 +138,22 @@ test('the icon picker shows the firmware caption alongside the icon', () => {
   assert.match(html, /data-glyph-code="0"\s+aria-label="No caption \(0x0000\)"/);
 });
 
+test('IR softkeys use the recorded glyph including a menu link, with empty keys blank', () => {
+  const instance = panel();
+  instance._physical = {kind: 'ir', pages: [
+    {index: 0, buttons: [{index: 1, transport: 'stored', function: 25}]},
+    {index: 1, buttons: [], link_record: '0000d204' + '00'.repeat(32)},
+  ]};
+  instance._pageIndex = 0;
+  instance._renderScreen = () => '';
+  const html = instance._renderFace(instance._page());
+  const softkeys = html.split('class="screen-softkeys"')[1].split('translate(0 -23)')[0];
+  assert.match(softkeys, /data-page-link="1">[\s\S]*?keyfun-00d2\.png/);
+  assert.match(softkeys, /data-button="p0_k1">[\s\S]*?keyfun-0019\.png/);
+  assert.equal((softkeys.match(/<image /g) || []).length, 2);
+  assert.doesNotMatch(softkeys, /keyfun-0000\.png/);
+});
+
 test('adding the first row selects its editor and gives it a new physical identity', () => {
   const instance = panel();
   instance._physical.pages[1].buttons = [];
@@ -322,6 +338,22 @@ test('the visual action selector gets its new value and refreshes the count imme
   } finally {
     delete context.document;
   }
+});
+
+test('a select action checks the options of its actual entity', () => {
+  const instance = panel();
+  instance._hass = {states: {
+    'select.vacuum_room_4_order': {state: '1', attributes: {options: ['1', '2']}},
+    'select.vacuum_room_4_cleaning_mode': {state: 'mopping', attributes: {options: ['sweeping', 'mopping']}},
+  }};
+  const step = {action: 'select.select_option', target: {entity_id: 'select.vacuum_room_4_order'},
+    data: {option: 'sweeping'}};
+  instance._draftActions = [step];
+  assert.match(instance._selectOptionWarning(), /room_4_order currently offers 1, 2/);
+  step.target.entity_id = 'select.vacuum_room_4_cleaning_mode';
+  assert.equal(instance._selectOptionWarning(), '');
+  step.data.option = '{{ mode }}';
+  assert.equal(instance._selectOptionWarning(), '');
 });
 
 

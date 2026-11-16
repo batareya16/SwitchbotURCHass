@@ -73,6 +73,30 @@ def test_ir_recreate_rewrites_saved_pages_and_uploads_custom_ir_code():
     assert any(packet[:4] == bytes.fromhex("0f620401") for _, packet, _ in stages)
 
 
+def test_ir_menu_uses_its_cached_link_record_when_the_page_moves():
+    device_id = "00112233445566778899aa"
+    fn = 210
+    link = {"keyIndex": 0, "keyFun": fn, "key_type": 4}
+    main = c.build_create(1, 2, c.CTRL_IR, 0, 0, device_id, "TV", 1, [link])
+    submenu = c.build_create(1, 2, c.CTRL_IR, 0, 0, device_id, "TV", 1,
+                             [{"keyIndex": 0, "keyFun": 25}], page_index=1)
+    remote = {"device_type": "IR_2", "device_id": device_id,
+              "physical_packets": [main.hex(), submenu.hex()]}
+    draft = physical.draft_for(remote)
+    assert draft["pages"][0]["buttons"] == []
+    assert draft["pages"][1]["link_record"] == main[90:].hex()
+
+    # Older saved drafts lacked link metadata. Restore it from the installed record.
+    del draft["pages"][1]["link_record"]
+    remote["physical_layout"] = draft
+    draft = physical.draft_for(remote)
+    assert draft["pages"][1]["link_record"] == main[90:].hex()
+    draft["pages"][1]["index"] = 2
+    uploads, packets = physical.compile_pages(remote, draft, 1)
+    assert not uploads
+    assert packets[0][90:] == b"\x01" + main[91:]
+
+
 def test_hid_recreate_preserves_custom_ir_key_and_device_type():
     device_id = "001122334455"
     original = c.build_hid_edit_page(

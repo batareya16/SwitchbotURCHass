@@ -20,6 +20,23 @@ def source_packets(remote: dict) -> list[bytes]:
     return []
 
 
+def _ir_menu_link_records(packets: list[bytes]) -> list[bytes]:
+    for packet in packets:
+        if len(packet) >= 90 and packet[88] == 0:
+            c.rewrite_ir_page(packet, remote_index=packet[7], name="")
+            return [packet[offset:offset + 36] for offset in range(90, len(packet), 36)
+                    if packet[offset] < 4 and packet[offset + 3] == 4]
+    return []
+
+
+def _restore_ir_menu_links(remote: dict, pages: list[dict]) -> None:
+    records = {record[0] + 1: record.hex() for record in _ir_menu_link_records(source_packets(remote))}
+    for page in pages:
+        number = page["index"]
+        if number in records:
+            page.setdefault("link_record", records[number])
+
+
 def native_appearance(remote: dict) -> dict:
     """Resolve Studio appearance from the device readback or the cached Main page."""
     name = str(remote.get("device_type", "")).upper()
@@ -242,6 +259,8 @@ def draft_for(remote: dict) -> dict:
             for page in draft["pages"]:
                 if page["index"]:
                     page.setdefault("title", titles.get(str(page["index"]), ""))
+        elif draft.get("kind") == "ir":
+            _restore_ir_menu_links(remote, draft["pages"])
         return draft
     device_type = str(remote.get("device_type", "")).upper()
     if device_type in c.DEVTYPE:
@@ -289,6 +308,7 @@ def draft_for(remote: dict) -> dict:
         pages.append({"index": body[81], "buttons": buttons})
     if not pages:
         raise ValueError("Physical pages are unavailable. Reinstall this IR profile once to cache its commands.")
+    _restore_ir_menu_links(remote, pages)
     return {"kind": "ir", "pages": pages}
 
 
@@ -360,6 +380,15 @@ def validate(remote: dict, draft: dict) -> dict:
             if expected != "native" or not number:
                 raise ValueError("Only Native submenu links support a menu icon")
             _validate_glyph(page["link_glyph"])
+        if "link_record" in page:
+            record = bytes.fromhex(str(page["link_record"]))
+            if expected != "ir" or not number or len(record) != 36:
+                raise ValueError("IR menu links must come from the cached profile")
+            originals = (_ir_menu_link_records(source_packets(remote)) + _ir_menu_link_records(
+                [bytes.fromhex(value) for value in remote.get("physical_original_packets", [])]
+            ))
+            if not any(record[1:] == original[1:] for original in originals):
+                raise ValueError("IR menu links must come from the cached profile")
         seen = set()
         for key in buttons:
             index = key.get("index")
@@ -478,8 +507,11 @@ def compile_pages(
                 for child in draft["pages"]:
                     if child["index"]:
                         position = child["index"] - 1
-                        function = (39, 20, 210, 100)[position]
-                        records.append(bytes([position]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
+                        if child.get("link_record"):
+                            records.append(bytes([position]) + bytes.fromhex(child["link_record"])[1:])
+                        else:
+                            function = (39, 20, 210, 100)[position]
+                            records.append(bytes([position]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
                 if len(records) > 18:
                     raise ValueError("Main page has more than 18 commands including page links")
             source = source_packets(remote)[0]

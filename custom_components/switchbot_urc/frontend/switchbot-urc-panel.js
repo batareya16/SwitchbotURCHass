@@ -289,6 +289,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   set hass(value) {
     this._hass = value;
     if (this._actionSelectorEl) this._actionSelectorEl.hass = value;
+    this._updateSelectOptionWarning();
     if (this.isConnected && !this._data && !this._loading) this._load();
   }
 
@@ -1077,6 +1078,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       String(item.position || "").toUpperCase(), item,
     ]));
     const profile = this._nativeProfile(this._physical?.native_type || this._physical?.template);
+    const isIr = this._physical?.kind === "ir"
+      || String(this._remote()?.device_type || "").startsWith("IR_");
     // Glyphs are drawn around their own origin and moved onto the key's centre, so a key and
     // its mark cannot drift apart the way hand-placed coordinates did.
     const mark = (cx, cy, d) => `<path d="${d}" transform="translate(${cx} ${cy})" class="mark"/>`;
@@ -1123,10 +1126,18 @@ class SwitchBotUrcPanel extends HTMLElement {
           const linkFunction = profile?.main_keys?.find((item) =>
             item.index === index && !item.actionable)?.function
             ?? profile?.subpages?.find((item) => item.index === index + 1)?.link_function;
-          const linkGlyph = this._physical?.pages.find((item) => item.index === linked?.index)?.link_glyph;
-          const glyphSrc = this._nativeGlyphSrc(linked
+          const linkDraft = this._physical?.pages.find((item) => item.index === linked?.index);
+          const linkGlyph = linkDraft?.link_glyph;
+          const glyphButton = linked
             ? { button_function: linkFunction, button_glyph: linkGlyph }
-            : softkeys[tag]);
+            : softkeys[tag];
+          // The IR A–D widget reads keyFun from the Main-page record, including for menu links.
+          // WoRWS leaves positions with no record or keyFun zero empty.
+          const irFunction = linked ? Number.parseInt(linkDraft?.link_record?.slice(2, 6), 16)
+            : glyphButton?.button_function;
+          const glyphSrc = isIr
+            ? (irFunction ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
+            : this._nativeGlyphSrc(glyphButton);
           const x = 52 + index * 52;
           const shape = `<rect x="${x}" y="265" width="44" height="27" rx="5" class="cap"/>
             ${glyphSrc ? `<image href="${glyphSrc}" x="${x + 6}" y="269" width="19" height="19"/>` : ""}
@@ -1135,7 +1146,8 @@ class SwitchBotUrcPanel extends HTMLElement {
           // with it, and it is why it cannot carry a Home Assistant action.
           if (linked) {
             const previousLink = this._physicalBaseline?.pages.find((item) => item.index === linked.index);
-            const changed = this._physical && (!previousLink || previousLink.link_glyph !== linkGlyph);
+            const changed = this._physical && (!previousLink || previousLink.link_glyph !== linkGlyph
+              || previousLink.link_record !== linkDraft?.link_record);
             return `<g class="k link${page?.index === linked.index ? " current-page" : ""}${changed ? " unsaved" : ""}"
               role="button" tabindex="0" data-page-link="${linked.index}">
               <title>${escapeHtml(tag)} opens ${escapeHtml(linked.name)}</title>${shape}</g>`;
@@ -1964,6 +1976,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         index: page.index,
         title: page.title || "",
         link_glyph: page.link_glyph ?? null,
+        link_record: page.link_record ?? null,
         buttons: [...page.buttons].sort((a, b) => a.index - b.index).map((key) => ({
           index: key.index, transport: key.transport, function: key.function ?? null,
           code_hex: key.code_hex || "", record: key.record || "", glyph: key.glyph ?? null,
@@ -2518,7 +2531,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           ? ` Every button on this remote that has no actions of its own drives
              ${escapeHtml(remote.binding.entity_id)}.` : ""}</span></div>` : ""}
         ${this._mode === "disabled" ? `<div class="explanation danger"><b>Ignore this button.</b><span>Physical presses will be received but no Home Assistant action will run.</span></div>` : ""}
-        ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div><div id="visualActionEditor"></div><p class="json-help">To run a script, choose <b>Script: Turn on</b> and select the script, or choose the script’s own action.</p><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false" class="${this._jsonValid ? "" : "invalid"}">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : ""}
+        ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div><div id="visualActionEditor"></div><div id="selectOptionWarning" class="small" role="status">${escapeHtml(this._selectOptionWarning())}</div><p class="json-help">To run a script, choose <b>Script: Turn on</b> and select the script, or choose the script’s own action.</p><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false" class="${this._jsonValid ? "" : "invalid"}">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : ""}
       </div>
       `}
       `;
@@ -2527,6 +2540,30 @@ class SwitchBotUrcPanel extends HTMLElement {
   _actionSummary() {
     const count = this._draftActions.length;
     return count ? `${count} action${count === 1 ? "" : "s"}` : "No custom actions";
+  }
+
+  _selectOptionWarning() {
+    if (!this._jsonValid) return "";
+    const warnings = [];
+    for (const step of this._draftActions) {
+      if ((step?.action ?? step?.service) !== "select.select_option") continue;
+      const option = step.data?.option;
+      if (typeof option !== "string" || option.includes("{{") || option.includes("{%")) continue;
+      const targets = step.target?.entity_id ?? step.data?.entity_id;
+      for (const entity of [targets].flat()) {
+        const state = this._hass?.states?.[entity];
+        const options = state?.attributes?.options;
+        if (state?.state === "unavailable" || !Array.isArray(options)
+            || !options.length || options.includes(option)) continue;
+        warnings.push(`${entity} currently offers ${options.join(", ")}. “${option}” is unavailable for this entity.`);
+      }
+    }
+    return warnings.join(" ");
+  }
+
+  _updateSelectOptionWarning() {
+    const warning = this.shadowRoot.getElementById("selectOptionWarning");
+    if (warning) warning.textContent = this._selectOptionWarning();
   }
 
   _saveStatus() {
@@ -2575,6 +2612,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _updateActionEditor() {
+    this._updateSelectOptionWarning();
     const summary = this.shadowRoot.getElementById("actionSummary");
     if (summary) summary.textContent = this._actionSummary();
     const test = this.shadowRoot.getElementById("testButton");
@@ -3176,6 +3214,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .remote-capacity b{color:var(--primary-text-color,#212121)}
       .studio-save{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid var(--divider-color,#dfe3e8)}
       .studio-save span{color:var(--secondary-text-color,#68727d);font-size:13px}
+      #selectOptionWarning:empty{display:none}
       .row-tools{margin-top:12px}
       @media(max-width:900px){.workspace{grid-template-columns:1fr}.device-wrap{margin:auto}}
       @media(max-width:430px){header{align-items:center}.live{padding:0 10px}.device-wrap{width:100%}
