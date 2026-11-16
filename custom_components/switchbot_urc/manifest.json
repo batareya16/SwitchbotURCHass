@@ -1,10 +1,16 @@
 {
   "domain": "switchbot_urc",
   "name": "SwitchBot Universal Remote (WoRWS)",
-  "version": "0.50.3",
-  "documentation": "https://github.com/batareya16/SwitchbotURCHass",
-  "issue_tracker": "https://github.com/batareya16/SwitchbotURCHass/issues",
   "after_dependencies": ["mqtt"],
+  "bluetooth": [
+    {
+      "service_uuid": "cba20d00-224d-11e6-9fb8-0002a5d5c51b"
+    }
+  ],
+  "codeowners": [
+    "@batareya16"
+  ],
+  "config_flow": true,
   "dependencies": [
     "bluetooth_adapters",
     "frontend",
@@ -12,15 +18,9 @@
     "panel_custom",
     "websocket_api"
   ],
-  "codeowners": [
-    "@batareya16"
-  ],
-  "requirements": [],
+  "documentation": "https://github.com/batareya16/SwitchbotURCHass",
   "iot_class": "local_push",
-  "config_flow": true,
-  "bluetooth": [
-    {
-      "service_uuid": "cba20d00-224d-11e6-9fb8-0002a5d5c51b"
-    }
-  ]
+  "issue_tracker": "https://github.com/batareya16/SwitchbotURCHass/issues",
+  "requirements": [],
+  "version": "0.50.3"
 }
