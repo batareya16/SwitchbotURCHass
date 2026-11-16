@@ -16,7 +16,7 @@ One physical WoRWS can hold remotes of all three kinds. IR and HID send commands
 
 ## Before you buy a dongle
 
-For **Bridge remotes**, use **Home Assistant OS** and two Bluetooth adapters. Keep your existing adapter for Home Assistant. Give the Bridge its own USB dongle.
+For **Bridge remotes**, use **Home Assistant OS** and separate Bluetooth adapter, only for this job, it's must have. Keep your existing adapter for Home Assistant. Give the Bridge its own USB dongle.
 
 **Buy a Linux-compatible Bluetooth 5.0 or newer dongle with BLE peripheral mode and connectable LE Extended Advertising.** Look for **LE Extended Advertising** in the adapter or chipset specs, or ask the seller to confirm it. The Bluetooth version on the box alone does not guarantee this feature. An adapter that can scan for Bluetooth devices can still lack the advertising support the Bridge needs. [Bluetooth LE features](https://www.bluetooth.com/bluetooth-le-primer/)
 
