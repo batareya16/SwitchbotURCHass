@@ -271,8 +271,8 @@ class TestControllerOwnership:
         assert channel.closed
         assert server.channel is None
 
-    def test_pause_waits_until_the_event_loop_finishes_reading(self, server, monkeypatch):
-        reading, allow_read, pausing, powered = (threading.Event() for _ in range(4))
+    def test_stop_waits_until_the_event_loop_finishes_reading(self, server, monkeypatch):
+        reading, allow_read, stopping, powered = (threading.Event() for _ in range(4))
         monkeypatch.setattr(hci, "set_powered", lambda *_: powered.set() or "ok")
         class Channel:
             def read(self, timeout):
@@ -286,15 +286,15 @@ class TestControllerOwnership:
         def read():
             with server._io_lock:
                 server._serve_once()
-        def pause():
-            pausing.set()
-            server.pause()
+        def stop():
+            stopping.set()
+            server.stop()
         reader = threading.Thread(target=read)
-        control = threading.Thread(target=pause)
+        control = threading.Thread(target=stop)
         reader.start()
         assert reading.wait(2)
         control.start()
-        assert pausing.wait(2)
+        assert stopping.wait(2)
         try:
             assert not powered.wait(0.03), "controller released while another thread was reading it"
         finally:

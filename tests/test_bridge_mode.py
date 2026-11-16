@@ -20,70 +20,47 @@ SECOND = "DA:71:16:E0:1F:92"
 THIRD = "C0:88:1B:E0:1F:92"
 
 
-class TestBluetooth4:
-    def test_serves_only_its_own_address(self):
-        multi, addresses, why = hci.plan_mode(False, 5, OWN, [], [])
-        assert multi is False
-        assert addresses == [OWN]
-        assert "extended advertising" in why
-
-    def test_says_so_when_more_were_configured(self):
-        multi, addresses, why = hci.plan_mode(False, 5, OWN, [OWN, SECOND], [])
-        assert multi is False
-        assert addresses == [OWN]
-        assert "can only ever serve one" in why
-
-    def test_a_single_configured_address_is_not_a_complaint(self):
-        _multi, _addresses, why = hci.plan_mode(False, 5, OWN, [OWN], [])
-        assert "can only ever serve one" not in why
+def test_fresh_controller_gets_a_deterministic_address_pool():
+    assert hci.address_pool(OWN, [], 4) == [
+        OWN, THIRD, "C1:88:1B:E0:1F:92", "C2:88:1B:E0:1F:92",
+    ]
 
 
-class TestBluetooth5:
-    def test_its_own_address_alone_is_enough_to_start(self):
-        multi, addresses, _why = hci.plan_mode(True, 4, OWN, [], [])
-        assert multi is True
-        assert addresses == [OWN]
-
-    def test_addresses_added_at_run_time_come_back(self):
-        multi, addresses, _why = hci.plan_mode(True, 4, OWN, [], [SECOND])
-        assert multi is True
-        assert addresses == [OWN, SECOND]
-
-    def test_a_pinned_list_is_honoured(self):
-        _multi, addresses, _why = hci.plan_mode(True, 4, OWN, [SECOND, THIRD], [])
-        assert addresses == [OWN, SECOND, THIRD]
-
-    def test_the_controller_s_own_address_always_comes_first(self):
-        # Tiles bound before any of this existed point at it, so it must never be dropped.
-        _multi, addresses, _why = hci.plan_mode(True, 4, OWN, [SECOND], [THIRD])
-        assert addresses[0] == OWN
-
-    def test_duplicates_across_the_sources_are_collapsed(self):
-        _multi, addresses, _why = hci.plan_mode(
-            True, 4, OWN, ["8a881be01f92", SECOND], ["DA-71-16-E0-1F-92"])
-        assert addresses == [OWN, SECOND]
-
-    def test_rubbish_in_the_option_is_ignored(self):
-        _multi, addresses, _why = hci.plan_mode(True, 4, OWN, ["", "nonsense", SECOND], [])
-        assert addresses == [OWN, SECOND]
+def test_custom_and_previously_active_addresses_keep_their_order():
+    legacy = "8A:88:1B:E0:1F:91"
+    seeds = [legacy, SECOND, "da-71-16-e0-1f-92", "nonsense", THIRD]
+    assert hci.address_pool(OWN, seeds, 4) == [legacy, SECOND, THIRD, OWN]
+    assert hci.address_pool(OWN, seeds, 3) == [legacy, SECOND, THIRD]
 
 
-class TestMoreAddressesThanSets:
-    def test_keeps_what_fits_and_names_what_does_not(self):
-        multi, addresses, why = hci.plan_mode(True, 2, OWN, [SECOND, THIRD], [])
-        assert multi is True
-        assert addresses == [OWN, SECOND]
-        assert THIRD in why
-        assert "cannot be served" in why
+def test_startup_reports_only_addresses_the_controller_enabled(monkeypatch):
+    monkeypatch.setattr(hci, "resolve_adapter", lambda _: ("hci0", 0, ""))
+    seeds = ["8A:88:1B:E0:1F:91", SECOND, THIRD]
+    server = hci.MultiAddressServer(
+        "hci0", seeds, protocol_factory=None, device_factory=None,
+        conn_min=6, conn_max=12, auto_fill=True,
+    )
+    enable_counts = []
 
-    def test_never_drops_the_controller_s_own_address(self):
-        _multi, addresses, _why = hci.plan_mode(True, 1, OWN, [SECOND, THIRD], [])
-        assert addresses == [OWN]
+    class Channel:
+        def command(self, opcode, payload=b""):
+            if opcode == hci.OP_READ_BD_ADDR:
+                return hci.address_bytes(OWN)
+            if opcode == hci.OP_LE_READ_BUFFER_SIZE:
+                return b"\x1b\x00\x08"
+            if opcode == hci.OP_LE_READ_ADV_SETS:
+                return b"\x04"
+            if opcode == hci.OP_LE_SET_EXT_ADV_ENABLE and payload[0]:
+                enable_counts.append(payload[1])
+                if payload[1] == 4:
+                    raise hci.HciCommandError(opcode, hci.STATUS_CONNECTION_LIMIT)
+            return b""
 
-
-class TestNothingUsable:
-    def test_no_address_at_all_means_no_multi_address(self):
-        multi, addresses, why = hci.plan_mode(True, 4, "", [], [])
-        assert multi is False
-        assert addresses == []
-        assert "no usable address" in why
+    server._initialise_controller(Channel())
+    assert enable_counts == [4, 3]
+    assert server.capabilities()["advertising_sets"] == 3
+    assert server.capabilities()["serving"] == seeds
+    assert server.serves_address(SECOND)
+    assert not server.serves_address(OWN)
+    server.channel = None
+    assert not server.serves_address(SECOND)

@@ -34,7 +34,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.51"
+FRONTEND_VERSION = "0.50.58"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -362,10 +362,6 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "artwork_id": artwork_id,
                 "can_test_native_icon": str(remote.get("device_type", "")).upper()
                     in commands.NATIVE_DEVTYPE,
-                "native_icon_test_active": bool(
-                    remote.get("icon_variant_backup_packet")
-                    or remote.get("washer_artwork_backup_packet")
-                ),
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
             }

@@ -253,6 +253,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._pageEditing = true;
     this._mode = "preset";
     this._draftActions = [];
+    this._mappingDraftsByRemote = new Map();
+    this._layoutDraftsByRemote = new Map();
+    this._appearanceDraftsByRemote = new Map();
+    this._presetDraftsByRemote = new Map();
     this._activeButton = null;
     this._activeEntryId = null;
     this._activeRemoteId = null;
@@ -272,11 +276,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
     this._sources = null;
-    // Which remote's tile is being edited on the screen, and the icon picked for it but
-    // not yet written.
+    // Which remote's appearance editor is open.
     this._iconPickerFor = null;
-    this._iconDraft = null;
-    this._tileNameDraft = null;
     this._physicalStatus = "";
     this._physicalBusy = false;
   }
@@ -316,6 +317,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     // read-only towards the device, so it is safe to run on every refresh; a failure there
     // must still leave the reload to happen.
     if (!this._entryId) return this._load();
+    this._stashLayout();
     this._physicalBusy = true;
     this._render();
     let adopted = 0;
@@ -334,6 +336,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._physical = null;
     this._physicalFor = null;
     this._physicalBusy = false;
+    this._sources = null;
     await this._load();
     if (importError && !this._error) this._error = importError;
     if (!importError && (adopted || dropped || readback)) {
@@ -430,19 +433,63 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._render();
   }
 
+  _draftScope() {
+    return JSON.stringify([this._entryId, this._remoteId]);
+  }
+
+  _mappingDrafts() {
+    const scopes = this._mappingDraftsByRemote ??= new Map();
+    const scope = this._draftScope();
+    if (!scopes.has(scope)) scopes.set(scope, new Map());
+    return scopes.get(scope);
+  }
+
+  _mappingKey(button) {
+    return this._physical ? `p${button.button_page}_k${button.button_index}` : button.button_id;
+  }
+
+  _rememberMapping(button = this._button()) {
+    if (!button || !this._dirty) return;
+    this._mappingDrafts().set(this._mappingKey(button), {
+      mode: this._mode,
+      actions: structuredClone(this._draftActions),
+      valid: this._jsonValid,
+      raw: this._actionJsonDraft,
+    });
+  }
+
+  _stashLayout() {
+    if (!this._physical) return;
+    const scope = this._draftScope();
+    if (this._physicalChanges()) {
+      this._layoutDraftsByRemote.set(scope, {
+        layout: this._physical, baseline: this._physicalBaseline, origins: this._physicalOrigins,
+      });
+    } else {
+      this._layoutDraftsByRemote.delete(scope);
+    }
+  }
+
   _pageKeyEntries(page) {
     return [...(page?.buttons || [])].sort((a, b) => a.index - b.index).map((key) => ({
       key,
-      origin: this._physicalOrigins[`p${page.index}_k${key.index}`]
-        || `p${page.index}_k${key.index}`,
+      origin: this._physicalOrigins[`p${page.index}_k${key.index}`],
+      mapping: this._mappingDrafts().get(`p${page.index}_k${key.index}`),
     }));
   }
 
   _replacePageKeyOrder(page, entries) {
-    for (const key of page.buttons) delete this._physicalOrigins[`p${page.index}_k${key.index}`];
-    page.buttons = entries.map(({ key, origin }, index) => {
+    const mappings = this._mappingDrafts();
+    for (const key of page.buttons) {
+      const id = `p${page.index}_k${key.index}`;
+      delete this._physicalOrigins[id];
+      mappings.delete(id);
+    }
+    page.buttons = entries.map(({ key, origin, mapping }, index) => {
       key.index = index;
-      this._physicalOrigins[`p${page.index}_k${index}`] = origin;
+      const id = `p${page.index}_k${index}`;
+      if (origin) this._physicalOrigins[id] = origin;
+      if (mapping) mappings.set(id, mapping);
       return key;
     });
   }
@@ -454,7 +501,34 @@ class SwitchBotUrcPanel extends HTMLElement {
     const target = index + direction;
     if (index < 0 || target < 0 || target >= entries.length) return;
     [entries[index], entries[target]] = [entries[target], entries[index]];
+    const movedKey = entries[target].key;
     this._replacePageKeyOrder(page, entries);
+    this._selectButton(this._page()?.buttons.find((item) => item.button_index === movedKey.index), false);
+    this._physicalStatus = "";
+    this._render();
+  }
+
+  _removeMenu(page) {
+    for (const key of page.buttons) {
+      const id = `p${page.index}_k${key.index}`;
+      delete this._physicalOrigins[id];
+      this._mappingDrafts().delete(id);
+    }
+    this._physical.pages = this._physical.pages.filter((item) => item !== page);
+    this._pageIndex = 0;
+    this._pageEditing = false;
+    this._selectButton(null, false);
+    this._physicalStatus = "";
+    this._render();
+  }
+
+  _removeMenuRow(page, key) {
+    if (page.buttons.length === 1) return this._removeMenu(page);
+    const entries = this._pageKeyEntries(page).filter((item) => item.key !== key);
+    const index = key.index;
+    this._replacePageKeyOrder(page, entries);
+    const buttons = this._page()?.buttons || [];
+    this._selectButton(buttons[Math.min(index, buttons.length - 1)], false);
     this._physicalStatus = "";
     this._render();
   }
@@ -483,7 +557,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _layoutState(key) {
     const current = `p${key.button_page}_k${key.button_index}`;
-    const original = this._physicalOrigins[current] || current;
+    const original = this._physicalOrigins[current];
     const existed = (this._physicalBaseline?.pages || []).some((page) => page.buttons
       .some((item) => `p${page.index}_k${item.index}` === original));
     if (!existed) return "new";
@@ -518,16 +592,18 @@ class SwitchBotUrcPanel extends HTMLElement {
             || { index }) : page.buttons;
         const buttons = physicalKeys.map((key) => {
           const currentId = `p${page.index}_k${key.index}`;
-          const identity = this._physicalOrigins[currentId] || currentId;
-          const source = remotePages.flatMap((item) => item.buttons || [])
-            .find((item) => item.button_id === identity);
+          const origin = this._physicalOrigins[currentId];
+          const identity = origin || currentId;
+          const source = (!this._physicalBaseline || origin || !page.buttons.includes(key))
+            ? remotePages.flatMap((item) => item.buttons || []).find((item) => item.button_id === identity)
+            : null;
           const profileKey = page.index === 0
             ? nativeProfile?.main_keys?.find((item) => item.index === key.index) : null;
           const functionLabel = this._profileFunctionLabel(key.function);
           return {
             ...source,
             draft_only: !source,
-            button_id: identity,
+            button_id: currentId,
             button_page: page.index,
             button_index: key.index,
             button_function: key.function ?? source?.button_function ?? profileKey?.function ?? 0,
@@ -588,9 +664,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     // Track the attempt, not its result. Keying this on `_physical` meant that a remote whose
     // layout cannot be loaded was retried from inside every render, and since the request ends
     // in another render that was an endless loop that took the whole panel down.
-    const token = `${this._entryId}:${this._remoteId}`;
+    const token = this._draftScope();
     if (this._physicalFor === token) return;
     this._physicalFor = token;
+    this._physicalRequest = null;
     this._physical = null;
     this._physicalBaseline = null;
     this._openPhysical();
@@ -622,28 +699,26 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (button && rerender) {
       this._pageEditing = false;
       this._iconPickerFor = null;
-      this._iconDraft = null;
-      this._tileNameDraft = null;
     }
     // A position with no function yet becomes one as soon as it is picked, using the meaning the
     // position already carries. No dialogue: the choice was made by clicking it.
     const draft = button ? this._draftKey(button) : null;
-    if (draft && !draft.key.function && button.default_function) {
+    if (rerender && draft && !draft.key.function && button.default_function) {
       draft.key.function = button.default_function;
     }
-    this._draftActions = structuredClone(button?.actions || []);
-    this._dirty = false;
-    this._jsonValid = true;
-    this._mode = button?.has_override
-      ? button.actions.length
-        ? "actions"
-        : "disabled"
-      : "preset";
+    const draftMapping = button && this._mappingDrafts().get(this._mappingKey(button));
+    this._draftActions = structuredClone(draftMapping?.actions || button?.actions || []);
+    this._dirty = Boolean(draftMapping);
+    this._jsonValid = draftMapping?.valid ?? true;
+    this._actionJsonDraft = draftMapping?.raw;
+    this._mode = draftMapping?.mode ?? (button?.has_override
+      ? button.actions.length ? "actions" : "disabled"
+      : "preset");
     if (rerender) this._render();
   }
 
   _handleLiveEvent(event) {
-    if (this._physical) return;
+    if (this._physical || this._saving) return;
     if (!event?.remote_id || !event?.button_id) return;
     const sourceAddress = String(event.worws_address || event.address || "")
       .replaceAll(":", "")
@@ -664,7 +739,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._activeEntryId = entry.entry_id;
       this._activeRemoteId = remote.remote_id;
       this._activeButton = event.button_id;
-      if (this._dirty) {
+      if (this._mappingDrafts().size || this._hasAppearanceChanges() || this._presetDraftsByRemote.has(this._draftScope())) {
         this._render();
         this._scheduleActiveClear();
         return;
@@ -754,14 +829,12 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderPageEditor(page, button, remote) {
     const editingMenu = this._pageEditing || !button;
     const freePages = this._availablePageIndexes();
+    const row = page.buttons.findIndex((item) => item.button_id === button?.button_id);
     return `<section class="page-editor">
       <div class="editor-head"><div><span class="page-kicker">Menu · key ${"ABCD"[page.index - 1]}</span>
         <h2>${escapeHtml(page.name)}</h2><p class="small">${page.buttons.length} row${page.buttons.length === 1 ? "" : "s"}</p></div></div>
       <div class="page-tools">
         <button class="primary compact" id="addKeyToPage" ${this._freeIndexOnPage(page.index) === null || this._physicalBusy ? "disabled" : ""}>＋ Add row</button>
-        ${this._renderSaveButton()}
-        ${this._physicalChanges() ? '<button class="secondary compact" id="physicalDiscard">Discard changes</button>' : ""}
-        ${this._physicalBackup ? '<button class="secondary compact" id="physicalRestore">Load previous layout</button>' : ""}
         ${freePages.length ? `<label class="page-move">Move to<select id="moveCurrentPage"><option value="">Choose key…</option>${freePages.map((index) => `<option value="${index}">Key ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : ""}
         <button class="secondary compact destructive" id="removeThisPage" ${this._physicalBusy ? "disabled" : ""}>Delete menu</button>
       </div>
@@ -770,11 +843,15 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button data-page-editor="menu" class="${editingMenu ? "selected" : ""}">Menu settings</button>
         <button data-page-editor="row" class="${!editingMenu ? "selected" : ""}" ${button ? "" : "disabled"}>${button ? `Row ${page.buttons.findIndex((item) => item.button_id === button.button_id) + 1}` : "Select a row"}</button>
       </div>
+      ${!editingMenu && row >= 0 ? `<div class="page-tools row-tools">
+        <button class="secondary compact" id="moveRowUp" ${row === 0 ? "disabled" : ""}>↑ Move up</button>
+        <button class="secondary compact" id="moveRowDown" ${row === page.buttons.length - 1 ? "disabled" : ""}>↓ Move down</button>
+        <button class="secondary compact destructive" id="removeKey">${page.buttons.length === 1 ? "Delete last row and menu" : "Delete row"}</button>
+      </div>` : ""}
       ${editingMenu ? this._renderMenuIcon(page)
         + (page.buttons.length ? '<p class="small">Select a row on the remote to edit its command and Home Assistant actions.</p>'
           : '<div class="explanation"><b>This menu is empty.</b><span>Add a row, configure it, then save the page to the remote.</span></div>')
         : this._editor(button, remote)}
-      ${this._error ? `<p class="error" role="alert">${escapeHtml(this._error)}</p>` : ""}
     </section>`;
   }
 
@@ -852,62 +929,38 @@ class SwitchBotUrcPanel extends HTMLElement {
         ? ` · ${draft} in draft` : ""}</title>${body}</g>`;
   }
 
-  async _saveTile() {
-    // Native icons rewrite their saved page records in place; other remote types use their
-    // existing rebuild path. Rename is a separate metadata command when both fields changed.
+  _hasAppearanceChanges() {
     const remote = this._remote();
-    if (!remote) return;
-    const input = this.shadowRoot.querySelector("[data-rename-input]");
-    const name = (this._tileNameDraft ?? input?.value ?? "").trim();
-    const icon = this._iconDraft ?? remote.icon;
-    const renamed = name && name !== remote.name;
-    const reiconed = icon !== remote.icon;
-    if (this._physicalChanges()) {
-      this._error = "Save the screen layout before changing the name or icon.";
-      this._render();
-      return;
-    }
-    if (!renamed && !reiconed) {
-      this._iconPickerFor = null;
-      this._iconDraft = null;
-      this._tileNameDraft = null;
-      this._render();
-      return;
-    }
-    if (!name) {
-      this._error = "Give the remote a name.";
-      this._render();
-      return;
-    }
-    this._physicalBusy = true;
-    this._render();
-    try {
-      let result = null;
-      if (reiconed && remote.can_test_native_icon) {
-        result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/update_native_icon`,
-          entry_id: this._entryId, remote_id: this._remoteId, icon });
-        if (renamed) {
-          result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/rename`,
-            entry_id: this._entryId, remote_id: this._remoteId, name });
-        }
-      } else if (reiconed) {
-        result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
-          entry_id: this._entryId, remote_id: this._remoteId, icon, name });
-      } else {
-        result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/rename`,
-          entry_id: this._entryId, remote_id: this._remoteId, name });
+    const draft = this._appearanceDraftsByRemote?.get(this._draftScope());
+    return Boolean(remote && draft && (draft.name.trim() !== remote.name || draft.icon !== remote.icon));
+  }
+
+  async _saveAppearance() {
+    if (!this._hasAppearanceChanges()) return;
+    const remote = this._remote();
+    const scope = this._draftScope();
+    const draft = this._appearanceDraftsByRemote.get(scope);
+    const name = draft.name.trim();
+    const icon = draft.icon;
+    const request = { entry_id: this._entryId, remote_id: this._remoteId };
+    let result;
+    if (icon !== remote.icon) {
+      if (!remote.can_test_native_icon) {
+        result = await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/remote/recreate`, icon, name });
+        this._appearanceDraftsByRemote.delete(scope);
+        this._physicalFor = null;
+        return result?.warning;
       }
-      this._notify(result?.warning
-        || (reiconed && renamed ? `Saved as "${name}" with the ${icon} icon`
-          : reiconed ? `Icon changed to ${icon}` : `Renamed to ${name}`));
-      this._iconPickerFor = null;
-      this._iconDraft = null;
-      this._tileNameDraft = null;
-      this._physical = null;
-      this._physicalFor = null;
-      this._error = null;
-    } catch (error) { this._error = error?.message || String(error); }
-    finally { this._physicalBusy = false; await this._load(); }
+      result = await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/remote/update_native_icon`, icon });
+      remote.icon = icon;
+    }
+    if (name !== remote.name) {
+      const renamed = await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/remote/rename`, name });
+      if (renamed?.warning) result = renamed;
+      remote.name = name;
+    }
+    this._appearanceDraftsByRemote.delete(scope);
+    return result?.warning;
   }
 
   _renderScreen(page) {
@@ -961,7 +1014,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const profile = native
       ? this._nativeProfile(this._physical.native_type || this._physical.template) : null;
     const editing = this._iconPickerFor === remote.remote_id;
-    const pickedIcon = editing ? this._iconDraft ?? remote.icon : remote.icon;
+    const draft = this._appearanceDraftsByRemote.get(this._draftScope());
+    const pickedIcon = draft?.icon ?? remote.icon;
     const choices = this._entry()?.icons || [];
     const installedArtwork = this._physical?.native_type === remote.native_type ? remote.artwork_id : undefined;
     const artwork = native ? this._nativeArtworkSrc(profile, installedArtwork)
@@ -973,8 +1027,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${native ? `<section class="native-type-panel"><div class="native-type-heading"><b>Type</b>
           <span>Choose the built-in screen and button layout.</span></div>
           ${this._nativeTypeChoices(this._nativeProfiles, this._physical.native_type || this._physical.template, "native-profile")}
-          ${this._physicalChanges() ? `<div class="appearance-profile-save"><span class="appearance-draft">Type or layout change pending</span>
-            <button class="primary compact" data-physical-apply ${this._physicalBusy ? "disabled" : ""}>Save to remote</button></div>` : ""}
         </section>` : isHid || isIr ? `<div class="appearance-part">
           <div class="artwork-preview">${artwork ? `<img src="${artwork}" alt="Firmware illustration for ${escapeHtml(native ? profile?.title : remote.device_type)}">` : "—"}</div>
           <div class="appearance-part-body">
@@ -993,7 +1045,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       </div>
       ${editing ? `<div class="appearance-editor">
         <label>Name on the remote<input data-rename-input="1" maxlength="30" spellcheck="false"
-          value="${escapeHtml(this._tileNameDraft ?? remote.name)}"></label>
+          value="${escapeHtml(draft?.name ?? remote.name)}"></label>
         ${canChooseIcon ? `<span class="appearance-field-label">Device icon</span>
         <div class="appearance-icon-grid">${choices.map((name) => `<button
           class="appearance-icon-choice${name === pickedIcon ? " selected" : ""}"
@@ -1002,9 +1054,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${isHid ? `<p class="appearance-note">This remote keeps its saved icon code.</p>`
           : isIr ? `<p class="appearance-note">This remote keeps its saved icon code. The app's 18 icon names are not 18 distinct firmware illustrations.</p>`
           : `<p class="appearance-note">These previews come from the SwitchBot app. Distinct physical artwork for every catalog icon is not confirmed.</p>`}
-        ${this._physicalChanges() ? `<p class="appearance-note">Save the screen layout first, then save the name${firmwareArtwork ? "" : " and icon"}.</p>` : ""}
-        <div class="appearance-actions"><button class="primary" data-tile-save="1" ${this._physicalBusy || this._physicalChanges() ? "disabled" : ""}>${canChooseIcon ? "Save name and icon" : "Save name"}</button>
-          <button class="secondary compact" data-icon-cancel="1">Cancel</button></div>
       </div>` : ""}
       ${native ? this._renderNativeProfileWarnings() : ""}
     </section>`;
@@ -1111,21 +1160,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${key("CHDOWN", `${rocker(212, 612, false)}${mark(212, 612, "M-5-3l5 5 5-5")}`, "Channel down")}
         </g>
       </svg>`;
-    const known = new Set(["ON", "OFF", "UP", "DOWN", "LEFT", "RIGHT", "OK", "BACK", "HOME",
-      "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN", "A", "B", "C", "D"]);
-    const extras = (page?.buttons || []).filter(
-      (item) => !known.has(String(item.position || "").toUpperCase()));
-    const extrasRow = extras.length
-      ? `<div class="screen-keys"><div class="sk-title">Positions this remote uses that the
-         device has no key for</div><div class="button-grid">${extras.map((item) => {
-          const [status, statusLabel] = this._status(item);
-          const draft = this._draftLabel(item);
-          return `<button class="remote-button ${status}${item.button_id === this._buttonId ? " selected" : ""}${draft ? " unsaved" : ""}"
-            data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(statusLabel)}${draft ? ` · ${draft} in draft` : ""}">
-            ${this._nativeGlyph(item, "glyph")}<span>${escapeHtml(item.label)}</span><i></i></button>`;
-        }).join("")}</div></div>`
-      : "";
-    return svg + extrasRow;
+    return svg;
   }
 
   _render() {
@@ -1183,7 +1218,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             <button class="secondary" id="refresh" title="Re-read the remote and pick up anything created in the SwitchBot app">${this._physicalBusy ? "Refreshing…" : "Refresh"}</button>
           </div>
         </header>
-        ${this._error ? `<div class="error">${escapeHtml(this._error)}</div>` : ""}
+        ${this._error && !remote ? `<div class="error" role="alert">${escapeHtml(this._error)}</div>` : ""}
         ${this._loading ? `<div class="loading"><span></span>Loading remotes…</div>` : ""}
         ${!this._loading && !entries.length ? `<div class="empty"><b>No configured Universal Remote found.</b><br>Set up the integration first.</div>` : ""}
         ${entries.length ? `
@@ -1201,30 +1236,28 @@ class SwitchBotUrcPanel extends HTMLElement {
               "Install a new remote on the Universal Remote", "accent")}
             ${remote ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
-            ${remote?.can_test_native_icon ? `<button class="secondary" id="nativeIconVariantTest"
-              title="Temporarily show the built-in Floor lamp screen profile; the original page is saved">Test Floor lamp screen</button>
-              ${remote.native_icon_test_active ? `<button class="secondary" id="nativeIconVariantRestore"
-                title="Restore the saved original Main page">Restore original</button>` : ""}` : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
               "Bind this remote to a different Bluetooth address") : ""}
             ${remote ? this._action("deleteRemote", "🗑", "Delete",
               `Remove "${remote.name}" from the Universal Remote for good`, "danger") : ""}
           </div>
+          ${this._renderRemoteCapacity()}
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
-          ${page?.index && !this._iconPickerFor ? "" : this._renderApplyBar()}
+          ${this._renderApplyBar()}
           ${this._iconPickerFor ? "" : this._renderNativeProfileWarnings()}
           ${this._renderCloud()}
           ${this._renderDeviceTable()}
           ${this._renderDiagnostics()}
           ${remote ? `
-            <section class="quick-bind">
+            <section class="quick-bind" ${this._saving ? "inert" : ""}>
               <div><b>Quick bind</b><span>Apply a complete light preset; individual buttons can override it.</span></div>
-              <select id="lightSelect"><option value="">Choose a light…</option>${lights.map((state) => `<option value="${escapeHtml(state.entity_id)}" ${state.entity_id === boundLight ? "selected" : ""}>${escapeHtml(state.attributes.friendly_name || state.entity_id)}</option>`).join("")}</select>
-              <button class="secondary" id="quickBind">Apply preset</button>
+              <select id="lightSelect"><option value="">Choose a light…</option>${lights.map((state) => `<option value="${escapeHtml(state.entity_id)}" ${state.entity_id === (this._presetDraftsByRemote.get(this._draftScope()) || boundLight) ? "selected" : ""}>${escapeHtml(state.attributes.friendly_name || state.entity_id)}</option>`).join("")}</select>
             </section>
-            <nav class="pages">${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
-            <div class="workspace">
+            ${this._error ? `<div class="error" role="alert">${escapeHtml(this._error)}</div>` : ""}
+            <div class="studio-save"><span role="status" id="saveStatus">${escapeHtml(this._saveStatus() || this._saveLabel())}</span>${this._renderSaveButton()}</div>
+            <nav class="pages" ${this._saving ? "inert" : ""}>${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
+            <div class="workspace" ${this._saving ? "inert" : ""}>
               <section class="remote-stage">
                 <div class="device-wrap">${this._renderFace(page)}</div>
               <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span>${this._physical ? '<span><i class="unsaved"></i>Unsaved change</span>' : ""}</div>
@@ -1265,12 +1298,13 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   async _openPhysical() {
     clearTimeout(this._activeTimer);
+    const scope = this._draftScope();
     const request = Symbol();
     this._physicalRequest = request;
     try {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/get`,
         entry_id: this._entryId, remote_id: this._remoteId });
-      if (request !== this._physicalRequest) return;
+      if (request !== this._physicalRequest || scope !== this._draftScope()) return;
       this._physical = result.layout;
       this._physicalBackup = result.backup;
       this._physicalSources = result.ir_sources;
@@ -1278,9 +1312,16 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._nativeProfiles = result.native_profiles || [];
       this._physicalBaseline = structuredClone(result.layout);
       this._resetPhysicalOrigins(result.layout);
-      this._physicalStatus = result.status || "";
+      const draft = this._layoutDraftsByRemote.get(this._draftScope());
+      if (draft) {
+        this._physical = draft.layout;
+        this._physicalBaseline = draft.baseline;
+        this._physicalOrigins = draft.origins;
+      }
+      this._normalizeSelection();
+      this._physicalStatus = draft ? "" : result.status || "";
     } catch (error) {
-      if (request !== this._physicalRequest) return;
+      if (request !== this._physicalRequest || scope !== this._draftScope()) return;
       // No editable layout for this remote: the Home Assistant mapping still works.
       this._physical = null;
       this._physicalBaseline = null;
@@ -1383,13 +1424,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         <tbody>${this._sources.native_options.controllers.map((item) => `<tr>
           <td>${escapeHtml(item.adapter)}<br><code>${escapeHtml(item.address)}</code></td>
           <td>${item.used} of ${item.capacity}${
-            item.extended_advertising ? "" : "<br><span class=\"small\">no Bluetooth 5</span>"}</td>
+            item.extended_advertising ? "" : "<br><span class=\"small\">single-address mode</span>"}</td>
           <td>${(item.serving || []).map((a) => `<code>${escapeHtml(a)}</code>`).join("<br>")
             || "<span class=\"small\">not reported</span>"}</td></tr>`).join("")}
-        </tbody></table>
-        <p class="small">The add-on's <b>addresses</b> option is only the starting list; Remote
-          Studio adds to it as remotes are created, and the add-on keeps those across restarts.
-          This column is what it is actually advertising.</p>` : ""}
+        </tbody></table>` : ""}
       ${diag?.bridges ? `<table><thead><tr><th>Bridge</th><th>Address</th><th>Advertising</th></tr></thead>
         <tbody>${diag.bridges.map((row) => `<tr><td>${escapeHtml(row.name)}</td>
           <td><code>${escapeHtml(row.address)}</code></td>
@@ -1446,12 +1484,38 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
   }
 
+  _renderRemoteCapacity() {
+    const sources = this._sources;
+    const counters = [["ir", "IR"], ["native", "Native"], ["hid", "HID"]];
+    const checking = this._sourcesRequest?.refreshCapacity;
+    const unknown = counters.some(([kind]) => sources?.remote_capacity?.[kind]?.available == null);
+    return `<div class="remote-capacity" role="status">
+      ${counters.map(([kind, label]) => {
+        const { available, total } = sources?.remote_capacity?.[kind] || {};
+        return `<span>${label} remotes available <b>${available ?? "—"}/${total ?? "—"}</b></span>`;
+      }).join("")}
+      ${sources?.capacity_read_failed ? '<span>Could not check availability.</span>' : ""}
+      ${unknown ? `<button id="checkRemoteCapacity" class="secondary compact" ${checking ? "disabled" : ""}>${
+        checking ? "Checking…" : "Check availability"}</button>` : ""}
+    </div>`;
+  }
+
+  _installCapacityError(add, sources = this._sources) {
+    const ir = add.kind === "catalog" || add.kind === "cloud";
+    const kind = ir ? "ir" : add.kind;
+    if (sources?.remote_capacity?.[kind]?.available !== 0 || (ir && add.replace)) return "";
+    if (ir) return "No more IR remotes can be added. You can replace an installed IR remote.";
+    if (kind === "native") return "No more Native remotes can be added.";
+    return "No more HID remotes can be added.";
+  }
+
   async _readDeviceTable() {
     this._deviceTable = { loading: true };
     this._render();
     try {
       this._deviceTable = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/table`,
         entry_id: this._entryId });
+      this._sources = null;
     } catch (error) { this._deviceTable = { error: error?.message || String(error) }; }
     this._render();
   }
@@ -1481,7 +1545,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const warnings = (table.warnings || []).map(
       (text) => `<p class="small warning">${escapeHtml(text)}</p>`).join("");
     return `<details class="device-table">
-      <summary>Installed on the remote (${(table.rows || []).length}, next free slot ${table.next_free_slot})</summary>
+      <summary>Installed on the remote (${(table.rows || []).length}, next free slot ${table.next_free_slot ?? "none"})</summary>
       <table><thead><tr><th>Slot</th><th>Kind</th><th>Type</th><th>Target</th></tr></thead>
       <tbody>${rows}</tbody></table>
       ${warnings}
@@ -1512,11 +1576,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       </section>`;
     }
     const sources = this._sources || {};
+    const capacityError = this._installCapacityError(add, sources);
     const hidArtwork = this._hidArtworkSrc(add.deviceType);
     const cat = this._catalog;
     const kinds = [
       ["native", "Bridge remote", sources.native,
-       "Reuses the credentials captured when the first native remote was added."],
+       "Sends button presses to Home Assistant through the bridge."],
       ["catalog", "IR from the catalog", sources.catalog && sources.cloud,
        "Search the bundled device database; the codes come from the SwitchBot cloud."],
       ["cloud", "IR saved in your account", (sources.cloud_remotes || []).length > 0,
@@ -1545,35 +1610,21 @@ class SwitchBotUrcPanel extends HTMLElement {
             cat.models.map((item) => option(item.hxd_index, item.label, item.hxd_index === cat.hxd)).join("")
           }</select></label>` : ""}` : ""}
       ${add.kind === "native" ? `
-        <p class="small">${escapeHtml(sources.native_options?.summary || "")}</p>
-        <label>Bridge address<select data-add-field="target_id">${
-          [sources.native_options?.free
-            ? option("__auto__", `Next free address${
-                sources.native_options?.next_address
-                  ? ` (${sources.native_options.next_address})` : ""}`,
-              add.addressMode === "auto")
-            : ""]
-            .concat((sources.bridges || []).map((item) =>
-              option(item.target_id, item.name,
-                add.addressMode === "stored" && item.target_id === add.targetId)))
-            .concat(option("__new__", "An address I type myself…", add.addressMode === "new"))
-            .join("")
-        }</select></label>
-        ${add.addressMode === "new" ? `
-          <label>New address<input type="text" data-add-field="new_target_address"
-            value="${escapeHtml(add.newAddress || "")}" placeholder="DA:71:16:E0:1F:92"></label>` : ""}
-        ${!sources.native_options?.free ? `<p class="small warning">Every address on every
-          controller is in use. Add another Bluetooth adapter with its own add-on instance to
-          go further.</p>` : ""}
         <div class="native-type-panel add-native-type-panel"><div class="native-type-heading"><b>Type</b>
           <span>Choose the built-in screen and button layout.</span></div>
           ${this._nativeTypeChoices(sources.native_options?.screen_profiles || [], add.nativeType || add.deviceType, "add-native-type")}
         </div>
-        <label>AES key<input type="text" data-add-field="target_key" spellcheck="false"
-          value="${escapeHtml(add.targetKey || "")}"
-          placeholder="32 hex characters, the same as the add-on's device_key"></label>
-        <p class="small">The remote encrypts each press with this key, so it must match the
-          add-on's <b>device_key</b> exactly, or the press decodes to nothing.</p>` : ""}
+        ${(sources.bridges || []).length ? `<details class="bridge-advanced" ${add.showBridgeOptions ? "open" : ""}>
+          <summary>Bridge options</summary>
+          <label>Address<select data-add-field="target_id">
+            ${option("", "Automatic", !add.targetId)}
+            ${sources.bridges.map((item) => option(item.target_id, item.name, item.target_id === add.targetId)).join("")}
+          </select></label>
+        </details>` : ""}
+        ${this._needsBridgeKey(add, sources) ? `<label>Bridge device key
+          <input type="password" autocomplete="off" data-add-field="target_key" spellcheck="false"
+            value="${escapeHtml(add.targetKey || "")}" placeholder="32 hex characters"></label>
+          <p class="small">Enter the add-on's device key once. Studio reuses it for this bridge.</p>` : ""}` : ""}
       ${add.kind === "cloud" ? `<label>Remote<select data-add-field="remote_id">${
         (sources.cloud_remotes || []).map((item) => option(item.remote_id, item.name, item.remote_id === add.remoteId)).join("")
       }</select></label>` : ""}
@@ -1598,27 +1649,32 @@ class SwitchBotUrcPanel extends HTMLElement {
         placeholder="What it is called on the remote's screen"></label>
       ${add.kind === "native" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
         ${add.replace ? "checked" : ""}>Replace an existing copy of the same remote</label>`}
-      ${add.error ? `<p class="small warning">${escapeHtml(add.error)}</p>` : ""}
+      ${capacityError || add.error ? `<p class="small warning">${escapeHtml(capacityError || add.error)}</p>` : ""}
       <div class="key-actions">
-        <button class="primary" id="addRemoteConfirm" ${add.busy ? "disabled" : ""}>${
+        <button class="primary" id="addRemoteConfirm" ${add.busy || capacityError ? "disabled" : ""}>${
           add.busy ? "Installing…" : "Install"}</button>
         <button class="secondary compact" id="addRemoteCancel">Cancel</button>
       </div>
     </section>`;
   }
 
-  async _ensureSources() {
+  async _ensureSources(refreshCapacity = false) {
     const entryId = this._entryId;
     if (!entryId) return null;
-    if (this._sources && this._sourcesEntry === entryId) return this._sources;
-    if (this._sourcesRequest?.entryId === entryId) return this._sourcesRequest.promise;
-    const request = { entryId };
+    if (this._sourcesRequest?.entryId === entryId) {
+      if (!refreshCapacity || this._sourcesRequest.refreshCapacity) return this._sourcesRequest.promise;
+      await this._sourcesRequest.promise;
+      return this._entryId === entryId ? this._ensureSources(true) : null;
+    }
+    if (!refreshCapacity && this._sources && this._sourcesEntry === entryId) return this._sources;
+    const request = { entryId, refreshCapacity };
     this._sourcesRequest = request;
     this._sourcesError = "";
     request.promise = Promise.resolve().then(async () => {
       try {
         const sources = await this._hass.callWS({
-          type: `${DOMAIN}/studio/remote/sources`, entry_id: entryId });
+          type: `${DOMAIN}/studio/remote/sources`, entry_id: entryId,
+          ...(refreshCapacity ? { refresh_capacity: true } : {}) });
         if (this._sourcesRequest !== request || this._entryId !== entryId) return null;
         this._sources = sources;
         this._sourcesEntry = entryId;
@@ -1642,8 +1698,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     const entryId = this._entryId;
     const pending = { loading: true };
     this._add = pending;
+    const request = this._ensureSources(true);
     this._render();
-    const sources = await this._ensureSources();
+    const sources = await request;
     if (entryId !== this._entryId || this._add !== pending) return;
     if (!sources) {
       this._add = { loadError: this._sourcesError || "No response from Home Assistant." };
@@ -1666,14 +1723,17 @@ class SwitchBotUrcPanel extends HTMLElement {
         : (sources.hid?.icons || [])[0]) || "",
       deviceId: sources.hid?.host_mac || "",
       buttons: [...(sources.hid?.default_buttons || [])],
-      targetId: (sources.bridges || [])[0]?.target_id || "",
-      // Let the integration pick the address by default: it knows every controller's
-      // capacity and which addresses are already bound.
-      addressMode: sources.native_options?.free ? "auto" : "stored",
-      newAddress: "",
-      targetKey: sources.native_options?.default_key || "",
+      targetId: "",
+      targetKey: "",
     };
     this._render();
+  }
+
+  _needsBridgeKey(add, sources = this._sources) {
+    const available = sources?.bridges || [];
+    if (!available.length) return false;
+    if (add.targetId) return !available.find((item) => item.target_id === add.targetId)?.has_key;
+    return !available.some((item) => item.has_key);
   }
 
   _wireAddRemote() {
@@ -1718,6 +1778,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       });
     });
 
+    root.querySelector(".bridge-advanced")?.addEventListener("toggle", (event) => {
+      add.showBridgeOptions = event.target.open;
+    });
     root.querySelectorAll("[data-add-field]").forEach((field) => {
       field.addEventListener("input", () => {
         const name = field.dataset.addField;
@@ -1727,22 +1790,23 @@ class SwitchBotUrcPanel extends HTMLElement {
         else if (name === "device_type") add.deviceType = field.value;
         else if (name === "icon") add.icon = field.value;
         else if (name === "device_id") add.deviceId = field.value;
-        else if (name === "new_target_address") add.newAddress = field.value;
         else if (name === "target_key") add.targetKey = field.value.replace(/\s+/g, "");
       });
       field.addEventListener("change", () => {
         const name = field.dataset.addField;
         if (name === "remote_id") add.remoteId = field.value;
-        if (name === "replace") add.replace = field.checked;
+        if (name === "replace") {
+          add.replace = field.checked;
+          this._render();
+        }
         if (name === "device_type") {
           add.deviceType = field.value;
           if (add.kind === "native" || add.kind === "hid") this._render();
         }
         if (name === "icon") add.icon = field.value;
         if (name === "target_id") {
-          add.addressMode = field.value === "__new__" ? "new"
-            : field.value === "__auto__" ? "auto" : "stored";
-          if (add.addressMode === "stored") add.targetId = field.value;
+          add.targetId = field.value;
+          add.targetKey = "";
           this._render();
         }
       });
@@ -1826,6 +1890,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   async _installRemote() {
     const add = this._add;
+    if (this._installCapacityError(add)) return;
     const name = (add.name || "").trim();
     if (!name) { add.error = "Give the remote a name."; this._render(); return; }
     if (add.kind === "catalog" && !this._catalog.hxd) {
@@ -1838,8 +1903,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!add.deviceId) { add.error = "Give the address of the host to send keys to."; this._render(); return; }
       if (!(add.buttons || []).length) { add.error = "Pick at least one button."; this._render(); return; }
     }
-    if (add.kind === "native" && add.targetKey && !/^[0-9a-fA-F]{32}$/.test(add.targetKey)) {
-      add.error = "The AES key must be exactly 32 hexadecimal characters.";
+    if (add.kind === "native" && this._needsBridgeKey(add) && !/^[0-9a-fA-F]{32}$/.test(add.targetKey)) {
+      add.error = "Enter the add-on’s 32-character device key.";
       this._render(); return;
     }
     add.busy = true;
@@ -1849,19 +1914,11 @@ class SwitchBotUrcPanel extends HTMLElement {
     try {
       let result;
       if (add.kind === "native") {
-        if (add.addressMode === "new" && !(add.newAddress || "").trim()) {
-          add.error = "Give the new bridge address.";
-          add.busy = false; this._physicalBusy = false; this._render(); return;
-        }
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create`,
           entry_id: this._entryId, name,
           native_type: add.nativeType || add.deviceType, icon: add.icon,
-          ...(add.targetKey ? { target_key: add.targetKey } : {}),
-          ...(add.addressMode === "new"
-            ? { new_target_address: add.newAddress.trim() }
-            : add.addressMode === "auto"
-              ? { auto_address: true }
-              : add.targetId ? { target_id: add.targetId } : {}) });
+          ...(this._needsBridgeKey(add) ? { target_key: add.targetKey } : {}),
+          ...(add.targetId ? { target_id: add.targetId } : { auto_address: true }) });
       } else if (add.kind === "hid") {
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create_hid`,
           entry_id: this._entryId, name, device_type: add.deviceType,
@@ -1891,6 +1948,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     } finally {
       add.busy = false;
       this._physicalBusy = false;
+      this._sources = null;
       await this._load();
     }
   }
@@ -1899,14 +1957,13 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!this._physical) return "";
     const changes = this._physicalChanges();
     if (!changes && !this._physicalStatus) return "";
-    return `<div class="apply-bar ${changes ? "dirty" : ""}">
+    return `<div class="apply-bar ${changes ? "dirty" : ""}" ${this._saving ? "inert" : ""}>
       <span>${changes
         ? `${changes} change${changes === 1 ? "" : "s"} to the remote itself. Save writes them.`
         : escapeHtml(this._physicalStatus)}</span>
       <span class="spacer"></span>
       ${this._physicalBackup ? `<button class="secondary compact" id="physicalRestore">Load previous layout</button>` : ""}
-      ${changes ? `<button class="secondary compact" id="physicalDiscard">Discard</button>` : ""}
-      ${changes && !this._iconPickerFor ? `<button class="primary compact" data-physical-apply ${this._physicalBusy ? "disabled" : ""}>Save screen layout</button>` : ""}
+      ${changes ? `<button class="secondary compact" id="physicalDiscard">Discard layout and button edits</button>` : ""}
     </div>`;
   }
 
@@ -1949,16 +2006,26 @@ class SwitchBotUrcPanel extends HTMLElement {
       .map(([to, from]) => ({ from, to }));
   }
 
+  _relocateDraftKey(oldId, newId) {
+    const origin = this._physicalOrigins[oldId];
+    delete this._physicalOrigins[oldId];
+    if (origin) this._physicalOrigins[newId] = origin;
+    const mappings = this._mappingDrafts();
+    if (mappings.has(oldId)) {
+      mappings.set(newId, mappings.get(oldId));
+      mappings.delete(oldId);
+    }
+    if (this._buttonId === oldId) this._buttonId = newId;
+  }
+
   _moveMainButton(from, to) {
     const page = this._physical?.pages?.find((item) => item.index === 0);
     const button = page?.buttons?.find((item) => item.index === from);
     if (!button || page.buttons.some((item) => item.index === to)) return;
     const oldId = `p0_k${from}`;
     const newId = `p0_k${to}`;
-    const origin = this._physicalOrigins[oldId] || oldId;
-    delete this._physicalOrigins[oldId];
     button.index = to;
-    this._physicalOrigins[newId] = origin;
+    this._relocateDraftKey(oldId, newId);
     this._physicalStatus = "";
     this._render();
   }
@@ -1970,9 +2037,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     for (const key of page.buttons) {
       const oldId = `p${from}_k${key.index}`;
       const newId = `p${to}_k${key.index}`;
-      const origin = this._physicalOrigins[oldId] || oldId;
-      delete this._physicalOrigins[oldId];
-      this._physicalOrigins[newId] = origin;
+      this._relocateDraftKey(oldId, newId);
     }
     page.index = to;
     this._physical.pages.sort((a, b) => a.index - b.index);
@@ -2073,7 +2138,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physical.pages.sort((a, b) => a.index - b.index);
       // The key gives up its command: the firmware will not let it both open a page and send.
       home.buttons = home.buttons.filter((item) => item.index !== button.button_index);
-      delete this._physicalOrigins[`p0_k${button.button_index}`];
+      const id = `p0_k${button.button_index}`;
+      delete this._physicalOrigins[id];
+      this._mappingDrafts().delete(id);
+      this._selectButton(null, false);
       this._pageIndex = index;
       this._buttonId = null;
       this._pageEditing = true;
@@ -2097,8 +2165,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!found) return;
     const { page, key } = found;
     const kind = this._physical.kind;
-    const rowPosition = page.index ? this._pageKeyEntries(page).findIndex((item) => item.key === key) : -1;
-    const lastRowPosition = page.index ? page.buttons.length - 1 : -1;
 
     root.querySelector('[data-key-field="transport"]')?.addEventListener("change", (event) => {
       key.transport = event.target.value;
@@ -2177,13 +2243,14 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.getElementById("removeKey")?.addEventListener("click", () => {
       if (page.index) {
-        const entries = this._pageKeyEntries(page).filter((item) => item.key !== key);
-        this._replacePageKeyOrder(page, entries);
-      } else {
-        page.buttons = page.buttons.filter((item) => item !== key);
-        delete this._physicalOrigins[`p${page.index}_k${key.index}`];
+        this._removeMenuRow(page, key);
+        return;
       }
-      this._buttonId = null;
+      page.buttons = page.buttons.filter((item) => item !== key);
+      const id = `p${page.index}_k${key.index}`;
+      delete this._physicalOrigins[id];
+      this._mappingDrafts().delete(id);
+      this._selectButton(null, false);
       this._render();
     });
 
@@ -2212,13 +2279,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     });
 
-    root.getElementById("removePage")?.addEventListener("click", () => {
-      for (const key of page.buttons) delete this._physicalOrigins[`p${page.index}_k${key.index}`];
-      this._physical.pages = this._physical.pages.filter((item) => item !== page);
-      this._pageIndex = 0;
-      this._buttonId = null;
-      this._render();
-    });
 
   }
 
@@ -2257,20 +2317,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalStatus = "";
       this._render();
     }));
-    root.querySelectorAll("[data-physical-apply]").forEach((element) => element.addEventListener("click", async () => {
-      if (this._dirty && this._button()) {
-        await this._save();
-        return;
-      }
-      try {
-        await this._applyPhysical();
-        this._error = null;
-        this._notify(this._physicalStatus || "Screen layout saved to the remote");
-      } catch (error) {
-        this._error = error?.message || String(error);
-        this._render();
-      }
-    }));
     root.querySelectorAll("[data-move-main]").forEach((select) => {
       select.addEventListener("change", () => {
         if (!select.value) return;
@@ -2287,7 +2333,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
     root.getElementById("physicalDiscard")?.addEventListener("click", () => {
       this._physical = structuredClone(this._physicalBaseline);
+      this._mappingDrafts().clear();
+      this._layoutDraftsByRemote.delete(this._draftScope());
       this._resetPhysicalOrigins(this._physical);
+      this._normalizeSelection();
       this._physicalStatus = "";
       this._render();
     });
@@ -2353,9 +2402,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const { page, key } = found;
     const kind = this._physical.kind;
-    const rowPosition = page.index
-      ? this._pageKeyEntries(page).findIndex((item) => item.key === key) : -1;
-    const lastRowPosition = page.index ? page.buttons.length - 1 : -1;
     const linkedPage = button.button_page === 0 && key.index < 4
       ? this._physical.pages.find((item) => item.index === key.index + 1)
       : null;
@@ -2389,13 +2435,8 @@ class SwitchBotUrcPanel extends HTMLElement {
           >${escapeHtml(key.code_hex || "")}</textarea></label>
         ${this._renderCatalogPicker()}` : ""}
       <div class="key-actions">
-        ${button.button_page ? `<div class="row-order"><span>Screen order</span>
-          <button class="secondary compact" id="moveRowUp" ${rowPosition <= 0 ? "disabled" : ""} title="Move this row up">↑</button>
-          <button class="secondary compact" id="moveRowDown" ${rowPosition >= lastRowPosition ? "disabled" : ""} title="Move this row down">↓</button></div>` : ""}
-        ${button.button_page
-          ? `<button class="secondary compact destructive" id="removeKey"
-              title="Take this row off the page; the rows below it move up">Delete this row</button>`
-          : linkedPage || (kind === "native" && !nativeSoftkey) ? "" : `<button class="secondary compact destructive" id="removeKey"
+        ${button.button_page || linkedPage || (kind === "native" && !nativeSoftkey) ? ""
+          : `<button class="secondary compact destructive" id="removeKey"
               title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`}
       </div>
       ${pageControl}
@@ -2459,13 +2500,12 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _editor(button, remote) {
     const [status, statusLabel] = this._status(button);
-    const actionSummary = button.actions.length
-      ? `${button.actions.length} action${button.actions.length === 1 ? "" : "s"}`
-      : "No custom actions";
     return `
       <div class="editor-head">
         <div><span class="status-pill ${status}">${escapeHtml(statusLabel)}</span><h2>${escapeHtml(button.label)}</h2></div>
-        <button class="secondary compact" id="testButton">Test</button>
+        ${remote?.reachability?.level === "none" ? "" : `<button class="secondary compact" id="testButton"
+          ${this._canTest(button) ? "" : "disabled"}
+          title="Run the saved Home Assistant mapping for this button">Test saved mapping</button>`}
       </div>
       <dl>
         <div><dt>Button ID</dt><dd><code>${escapeHtml(button.button_id)}</code></dd></div>
@@ -2494,17 +2534,45 @@ class SwitchBotUrcPanel extends HTMLElement {
           ? ` Every button on this remote that has no actions of its own drives
              ${escapeHtml(remote.binding.entity_id)}.` : ""}</span></div>` : ""}
         ${this._mode === "disabled" ? `<div class="explanation danger"><b>Ignore this button.</b><span>Physical presses will be received but no Home Assistant action will run.</span></div>` : ""}
-        ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span>${escapeHtml(actionSummary)}${
-          this._draftActions.length > 1 ? ", all of them on one press" : ""}</span></div><div id="visualActionEditor"></div><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false">${escapeHtml(JSON.stringify(this._draftActions, null, 2))}</textarea><div class="json-help">This uses standard Home Assistant script action syntax.</div></details></div>` : ""}
+        ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div><div id="visualActionEditor"></div><p class="json-help">To run a script, choose <b>Script: Turn on</b> and select the script, or choose the script’s own action.</p><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false" class="${this._jsonValid ? "" : "invalid"}">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : ""}
       </div>
       `}
-      ${button.button_page && this._physical ? "" : `<div class="save-row">${this._renderSaveButton()}</div>`}`;
+      `;
+  }
+
+  _actionSummary() {
+    const count = this._draftActions.length;
+    return count ? `${count} action${count === 1 ? "" : "s"}` : "No custom actions";
+  }
+
+  _saveStatus() {
+    const mappingDrafts = [...this._mappingDrafts().values()];
+    if (mappingDrafts.some(({ mode, valid }) => mode === "actions" && !valid)) {
+      return "Fix the invalid actions JSON before saving.";
+    }
+    if (this._physicalChanges() && this._physical.pages.length === 1 && !this._physical.pages[0].buttons.length) {
+      return "Add a command to Main or keep a menu with at least one row.";
+    }
+    if (this._physicalChanges() && this._physical.pages.some((page) => page.index && !page.buttons.length)) {
+      return "Add a row to each new menu or remove the empty menu.";
+    }
+    if (this._hasAppearanceChanges() && !this._appearanceDraftsByRemote.get(this._draftScope()).name.trim()) {
+      return "Give the remote a name before saving.";
+    }
+    return "";
+  }
+
+  _saveLabel() {
+    if (this._saving) return "Saving changes…";
+    const pending = this._mappingDrafts().size || this._physicalChanges()
+      || this._hasAppearanceChanges() || this._presetDraftsByRemote?.has(this._draftScope());
+    return pending ? "Unsaved changes for this remote" : "";
   }
 
   _canSave() {
-    if (this._physicalBusy || this._saving) return false;
-    const validMapping = this._mode !== "actions" || (this._jsonValid && this._draftActions.length > 0);
-    return (!this._dirty || validMapping) && Boolean(this._physicalChanges() || this._dirty);
+    return !this._physicalBusy && !this._saving && !this._saveStatus()
+      && Boolean(this._physicalChanges() || this._mappingDrafts().size
+        || this._hasAppearanceChanges() || this._presetDraftsByRemote?.has(this._draftScope()));
   }
 
   _renderSaveButton() {
@@ -2514,16 +2582,34 @@ class SwitchBotUrcPanel extends HTMLElement {
   _updateSaveButton() {
     const save = this.shadowRoot.getElementById("saveButton");
     if (save) save.disabled = !this._canSave();
+    const status = this.shadowRoot.getElementById("saveStatus");
+    if (status) status.textContent = this._saveStatus() || this._saveLabel();
+  }
+
+  _canTest(button = this._button()) {
+    return Boolean(button && !button.draft_only && !this._dirty && !this._saving && !this._physicalChanges());
+  }
+
+  _updateActionEditor() {
+    const summary = this.shadowRoot.getElementById("actionSummary");
+    if (summary) summary.textContent = this._actionSummary();
+    const test = this.shadowRoot.getElementById("testButton");
+    if (test) test.disabled = !this._canTest();
+    this._updateSaveButton();
   }
 
   _wireEvents() {
     const root = this.shadowRoot;
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote",
-                      "recreateRemote", "nativeIconVariantTest", "nativeIconVariantRestore", "moveRemote", "deleteRemote"]) {
+                      "recreateRemote", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
-      if (el) el.disabled = this._physicalBusy;
+      if (el) el.disabled = this._physicalBusy || this._saving;
     }
     root.getElementById("refresh")?.addEventListener("click", () => this._refresh());
+    root.getElementById("checkRemoteCapacity")?.addEventListener("click", () => {
+      void this._ensureSources(true);
+      this._render();
+    });
     root.getElementById("readDeviceTable")?.addEventListener("click", () => this._readDeviceTable());
     root.getElementById("cleanupBindings")?.addEventListener("click", async () => {
       try {
@@ -2540,11 +2626,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("removeThisPage")?.addEventListener("click", () => {
       const page = this._physical?.pages?.find((item) => item.index === this._page()?.index);
       if (!page) return;
-      for (const key of page.buttons) delete this._physicalOrigins[`p${page.index}_k${key.index}`];
-      this._physical.pages = this._physical.pages.filter((item) => item !== page);
-      this._pageIndex = 0;
-      this._buttonId = null;
-      this._render();
+      this._removeMenu(page);
     });
     root.getElementById("moveCurrentPage")?.addEventListener("change", (event) => {
       if (!event.target.value) return;
@@ -2569,56 +2651,34 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._physicalFor = null;
         this._error = null;
       } catch (error) { rewriteError = error?.message || String(error); }
-      finally { this._physicalBusy = false; await this._load(); }
+      finally {
+        this._physicalBusy = false;
+        this._sources = null;
+        await this._load();
+      }
       if (rewriteError) {
         this._error = rewriteError;
         this._render();
       }
     });
 
-    const runNativeIconVariant = async (restore) => {
-      const remote = this._remote();
-      if (!remote) return;
-      if (!restore && !confirm(`Temporarily switch "${remote.name}" to the built-in Floor lamp screen profile? The original Main page is saved for restore.`)) return;
-      let actionError = null;
-      this._physicalBusy = true;
-      this._render();
-      try {
-        await this._hass.callWS({ type: `${DOMAIN}/studio/remote/icon_variant_test`,
-          entry_id: this._entryId, remote_id: this._remoteId, restore });
-        this._notify(restore ? "Original Main page restored" : "Floor lamp screen profile command acknowledged");
-        this._error = null;
-      } catch (error) { actionError = error?.message || String(error); }
-      finally { this._physicalBusy = false; await this._load(); }
-      if (actionError) {
-        this._error = actionError;
-        this._render();
-        this._notify(actionError);
-      }
-    };
-    root.getElementById("nativeIconVariantTest")?.addEventListener("click", () => runNativeIconVariant(false));
-    root.getElementById("nativeIconVariantRestore")?.addEventListener("click", () => runNativeIconVariant(true));
-
     root.getElementById("moveRemote")?.addEventListener("click", async () => {
       const remote = this._remote();
       if (!remote) return;
+      this._sources = null;
       await this._ensureSources();
-      const next = this._sources?.native_options?.next_address || "";
-      // Typed in full rather than picked, because the usual reason to move is that the
-      // controller changed and the address being moved to may not be one we know yet.
-      const address = prompt(
-        `Bind "${remote.name}" to which address?\n\n` +
-        (next ? `Leave empty to take the next free one (${next}).` : "No free address is known."),
-        "");
-      if (address === null) return;
-      if (!address && !next) return;
+      if (!this._sources?.native_options?.next_move_address) {
+        this._notify("No free address is available on a configured bridge.");
+        return;
+      }
       if (!confirm(`This removes "${remote.name}" from the remote and writes it again. Continue?`)) return;
+      let moveError;
       this._physicalBusy = true;
       this._render();
       try {
         const result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
           entry_id: this._entryId, remote_id: this._remoteId,
-          ...(address ? { target_address: address.trim() } : { auto_address: true }) });
+          auto_address: true });
         this._notify(result?.warning
           || (result.moved_from
             ? `Moved from ${result.moved_from} to ${result.address}`
@@ -2627,8 +2687,16 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._physical = null;
         this._physicalFor = null;
         this._error = null;
-      } catch (error) { this._error = error?.message || String(error); }
-      finally { this._physicalBusy = false; await this._load(); }
+      } catch (error) { moveError = error?.message || String(error); }
+      finally {
+        this._physicalBusy = false;
+        this._sources = null;
+        await this._load();
+      }
+      if (moveError) {
+        this._error = moveError;
+        this._render();
+      }
     });
 
     root.getElementById("deleteRemote")?.addEventListener("click", async () => {
@@ -2651,27 +2719,36 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._physicalFor = null;
         this._error = null;
       } catch (error) { this._error = error?.message || String(error); }
-      finally { this._physicalBusy = false; await this._load(); }
+      finally {
+        this._physicalBusy = false;
+        this._sources = null;
+        await this._load();
+      }
     });
 
 
     this._wirePhysical();
     root.getElementById("entrySelect")?.addEventListener("change", (event) => {
+      if (this._saving) return;
+      this._stashLayout();
       this._entryId = event.target.value;
       this._iconPickerFor = null;
       this._cloud = null;
       this._sources = null;
       this._physical = null;
+      this._physicalFor = null;
       this._remoteId = null;
       this._buttonId = null;
       this._normalizeSelection();
       this._render();
     });
     root.getElementById("remoteSelect")?.addEventListener("change", (event) => {
+      if (this._saving) return;
+      this._stashLayout();
       this._remoteId = event.target.value;
       this._iconPickerFor = null;
-      this._iconDraft = null;
       this._physical = null;
+      this._physicalFor = null;
       this._pageIndex = 0;
       this._buttonId = null;
       this._normalizeSelection();
@@ -2702,9 +2779,10 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelectorAll("[data-remote]").forEach((element) => {
       const pick = () => {
+        if (this._saving || this._physicalBusy || this._remoteId === element.dataset.remote) return;
+        this._stashLayout();
         this._remoteId = element.dataset.remote;
         this._iconPickerFor = null;
-        this._iconDraft = null;
         this._buttonId = null;
         this._physical = null;
         this._physicalFor = null;
@@ -2718,48 +2796,27 @@ class SwitchBotUrcPanel extends HTMLElement {
       element.addEventListener("click", (event) => {
         event.stopPropagation();
         this._iconPickerFor = element.dataset.iconFor;
-        this._iconDraft = null;
-        this._tileNameDraft = this._remote()?.name || "";
-        this._buttonId = null;
+        this._selectButton(null, false);
         this._render();
       });
     });
 
-    root.querySelectorAll("[data-icon-cancel]").forEach((element) => {
-      element.addEventListener("click", (event) => {
-        event.stopPropagation();
-        this._iconPickerFor = null;
-        this._iconDraft = null;
-        this._tileNameDraft = null;
-        this._render();
-      });
-    });
-
-    root.querySelectorAll("[data-pick-icon]").forEach((element) => {
-      element.addEventListener("click", (event) => {
-        event.stopPropagation();
-        // Chosen, not yet written: the name may be being edited in the same breath.
-        this._iconDraft = element.dataset.pickIcon;
-        this._render();
-      });
-    });
-
-    root.querySelector("[data-rename-input]")?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); this._saveTile(); }
-      if (event.key === "Escape") {
-        this._iconPickerFor = null;
-        this._iconDraft = null;
-        this._tileNameDraft = null;
-        this._render();
-      }
-    });
+    const editAppearance = (change) => {
+      const remote = this._remote();
+      const scope = this._draftScope();
+      const draft = this._appearanceDraftsByRemote.get(scope) || { name: remote.name, icon: remote.icon };
+      this._appearanceDraftsByRemote.set(scope, { ...draft, ...change });
+      this._updateSaveButton();
+    };
+    root.querySelectorAll("[data-pick-icon]").forEach((element) => element.addEventListener("click", () => {
+      editAppearance({ icon: element.dataset.pickIcon });
+      this._render();
+    }));
     root.querySelector("[data-rename-input]")?.addEventListener("input", (event) => {
-      this._tileNameDraft = event.target.value;
+      editAppearance({ name: event.target.value });
     });
-
-    root.querySelector("[data-tile-save]")?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      this._saveTile();
+    root.querySelector("[data-rename-input]")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); void this._save(); }
     });
 
     root.querySelectorAll("[data-button]").forEach((element) => {
@@ -2780,15 +2837,30 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
     root.querySelectorAll("[data-mode]").forEach((element) =>
       element.addEventListener("click", () => {
-        if (this._mode !== element.dataset.mode) this._dirty = true;
-        this._mode = element.dataset.mode;
+        const mode = element.dataset.mode;
+        if (this._mode === mode) return;
+        this._mode = mode;
+        if (mode !== "actions" || this._draftActions.length || !this._jsonValid) {
+          this._dirty = true;
+          this._rememberMapping();
+        }
         this._render();
       }),
     );
     root.getElementById("saveButton")?.addEventListener("click", () => this._save());
     root.getElementById("testButton")?.addEventListener("click", () => this._test());
-    root.getElementById("quickBind")?.addEventListener("click", () => this._quickBind());
+    root.getElementById("lightSelect")?.addEventListener("change", (event) => {
+      const scope = this._draftScope();
+      const entity = event.target.value;
+      if (entity && entity !== this._remote()?.binding?.entity_id) this._presetDraftsByRemote.set(scope, entity);
+      else {
+        this._presetDraftsByRemote.delete(scope);
+        event.target.value = this._remote()?.binding?.entity_id || "";
+      }
+      this._updateSaveButton();
+    });
     root.getElementById("actionsJson")?.addEventListener("input", (event) => {
+      this._actionJsonDraft = event.target.value;
       try {
         const parsed = JSON.parse(event.target.value || "[]");
         if (!Array.isArray(parsed)) throw new Error("The root value must be an array");
@@ -2796,12 +2868,14 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._dirty = true;
         this._jsonValid = true;
         event.target.classList.remove("invalid");
+        if (this._actionSelectorEl) this._actionSelectorEl.value = structuredClone(parsed);
       } catch (_error) {
         this._dirty = true;
         this._jsonValid = false;
         event.target.classList.add("invalid");
       }
-      this._updateSaveButton();
+      this._rememberMapping();
+      this._updateActionEditor();
     });
   }
 
@@ -2813,7 +2887,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._mountToken = token;
     host.innerHTML = `<div class="json-help">Loading the action editor…</div>`;
     const selectorAvailable = await this._ensureActionSelector();
-    if (this._mountToken !== token || this._mode !== "actions") return;
+    if (this._mountToken !== token || !host.isConnected || this._mode !== "actions") return;
     if (!selectorAvailable) {
       host.innerHTML = `<div class="json-help">The visual action editor could not be loaded. <button class="link-button" id="retryActionEditor">Retry</button><br>Until it loads, the JSON field below accepts any Home Assistant action.</div>`;
       host.querySelector("#retryActionEditor")?.addEventListener("click", () => this._mountActionSelector());
@@ -2826,12 +2900,22 @@ class SwitchBotUrcPanel extends HTMLElement {
     selector.selector = { action: {} };
     selector.label = "Actions";
     selector.addEventListener("value-changed", (event) => {
-      this._draftActions = structuredClone(event.detail?.value || []);
+      if (!selector.isConnected || this._actionSelectorEl !== selector) return;
+      const actions = event.detail?.value ?? [];
+      if (!Array.isArray(actions) || (this._jsonValid
+          && JSON.stringify(actions) === JSON.stringify(this._draftActions))) return;
+      this._draftActions = structuredClone(actions);
+      selector.value = structuredClone(actions);
       this._dirty = true;
       this._jsonValid = true;
+      this._actionJsonDraft = undefined;
       const textarea = this.shadowRoot.getElementById("actionsJson");
-      if (textarea) textarea.value = JSON.stringify(this._draftActions, null, 2);
-      this._updateSaveButton();
+      if (textarea) {
+        textarea.value = JSON.stringify(this._draftActions, null, 2);
+        textarea.classList.remove("invalid");
+      }
+      this._rememberMapping();
+      this._updateActionEditor();
     });
     this._actionSelectorEl = selector;
     host.innerHTML = "";
@@ -2887,13 +2971,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/apply`,
         entry_id: this._entryId, remote_id: this._remoteId, layout: this._physical,
         identity_migrations: identityMigrations, identity_removals: identityRemovals });
+      if (result.entry) this._replaceEntry(result.entry);
       this._physicalStatus = result.status;
       this._physicalBackup = result.backup;
       this._lastIdentityMigrations = identityMigrations;
       this._physical = result.layout || this._physical;
       this._physicalBaseline = structuredClone(this._physical);
       this._resetPhysicalOrigins(this._physical);
-      await this._load();
+      this._layoutDraftsByRemote?.delete(this._draftScope());
     } finally {
       this._physicalBusy = false;
       this._render();
@@ -2902,87 +2987,53 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   async _save() {
     if (!this._canSave()) return;
-    const button = this._button();
-    const layoutChanges = this._physicalChanges();
-    const saveMapping = button && this._dirty;
-    const keepPage = this._pageIndex;
-    const keepButton = layoutChanges && button
-      ? `p${button.button_page}_k${button.button_index}` : this._buttonId;
-    const mode = this._mode;
-    const actions = structuredClone(this._draftActions);
     const entryId = this._entryId;
     const remoteId = this._remoteId;
+    const scope = this._draftScope();
+    const layoutChanges = this._physicalChanges();
+    const mappings = this._mappingDrafts();
     this.shadowRoot.activeElement?.blur();
     this._saving = true;
     this._error = null;
     this._render();
     try {
-      // New rows have no HA button identity until the physical page has been saved.
-      if (layoutChanges) {
-        await this._applyPhysical();
-      }
-
-      if (saveMapping) {
+      // The remote must expose the new button positions before HA can save actions for them.
+      if (layoutChanges) await this._applyPhysical();
+      const entity = this._presetDraftsByRemote?.get(scope);
+      if (entity) {
         const updated = await this._hass.callWS({
-          type: `${DOMAIN}/studio/save_button_action`,
-          entry_id: entryId,
-          remote_id: remoteId,
-          button_id: keepButton,
-          mode,
-          actions: mode === "actions" ? actions : [],
+          type: `${DOMAIN}/studio/quick_bind`, entry_id: entryId, remote_id: remoteId, entity_id: entity,
         });
         this._replaceEntry(updated);
+        this._presetDraftsByRemote.delete(scope);
       }
-
+      for (const [buttonId, mapping] of mappings) {
+        const mode = mapping.mode === "actions" && !mapping.actions.length ? "preset" : mapping.mode;
+        const updated = await this._hass.callWS({
+          type: `${DOMAIN}/studio/save_button_action`, entry_id: entryId, remote_id: remoteId,
+          button_id: buttonId, mode, actions: mode === "actions" ? mapping.actions : [],
+        });
+        this._replaceEntry(updated);
+        mappings.delete(buttonId);
+        if (buttonId === this._buttonId) this._dirty = false;
+      }
+      const warning = await this._saveAppearance();
       this._dirty = false;
-      this._jsonValid = true;
-      this._error = null;
-      this._notify(layoutChanges ? this._physicalStatus || "Saved and written to the remote" : "Saved");
-      // Keep the selection across the reload so the button just edited stays open.
       await this._load();
-      this._pageIndex = keepPage;
-      this._buttonId = keepButton;
-      this._normalizeSelection();
-      this._render();
+      if (!this._error) {
+        this._notify(warning || (layoutChanges ? `Saved. ${this._physicalStatus || "Layout written to the remote."}` : "Saved"));
+      }
     } catch (error) {
       this._error = error?.message || String(error);
-      this._mode = mode;
-      this._draftActions = actions;
-      this._dirty = Boolean(saveMapping);
+      this._selectButton(this._button(), false);
     } finally {
       this._saving = false;
       this._render();
     }
   }
 
-  async _quickBind() {
-    const entityId = this.shadowRoot.getElementById("lightSelect")?.value;
-    if (!entityId) {
-      this._notify("Choose a light first");
-      return;
-    }
-    try {
-      const updated = await this._hass.callWS({
-        type: `${DOMAIN}/studio/quick_bind`,
-        entry_id: this._entryId,
-        remote_id: this._remoteId,
-        entity_id: entityId,
-      });
-      this._replaceEntry(updated);
-      const keepPage = this._pageIndex;
-      const keepButton = this._buttonId;
-      await this._load();
-      this._pageIndex = keepPage;
-      this._buttonId = keepButton;
-      this._normalizeSelection();
-      this._notify("Quick-bind light preset applied");
-      this._render();
-    } catch (error) {
-      this._notify(error?.message || String(error));
-    }
-  }
-
   async _test() {
+    if (!this._canTest()) return;
     try {
       await this._hass.callWS({
         type: `${DOMAIN}/studio/test_button`,
@@ -2990,7 +3041,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         remote_id: this._remoteId,
         button_id: this._buttonId,
       });
-      this._notify("Test press sent");
+      this._notify("Test press sent to Home Assistant");
     } catch (error) {
       this._notify(error?.message || String(error));
     }
@@ -3026,7 +3077,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       @media(max-width:600px){.profile-conflict-row{grid-template-columns:1fr}}
       :host{display:block;min-height:100%;background:var(--primary-background-color,#f5f6f8);color:var(--primary-text-color,#17202a);font-family:var(--paper-font-body1_-_font-family,system-ui,sans-serif)}
       .apply-bar{flex-wrap:wrap}.apply-bar .profile-select{display:grid;gap:4px;min-width:min(100%,260px);font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.apply-bar .profile-select select{margin:0}.apply-bar>.small{flex:1 1 260px}
-      *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;background:var(--card-background-color,#fff);padding:20px 22px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px;padding-top:2px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px) auto;align-items:center;gap:16px;margin:18px 0;padding:18px 22px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:22px 0 16px;padding:5px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:26px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:26px 28px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:16px;margin-top:22px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.save-row{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:20px}.save-row span{font-size:12px;color:#e74c3c}.primary,.secondary{height:42px;padding:0 18px;border:1px solid transparent;border-radius:12px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background .15s,box-shadow .15s,transform .12s,border-color .15s}
+      *{box-sizing:border-box}button,select,textarea{font:inherit}main{max-width:1460px;margin:auto;padding:28px clamp(16px,3vw,44px) 64px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}h1{font-size:clamp(30px,4vw,48px);line-height:1;margin:5px 0 8px;letter-spacing:-.04em}header p{margin:0;color:var(--secondary-text-color,#68727d)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;color:var(--primary-color,#03a9f4)}.header-actions{display:flex;align-items:center;gap:10px}.battery,.live{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-radius:20px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-weight:700}.live i{width:8px;height:8px;border-radius:50%;background:#26c281;box-shadow:0 0 0 5px #26c28122}.icon-button{width:40px;height:40px;border:0;border-radius:50%;background:var(--card-background-color,#fff);cursor:pointer;font-size:22px}.selectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;background:var(--card-background-color,#fff);padding:20px 22px;border-radius:20px;box-shadow:0 12px 40px #0000000a}.selectors label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}select{width:100%;height:44px;margin-top:7px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.identity{display:grid;align-content:center;min-width:150px;padding-top:2px}.identity span,.identity small{font-size:11px;color:var(--secondary-text-color,#68727d)}.identity code{font-weight:800;font-size:14px;margin:3px 0}.quick-bind{display:grid;grid-template-columns:1fr minmax(220px,320px);align-items:center;gap:16px;margin:18px 0;padding:18px 22px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 24%,transparent);border-radius:16px}.quick-bind div{display:grid}.quick-bind span{font-size:12px;color:var(--secondary-text-color,#68727d);margin-top:3px}.quick-bind select{margin:0}.pages{display:flex;gap:8px;overflow:auto;margin:22px 0 16px;padding:5px}.pages button,.mode-tabs button{border:0;padding:10px 16px;border-radius:12px;background:transparent;color:var(--secondary-text-color,#68727d);font-weight:700;cursor:pointer;white-space:nowrap}.pages button.selected,.mode-tabs button.selected{background:var(--primary-color,#03a9f4);color:#fff;box-shadow:0 5px 14px color-mix(in srgb,var(--primary-color,#03a9f4) 30%,transparent)}.workspace{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(400px,1.1fr);gap:26px;align-items:start}.remote-stage,.editor{background:var(--card-background-color,#fff);border-radius:24px;padding:26px 28px;box-shadow:0 14px 50px #0000000d}.remote-stage{display:grid;justify-items:center}.remote-shell{width:min(100%,420px);padding:18px;border-radius:42px;background:linear-gradient(145deg,#242a31,#0f1318);box-shadow:0 30px 55px #0005,inset 0 1px 1px #ffffff2b}.remote-top{height:62px;padding:4px 10px;color:#eaf0f4;display:flex;justify-content:space-between;align-items:center}.remote-top span{font-weight:800}.remote-top small{color:#8f9ba7}.screen{min-height:455px;padding:18px;border-radius:26px;background:linear-gradient(160deg,#edf2ed,#dce7df);color:#1f2924;box-shadow:inset 0 0 0 1px #ffffffaa,inset 0 8px 30px #8295891f}.screen-title{text-align:center;text-transform:uppercase;font-size:11px;letter-spacing:.16em;font-weight:900;color:#627168;margin-bottom:15px}.button-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.remote-button{position:relative;min-height:82px;padding:10px 5px 8px;border:1px solid #26392d14;border-radius:18px;background:#f7faf7;color:#27352d;display:grid;place-items:center;align-content:center;gap:4px;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s}.remote-button:hover{transform:translateY(-2px);box-shadow:0 8px 18px #354d3c1c}.remote-button.selected{border-color:#03a9f4;box-shadow:0 0 0 3px #03a9f429}.remote-button.pressed{animation:press .85s ease}.remote-button .glyph{font-size:23px;font-weight:500}.remote-button>span:not(.glyph){max-width:100%;font-size:9px;font-weight:800;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}.remote-button i{position:absolute;top:8px;right:8px;width:7px;height:7px;border-radius:50%}.remote-button.preset i,.legend i.preset{background:#3c8cff}.remote-button.custom i,.legend i.custom{background:#25bd76}.remote-button.disabled i,.legend i.disabled{background:#ee5b66}.remote-button.none i,.legend i.none{background:#9aa4ad}.remote-footer{height:54px;display:flex;align-items:center;justify-content:center;gap:8px}.remote-footer span{width:5px;height:5px;border-radius:50%;background:#ffffff40}.legend{display:flex;flex-wrap:wrap;justify-content:center;gap:16px;margin-top:22px;color:var(--secondary-text-color,#68727d);font-size:11px}.legend span{display:flex;align-items:center;gap:5px}.legend i{width:8px;height:8px;border-radius:50%}.editor{min-height:570px}.editor-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.editor h2{font-size:28px;margin:8px 0 2px;letter-spacing:-.025em}.status-pill{display:inline-flex;border-radius:10px;padding:5px 9px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.09em}.status-pill.preset{background:#3c8cff1c;color:#2373de}.status-pill.custom{background:#25bd761c;color:#15965a}.status-pill.disabled{background:#ee5b661c;color:#d93f4b}.status-pill.none{background:#9aa4ad22;color:#69747d}dl{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:20px 0;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;overflow:hidden}dl div{padding:12px 14px;border-bottom:1px solid var(--divider-color,#e2e5e8)}dl div:nth-last-child(-n+2){border-bottom:0}dt{font-size:10px;text-transform:uppercase;color:var(--secondary-text-color,#68727d);letter-spacing:.08em}dd{margin:4px 0 0;font-weight:700}.mode-tabs{display:flex;gap:4px;padding:4px;background:var(--secondary-background-color,#f1f3f5);border-radius:14px}.mode-tabs button{flex:1;font-size:12px;padding:10px}.mode-content{min-height:215px;margin-top:16px}.explanation{display:grid;gap:6px;padding:20px;border-radius:16px;background:#3c8cff12;border:1px solid #3c8cff33}.explanation span,.action-title span,.json-help{font-size:12px;color:var(--secondary-text-color,#68727d)}.explanation.danger{background:#ee5b6610;border-color:#ee5b6633}.action-box{display:grid;gap:14px}.action-title{display:flex;justify-content:space-between}#visualActionEditor{min-height:70px}.link-button{border:0;padding:0;background:none;color:var(--primary-color,#03a9f4);font-weight:800;cursor:pointer;text-decoration:underline}details{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px}summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color,#68727d)}textarea{width:100%;min-height:160px;margin-top:10px;padding:12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--code-editor-background-color,#111820);color:var(--code-editor-text-color,#dce8ef);font:12px/1.5 ui-monospace,monospace;resize:vertical}textarea.invalid{border-color:#e74c3c;box-shadow:0 0 0 2px #e74c3c33}.primary,.secondary{height:42px;padding:0 18px;border:1px solid transparent;border-radius:12px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background .15s,box-shadow .15s,transform .12s,border-color .15s}
       .primary{background:var(--primary-color,#03a9f4);color:#fff}
       .primary:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 20px color-mix(in srgb,var(--primary-color,#03a9f4) 38%,transparent)}
       .secondary{background:var(--secondary-background-color,#edf0f3);color:var(--primary-text-color,#17202a)}
@@ -3134,10 +3185,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       .device .screen-softkeys .k.selected .cap,.device .screen-softkeys .k.current-page .cap{stroke:#8bd4ff}
       .device .k.unsaved .cap{stroke-dasharray:3 2}
       @keyframes keypress{0%,100%{fill:#f7f7f9}20%{fill:#c9f6dc}}
-      .screen-keys{margin-top:16px}.sk-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--secondary-text-color,#68727d);margin-bottom:8px}
       .stage-actions{width:100%;justify-content:flex-start}.page-move{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--secondary-text-color,#68727d);font-size:12px;font-weight:700}.page-move select{width:auto;min-width:125px;height:36px;margin:0;border-radius:7px}.page-capacity{margin-left:auto}
-      .row-order{display:flex;align-items:center;gap:6px}.row-order span{margin-right:auto;color:var(--secondary-text-color,#68727d);font-size:12px;font-weight:700}.row-order .secondary.compact{width:36px;padding:0;font-size:17px}
-      .row-order .secondary.compact:disabled{opacity:.35}
+      .remote-capacity{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;margin:4px 0 14px;color:var(--secondary-text-color,#68727d);font-size:13px}
+      .remote-capacity b{color:var(--primary-text-color,#212121)}
+      .studio-save{position:sticky;top:0;z-index:2;display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:8px 0;background:var(--primary-background-color,#f5f5f5)}
+      .studio-save span{color:var(--secondary-text-color,#68727d);font-size:13px}
+      .row-tools{margin-top:12px}
       @media(max-width:900px){.workspace{grid-template-columns:1fr}.device-wrap{margin:auto}}
       @media(max-width:430px){header{align-items:center}.live{padding:0 10px}.device-wrap{width:100%}
       .button-grid{gap:7px}.remote-button{min-height:72px;border-radius:15px}dl{grid-template-columns:1fr}

@@ -414,6 +414,8 @@
       "bridge_test_failed": "Could not complete the GATT/crypto bridge test. The exact error is shown above and logged.",
       "bridge_test_rejected": "The bridge connected but did not acknowledge the encrypted test command.",
       "ir_profile_invalid": "The selected IR profile is invalid.",
+      "ir_capacity_full": "No more IR remotes can be added. Replace or remove an installed IR remote.",
+      "ir_device_table_full": "The Universal Remote has no free device slots.",
       "ir_table_timeout": "The Universal Remote device table could not be read.",
       "ir_duplicate_requires_replace": "This IR profile is already installed. Enable replacement to reinstall it.",
       "ir_delete_failed": "The existing IR profile could not be removed.",

@@ -18,6 +18,8 @@ Opcodes (plaintext, 0x0F = 15, 0x62 = 98):
 """
 from __future__ import annotations
 
+from collections import Counter
+
 # ---- primitives ----------------------------------------------------------------------------
 
 
@@ -1315,6 +1317,36 @@ def build_ir_pages(
             + bytes(body)
         )
     return tuple(pages)
+
+
+# V48 ARM slot table at cd34() + 0x24 has 25 device records.
+MAX_REMOTE_SLOTS = 25
+# Category limits used by the SwitchBot app. HID is also counted among the BLE devices.
+MAX_IR_REMOTES = 10
+MAX_BLE_REMOTES = 15
+MAX_HID_REMOTES = 3
+
+
+def remaining_remote_slots(installed: int) -> int:
+    return max(0, MAX_REMOTE_SLOTS - installed)
+
+
+def remaining_remote_kind_slots(table, control_type: int) -> int:
+    """Apply the shared device-table limit and the relevant category limits."""
+    free = remaining_remote_slots(len(table))
+    counts = Counter(row[2] for row in table)
+    if control_type == CTRL_IR:
+        return min(free, max(0, MAX_IR_REMOTES - counts[CTRL_IR]))
+    if control_type in (CTRL_NATIVE, CTRL_HID):
+        free = min(free, max(0, MAX_BLE_REMOTES - counts[CTRL_NATIVE] - counts[CTRL_HID]))
+        if control_type == CTRL_HID:
+            free = min(free, max(0, MAX_HID_REMOTES - counts[CTRL_HID]))
+    return free
+
+
+def require_remote_slot(installed: int) -> None:
+    if not remaining_remote_slots(installed):
+        raise ValueError("The Universal Remote has no free device slots.")
 
 
 def parse_added_devices(raw: bytes) -> list[tuple[int, int, int, bytes]]:

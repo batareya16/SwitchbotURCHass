@@ -6,6 +6,7 @@ the same verified command builders and the same read-table-then-mutate transacti
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from copy import deepcopy
@@ -28,7 +29,7 @@ from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
 from .inventory import stable_id_for_local
 from .studio_catalog import cloud_client
-from .studio_physical import resolve
+from .studio_physical import cached_device_table, read_device_table, resolve, store_device_table
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -160,66 +161,38 @@ def _forget_remote(hass, entry, identity: str) -> int:
     return dropped
 
 
-def _bridges(hass, entry) -> list:
-    """What Remote Studio can plan against: one entry per controller, with its real capacity.
-
-    An add-on that reports its capabilities is believed. One that does not is assumed to be the
-    single-address BlueZ build, which is what every bridge was before this existed — so an old
-    add-on keeps working and is simply described as holding one address.
-    """
+def _bridges(hass):
+    """Bridge pools reported by the add-on over MQTT."""
     reported = hass.data.get(DOMAIN, {}).get("_bridge_capabilities") or {}
-    seen: set[str] = set()
-    result = []
-
-    def add(address: str, fallback_name: str) -> None:
-        compact = addressing.normalise(address)
-        if not addressing.is_valid(compact) or compact in seen:
-            return
-        # An address a controller already serves, or could derive, is that controller's
-        # capacity — not a second controller. Counting it twice would offer room that the
-        # hardware does not have.
-        if any(
-            compact in {addressing.normalise(item) for item in bridge.serving}
-            or compact in {addressing.normalise(item) for item in bridge.candidates()}
-            for bridge in result
-        ):
-            return
-        seen.add(compact)
-        match = next(
-            (value for key, value in reported.items()
-             if addressing.normalise(key) == compact), {})
-        try:
-            advertising_sets = int(match.get("advertising_sets") or 1)
-        except (TypeError, ValueError):
-            advertising_sets = 1
-        result.append(addressing.Bridge(
-            adapter=str(match.get("adapter") or fallback_name or "bridge"),
-            address=addressing.format_address(compact),
-            advertising_sets=advertising_sets,
-            serving=[str(item) for item in match.get("serving") or [addressing.format_address(compact)]],
-            extended_advertising=bool(match.get("extended_advertising", False)),
-        ))
-
-    # Controllers the add-on announced come first: they carry the capacity figures.
-    for key, value in reported.items():
-        add(key, str(value.get("adapter") or ""))
-    # Then any bridge the integration stored that no add-on has announced — an adapter whose
-    # add-on is stopped still holds the tiles bound to it.
-    for item in targets.all_targets(entry):
-        add(str(item.get("device_id", "")), str(item.get("name") or ""))
-    return result
+    return [
+        addressing.Bridge(
+            adapter=str(data.get("adapter") or "bridge"),
+            address=addressing.format_address(address),
+            advertising_sets=data["advertising_sets"],
+            serving=data["serving"],
+            extended_advertising=data["extended_advertising"],
+        )
+        for address, data in reported.items()
+        if addressing.is_valid(address)
+    ]
 
 
-def _next_address(bridges, used) -> str:
-    """The address Add remote would take, or empty when there is none.
+def _target_for_bridge(entry, bridge, address):
+    known = {
+        addressing.normalise(str(item["device_id"])): item
+        for item in targets.all_targets(entry) if item.get("target_key")
+    }
+    return next((known[key] for key in map(addressing.normalise, [
+        bridge.address, address, *bridge.serving,
+    ]) if key in known), {})
 
-    Suggesting an address is a convenience, so a failure here must not take the whole dialog
-    down with it — without this the Add remote form would simply not open.
-    """
-    try:
-        return addressing.allocate(bridges, used)[0].address
-    except ValueError:
-        return ""
+
+def remote_management_lock(hass):
+    return hass.data.setdefault(DOMAIN, {}).setdefault("_remote_management_lock", asyncio.Lock())
+
+
+def _native_table_addresses(table) -> list[str]:
+    return [row[3][:6][::-1].hex() for row in table if row[2] == c.CTRL_NATIVE]
 
 
 def _used_addresses(entry) -> list[str]:
@@ -239,11 +212,16 @@ def _used_addresses(entry) -> list[str]:
 })
 @websocket_api.async_response
 async def ws_remote_delete(hass, connection, msg):
+    async with remote_management_lock(hass):
+        await _delete_remote(hass, connection, msg)
+
+
+async def _delete_remote(hass, connection, msg):
     """Remove one remote from the device and from the integration's own list."""
     try:
         entry, remote = resolve(hass, msg)
         client = _client(hass, entry)
-        table = c.parse_added_devices(await client.query(7))
+        table = await read_device_table(hass, entry, client)
         # A native remote is found in the table by the bridge address it is bound to, which is
         # `physical_device_id` once it has been moved. Everything below works from this one
         # value, so the delete, its preflight and the key repair all name the same address.
@@ -295,7 +273,7 @@ async def ws_remote_delete(hass, connection, msg):
         def _count(rows) -> int:
             return sum(1 for row in rows if row[3] == expected_id and row[2] == control_type)
 
-        after = c.parse_added_devices(await client.query(7))
+        after = await read_device_table(hass, entry, client)
         if _count(after) >= _count(table):
             raise ValueError("the remote is still in the device table after the delete")
 
@@ -331,80 +309,50 @@ async def ws_remote_delete(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_remote_create(hass, connection, msg):
-    """Install a native bridge remote, on a stored bridge address or a new one.
+    """Install a Native tile at a free address served by a running bridge."""
+    async with remote_management_lock(hass):
+        await _create_native_remote(hass, connection, msg)
 
-    A native tile connects to one fixed BLE address and the firmware keeps the target key per
-    address, so a second tile needs a second address. `new_target_address` binds to one the
-    integration has not seen before, reusing the key already stored for the first bridge — the
-    add-on serves every address in its `addresses` option from the same controller, so the new
-    address has to be listed there too.
-    """
+
+async def _create_native_remote(hass, connection, msg):
     try:
         entry = hass.config_entries.async_get_entry(msg["entry_id"])
         if entry is None or entry.domain != DOMAIN:
             raise ValueError("Integration not found")
-        known = targets.all_targets(entry)
-        new_address = str(msg.get("new_target_address") or "").strip()
-        if msg.get("auto_address") and not new_address:
-            # Pick the next free address across every controller, so nobody has to know what a
-            # static random address is or which adapter still has room.
-            chosen = allocate_address(hass, entry)
-            new_address = chosen.address
-            _LOGGER.info("allocated %s on %s for the new native remote",
-                         chosen.address, chosen.bridge.adapter)
-        if new_address:
-            compact = new_address.replace(":", "").replace("-", "")
-            if len(compact) != 12 or any(ch not in "0123456789abcdefABCDEF" for ch in compact):
-                raise ValueError("A bridge address is six hex bytes, like DA:71:16:E0:1F:92")
-            source = known[0] if known else {}
-            if not source.get("target_key"):
-                raise ValueError(
-                    "No bridge key is stored yet, so there is nothing to reuse for a new "
-                    "address. Add the first native remote in the integration settings."
-                )
-            # A new address defaults to the first bridge's key: the add-on serves every address
-            # from one controller with one DEVICE_KEY, so a different key would simply fail to
-            # decrypt. It stays editable because a second controller is also a valid setup.
-            target = dict(source) | {"device_id": new_address, "name": msg["name"]}
-            is_new = True
-        else:
-            wanted = str(msg.get("target_id") or "").replace(":", "").lower()
-            target = next(
-                (item for item in known
-                 if str(item.get("device_id", "")).replace(":", "").lower() == wanted),
-                known[0] if known else {},
-            )
-            if wanted and str(target.get("device_id", "")).replace(":", "").lower() != wanted:
-                raise ValueError("That bridge is not known to this integration")
-            is_new = False
         supplied_key = str(msg.get("target_key") or "").strip().replace(" ", "")
-        if supplied_key:
-            try:
-                if len(bytes.fromhex(supplied_key)) != 16:
-                    raise ValueError
-            except ValueError:
-                raise ValueError(
-                    "The AES key must be exactly 32 hexadecimal characters"
-                ) from None
-            target = dict(target) | {"target_key": supplied_key}
-        if not target.get("device_id") or not target.get("target_key"):
-            raise ValueError(
-                "No native bridge credentials are stored yet. Add the first native remote in the "
-                "integration settings; after that this button can reuse them."
-            )
+        if supplied_key and (len(supplied_key) != 32
+                             or any(char not in "0123456789abcdefABCDEF" for char in supplied_key)):
+            raise ValueError("The AES key must be exactly 32 hexadecimal characters.")
+        wanted = str(msg.get("new_target_address") or msg.get("target_id") or "").strip()
+        if wanted and not addressing.is_valid(wanted):
+            raise ValueError("Enter a six-byte Bluetooth address.")
+        bridges = _bridges(hass)
+        if not bridges:
+            raise ValueError("Start the SwitchBot URC Bridge add-on first.")
         client = _client(hass, entry)
-        table = c.parse_added_devices(await client.query(7))
-        # One address holds one native tile: the firmware keys the target key on the address,
-        # and binding a second tile to it is refused outright with 0x02.
-        if any(row[2] == c.CTRL_NATIVE
-               and row[3][:6] == c.id_to_bytes(str(target["device_id"]))[:6]
-               for row in table):
-            raise ValueError(
-                f"{target['device_id']} already carries a native tile, and the firmware keys the "
-                "target key on the address, so it cannot hold a second one. Give this remote a "
-                "new address instead, and add that address to the add-on's `addresses` option — "
-                "one Bluetooth 5 controller can serve several."
-            )
+        table = await read_device_table(hass, entry, client)
+        c.require_remote_slot(len(table))
+        if not c.remaining_remote_kind_slots(table, c.CTRL_NATIVE):
+            raise ValueError("No more Native remotes can be added.")
+        used = _native_table_addresses(table)
+        free = list(addressing.free_advertised_addresses(bridges, used))
+        if wanted:
+            free = [(address, bridge) for address, bridge in free
+                    if addressing.normalise(address) == addressing.normalise(wanted)]
+        if not free:
+            raise ValueError("No free advertised bridge address is available.")
+        if not wanted and not supplied_key:
+            free = [(address, bridge) for address, bridge in free
+                    if _target_for_bridge(entry, bridge, address)]
+            if not free:
+                raise ValueError("Enter the add-on's device key once to set up the bridge.")
+        address, bridge = free[0]
+        saved_target = _target_for_bridge(entry, bridge, address)
+        target_key = supplied_key or saved_target.get("target_key", "")
+        if len(bytes.fromhex(target_key)) != 16:
+            raise ValueError(f"Enter the device key for the bridge at {bridge.address}.")
+        if not await _confirm_bridge_address(hass, bridge, address):
+            raise ValueError("The add-on did not confirm the selected address. Try again when it is ready.")
         slot = len(table)
         selected_type = c.native_type_metadata(
             str(msg.get("native_type") or msg.get("device_type") or "STRIP")
@@ -413,16 +361,19 @@ async def ws_remote_create(hass, connection, msg):
         remote_id = new_remote_id(entry)
         stages = c.build_native_bind_sequence(
             key_id=0x01,
-            target_key=bytes.fromhex(str(target["target_key"])),
+            target_key=bytes.fromhex(target_key),
             device_type_name=device_type,
             remote_index=slot,
             name=msg["name"],
-            device_id=str(target["device_id"]),
+            device_id=address,
             icon_name=selected_type["icon_name"],
             control_mode=selected_type["control_mode"],
             event_remote_id=remote_id,
         )
-        await install.bind_native_once(client, stages, device_id=str(target["device_id"]))
+        await install.bind_native_once(client, stages, device_id=address)
+        store_device_table(hass, entry, [*table, (
+            slot, c.NATIVE_DEVTYPE[device_type], c.CTRL_NATIVE, c.id_to_bytes(address),
+        )])
 
         remotes = list(entry.options.get("remotes", []))
         remotes.append({
@@ -433,33 +384,31 @@ async def ws_remote_create(hass, connection, msg):
             "control_mode": selected_type["control_mode"],
             "icon": selected_type["icon_name"],
             "icon_code": selected_type["icon_code"],
-            "device_id": str(target["device_id"]),
-            "physical_device_id": str(target["device_id"]),
+            "device_id": address,
+            "physical_device_id": address,
             "remote_id": remote_id,
             "buttons": [],
             "custom_layout": c.editable_layout_from_native_profile(device_type),
             "physical_packets": [packet.hex() for stage, packet in stages if stage.startswith("bind_")],
         })
         _save_remotes(hass, entry, remotes)
-        served = ""
-        if is_new:
-            served = await ask_bridge_to_serve(hass, entry, str(target["device_id"]))
-        if is_new or supplied_key:
-            # Only record the bridge once the remote is actually bound to it, so a failed
-            # attempt does not leave an address the integration thinks it can use.
+        if supplied_key and address != bridge.address:
             targets.remember_target(hass, entry, {
-                "name": msg["name"],
-                "device_id": str(target["device_id"]),
+                "name": bridge.adapter,
+                "device_id": bridge.address,
                 "device_type": device_type,
-                "icon": "light",
-                "control_mode": 0,
-                "target_key_id": str(target.get("target_key_id", "01")),
-                "target_key": str(target["target_key"]),
+                "target_key_id": "01",
+                "target_key": target_key,
             })
+        targets.remember_target(hass, entry, {
+            "name": msg["name"],
+            "device_id": address,
+            "device_type": device_type,
+            "target_key_id": "01",
+            "target_key": target_key,
+        })
         connection.send_result(msg["id"], {
-            "remote_id": remote_id, "slot": slot,
-            "bridge": str(target["device_id"]), "new_bridge": is_new,
-            "warning": served,
+            "remote_id": remote_id, "slot": slot, "bridge": address,
         })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio create failed")
@@ -479,6 +428,11 @@ async def ws_remote_create(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_remote_install_ir(hass, connection, msg):
+    async with remote_management_lock(hass):
+        await _install_ir_remote(hass, connection, msg)
+
+
+async def _install_ir_remote(hass, connection, msg):
     """Install a whole IR remote from the catalog or the account.
 
     This is the options flow's add-IR-remote path, driven from the panel instead of a form
@@ -539,7 +493,10 @@ async def ws_remote_install_ir(hass, connection, msg):
             remotes=entry.options.get("remotes", []),
             targets=targets.all_targets(entry),
             status=status.append,
+            observe_table=lambda table: store_device_table(hass, entry, table),
         )
+        if errors.get("base") in {"ir_device_table_full", "ir_capacity_full"}:
+            raise ValueError("No more IR remotes can be added. You can replace an installed IR remote.")
         if errors or installed is None:
             raise ValueError(
                 f"{'; '.join(errors.values()) or 'install failed'}"
@@ -575,69 +532,45 @@ async def ws_remote_install_ir(hass, connection, msg):
         connection.send_error(msg["id"], "ir_install_failed", str(err))
 
 
-def allocate_address(hass, entry, release: str = ""):
-    """The next free address across every controller, as an `addressing.Allocation`.
-
-    `release` is the address a remote is moving off: it stops counting as used, so a tile on a
-    full controller can still be moved somewhere else.
-    """
-    used = _used_addresses(entry)
-    if release:
-        used = addressing.without(used, release)
-    return addressing.allocate(_bridges(hass, entry), used)[0]
+def next_move_address(hass, entry, occupied=()) -> str:
+    table = cached_device_table(hass, entry)
+    used = _used_addresses(entry) if table is None else _native_table_addresses(table)
+    return next((address for address, bridge in addressing.free_advertised_addresses(
+        _bridges(hass), [*used, *occupied],
+    ) if _target_for_bridge(entry, bridge, address)), "")
 
 
-async def ask_bridge_to_serve(hass, entry, address: str) -> str:
-    """Tell the add-on to advertise a newly bound address, and say so if it could not.
-
-    Binding a tile writes the address into the remote; nothing answers on it until the add-on
-    advertises it. Doing this automatically is the difference between a working remote and one
-    that silently does nothing, so a failure is reported rather than swallowed — but it is a
-    warning, not an error: the tile is already bound, and the add-on's `addresses` option is
-    still a way to fix it by hand.
-    """
+async def _confirm_bridge_address(hass, owner, address: str) -> bool:
     from . import async_bridge_control
 
+    return await async_bridge_control(hass, "check_address", {
+        "address": address, "adapter_address": owner.address,
+    })
+
+
+async def prepare_move_destination(hass, entry, address: str) -> dict:
+    """Confirm the destination and its key before removing a working tile."""
     compact = addressing.normalise(address)
-    owner = next(
-        (bridge for bridge in _bridges(hass, entry)
-         if addressing._belongs_to(bridge, address)), None)
+    owner = next((bridge for bridge in _bridges(hass)
+                  if any(addressing.normalise(item) == compact for item in bridge.serving)), None)
     if owner is None:
-        # The list sent to a bridge replaces everything it serves, so sending one that does not
-        # describe a real controller would stop every other tile from being answered. Refusing
-        # is the safe half: the tile is bound, and the add-on's own option still works.
-        return (
-            f"The remote is bound to {address}, but no known controller serves it. Add the "
-            "address to the add-on's `addresses` option, or move the remote to an address one "
-            "of the known controllers can carry."
+        raise ValueError(f"No running bridge reports {address} as an advertised address.")
+    target = _target_for_bridge(entry, owner, address)
+    if not target:
+        raise ValueError(f"Set up the bridge credentials for {owner.address} before moving.")
+    if not await _confirm_bridge_address(hass, owner, address):
+        raise ValueError(
+            f"The bridge did not confirm advertising {address}. "
+            "The remote was left at its current address."
         )
-    # Always a superset of what it already serves: this list replaces the bridge's own.
-    wanted = [addressing.format_address(addressing.normalise(item))
-              for item in owner.serving] or [owner.address]
-    if not any(addressing.normalise(item) == compact for item in wanted):
-        wanted.append(addressing.format_address(compact))
-    try:
-        ok = await async_bridge_control(hass, "addresses", {
-            "addresses": wanted,
-            # One control topic serves every add-on instance, so each must be able to tell
-            # whether a request is meant for its own controller.
-            "adapter_address": owner.address,
-        })
-    except Exception as err:  # noqa: BLE001 - the tile is bound either way
-        _LOGGER.warning("could not ask the add-on to serve %s: %s", address, err)
-        ok = False
-    if ok:
-        return ""
-    return (
-        f"The remote is bound to {address}, but the add-on did not confirm it is advertising "
-        "it. Check the add-on log, or add the address to its `addresses` option."
-    )
+    return target
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/remote/sources",
     vol.Required("entry_id"): str,
+    vol.Optional("refresh_capacity", default=False): bool,
 })
 @websocket_api.async_response
 async def ws_remote_sources(hass, connection, msg):
@@ -647,13 +580,38 @@ async def ws_remote_sources(hass, connection, msg):
         connection.send_error(msg["id"], "not_found", "Integration not found")
         return
     known = targets.all_targets(entry)
-    bridges = _bridges(hass, entry)
-    used = _used_addresses(entry)
+    table = cached_device_table(hass, entry)
+    capacity_error = False
+    if msg.get("refresh_capacity"):
+        try:
+            table = await read_device_table(hass, entry, _client(hass, entry))
+        except Exception as err:
+            _LOGGER.debug("Could not refresh the device capacity: %s", err)
+            table = None
+            capacity_error = True
+    bridges = _bridges(hass)
+    used = _used_addresses(entry) if table is None else _native_table_addresses(table)
+    free = list(addressing.free_advertised_addresses(bridges, used))
+    bridge_capacity = len({addressing.normalise(address) for bridge in bridges for address in bridge.serving})
+    limits = {
+        "ir": (c.CTRL_IR, c.MAX_IR_REMOTES),
+        "native": (c.CTRL_NATIVE, min(bridge_capacity, c.MAX_BLE_REMOTES)),
+        "hid": (c.CTRL_HID, c.MAX_HID_REMOTES),
+    }
+    remote_capacity = {}
+    for kind, (control_type, total) in limits.items():
+        available = None if table is None else c.remaining_remote_kind_slots(table, control_type)
+        if kind == "native":
+            available = 0 if not free else None if available is None else min(available, len(free))
+        remote_capacity[kind] = {"available": available, "total": total}
     connection.send_result(msg["id"], {
-        "native": any(item.get("device_id") and item.get("target_key") for item in known),
+        "native": bool(bridges),
+        "remote_capacity": remote_capacity,
+        "capacity_read_failed": capacity_error,
         "bridges": [
-            {"target_id": str(item["device_id"]), "name": str(item.get("name") or item["device_id"])}
-            for item in known if item.get("target_key")
+            {"target_id": address, "name": f"{bridge.adapter} · {address}",
+             "has_key": bool(_target_for_bridge(entry, bridge, address))}
+            for address, bridge in free
         ],
         "catalog": await hass.async_add_executor_job(ir_catalog.available),
         "cloud": bool(entry.data.get("cloud")),
@@ -663,28 +621,21 @@ async def ws_remote_sources(hass, connection, msg):
             for item in entry.options.get("cloud_remotes", [])
             if isinstance(item, dict) and item.get("remoteID")
         ],
-        # The same choices the options flow's bind_native step offers. The key is prefilled as
-        # it is there: this command is admin-only, and binding a bridge without seeing which key
-        # it will carry is how mismatched keys happen.
         "native_options": {
-            "capacity": addressing.capacity(bridges),
-            "free": addressing.free_slots(bridges, used),
-            "summary": addressing.describe(bridges, used),
+            "capacity": bridge_capacity,
+            "free": len(free),
             "controllers": [
                 {"adapter": bridge.adapter, "address": bridge.address,
-                 "capacity": bridge.capacity,
-                 "used": sum(1 for item in used if addressing._belongs_to(bridge, item)),
-                 # What the add-on reports it is advertising right now. The add-on's own
-                 # `addresses` option is only the seed: Studio adds to it at run time, so this
-                 # is the one place that tells the truth about what is reachable.
+                 "capacity": len(bridge.serving),
+                 "used": len({addressing.normalise(item) for item in used}
+                             & {addressing.normalise(address) for address in bridge.serving}),
                  "serving": list(bridge.serving),
                  "extended_advertising": bridge.extended_advertising}
                 for bridge in bridges
             ],
-            "next_address": _next_address(bridges, used),
+            "next_move_address": next_move_address(hass, entry),
             "device_types": list(c.SUPPORTED_NATIVE_DEVICE_TYPES),
             "icons": list(ICONS),
-            "default_key": str((known[0] if known else {}).get("target_key", "")),
             "default_device_type": str((known[0] if known else {}).get("device_type", "STRIP")),
             "default_screen_profile": next(
                 (item["value"] for item in c.native_type_picker_options()

@@ -324,7 +324,6 @@ def test_connection_guard_refuses_new_query_without_overwriting_old_attempt():
     server = object.__new__(hci.MultiAddressServer)
     server._io_lock = threading.RLock()
     server._management_lock = threading.Lock()
-    server._paused = threading.Event()
     server.channel = object()
     server._central_link = None
     old = hci.AttManagementClient(PEER, lambda _: None)
@@ -364,7 +363,6 @@ def test_controller_refusal_does_not_leave_a_permanent_connection_guard():
     server = object.__new__(hci.MultiAddressServer)
     server._io_lock = threading.RLock()
     server._management_lock = threading.Lock()
-    server._paused = threading.Event()
     server._central_client = None
     server._central_link = None
     server.conn_min, server.conn_max = 6, 12

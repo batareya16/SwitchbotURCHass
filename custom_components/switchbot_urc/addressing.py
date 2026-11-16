@@ -98,6 +98,48 @@ def _belongs_to(bridge: Bridge, address: str) -> bool:
     }
 
 
+def bridge_for_move(bridges: list[Bridge], address: str) -> Bridge:
+    """Find a live owner before reassigning a tile to its address."""
+    if not is_valid(address):
+        raise ValueError("Enter a six-byte Bluetooth address.")
+    compact = normalise(address)
+    for bridge in bridges:
+        if compact in {normalise(item) for item in bridge.serving}:
+            return bridge
+    for bridge in bridges:
+        if compact in {normalise(item) for item in bridge.candidates()}:
+            if len(bridge.serving) < bridge.capacity:
+                return bridge
+            raise ValueError(f"The bridge at {bridge.address} has no spare advertising sets.")
+    raise ValueError(f"No running bridge can serve {format_address(compact)}.")
+
+
+def free_advertised_addresses(bridges: list[Bridge], used: list[str]):
+    """Only advertise choices that the add-on reports as enabled."""
+    taken = {normalise(address) for address in used}
+    for bridge in bridges:
+        for address in bridge.serving:
+            compact = normalise(address)
+            if compact not in taken and is_valid(compact):
+                taken.add(compact)
+                yield address, bridge
+
+
+def next_move_address(bridges: list[Bridge], used: list[str]) -> str:
+    """Prefer a free address already advertised, then an unused advertising set."""
+    taken = {normalise(address) for address in used}
+    for bridge in bridges:
+        for address in bridge.serving:
+            if normalise(address) not in taken:
+                return address
+    for bridge in bridges:
+        if len(bridge.serving) < bridge.capacity:
+            for address in bridge.candidates():
+                if normalise(address) not in taken:
+                    return address
+    return ""
+
+
 def capacity(bridges: list[Bridge]) -> int:
     return sum(bridge.capacity for bridge in bridges)
 

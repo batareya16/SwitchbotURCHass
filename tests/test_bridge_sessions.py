@@ -31,6 +31,80 @@ def bridge():
         pytest.skip(f"bridge.py needs more than is available here: {err}")
 
 
+def test_startup_preserves_the_same_saved_pool_through_a_restart(bridge, tmp_path, monkeypatch):
+    path = tmp_path / "addresses.json"
+    monkeypatch.setattr(bridge, "_ADDRESS_STORE", path)
+    monkeypatch.setattr(bridge.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(bridge.NativeSessionHistory, "load", lambda *_: None)
+    radio = bridge.hci_multi
+    own = "8A:88:1B:E0:1F:92"
+    manual = "DA:71:16:E0:1F:93"
+    adapter = ["hci0", 0]
+    limit = [4]
+    monkeypatch.setattr(radio, "resolve_adapter", lambda _: (*adapter, own))
+    monkeypatch.setattr(radio, "probe_capabilities", lambda _: (True, 4))
+
+    class Channel:
+        def command(self, opcode, payload=b""):
+            if opcode == radio.OP_READ_BD_ADDR:
+                return radio.address_bytes(own)
+            if opcode == radio.OP_LE_READ_BUFFER_SIZE:
+                return b"\x1b\x00\x08"
+            if opcode == radio.OP_LE_READ_ADV_SETS:
+                return b"\x04"
+            if opcode == radio.OP_LE_SET_EXT_ADV_ENABLE and payload[0] and payload[1] > limit[0]:
+                raise radio.HciCommandError(opcode, radio.STATUS_CONNECTION_LIMIT)
+            return b""
+
+    def simulated_start(server):
+        server._initialise_controller(Channel())
+
+    monkeypatch.setattr(radio.MultiAddressServer, "start", simulated_start)
+
+    class StartupComplete(Exception):
+        pass
+
+    class Broker:
+        def set_control_handler(self, handler, **kwargs):
+            self.serving = kwargs["capabilities"]["serving"]
+            raise StartupComplete
+
+    def start(configured):
+        broker = Broker()
+        with pytest.raises(StartupComplete):
+            bridge.run_multi_address(adapter[0], configured, bytes(16), broker, "")
+        return broker.serving
+
+    first = start([manual])
+    assert first == [manual, own, "C0:88:1B:E0:1F:92", "C1:88:1B:E0:1F:92"]
+    assert json.loads(path.read_text()) == first
+
+    adapter[:] = ["hci1", 1]
+    assert start([]) == first
+
+    limit[0] = 3
+    assert start([]) == first[:3]
+    assert json.loads(path.read_text()) == first
+
+    limit[0] = 4
+    assert start([]) == first
+
+
+def test_interrupted_address_write_leaves_the_previous_pool(bridge, tmp_path, monkeypatch):
+    path = tmp_path / "addresses.json"
+    monkeypatch.setattr(bridge, "_ADDRESS_STORE", path)
+    first = ["8A:88:1B:E0:1F:92"]
+    bridge._remember_addresses(first)
+
+    def fail_replace(*_args):
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(type(path), "replace", fail_replace)
+    bridge._remember_addresses([*first, "DA:71:16:E0:1F:93"])
+    assert bridge._recall_addresses() == first
+    assert list(tmp_path.iterdir()) == [path]
+
+
 KEY = bytes.fromhex("00112233445566778899aabbccddeeff")
 HANDSHAKE = bytes.fromhex("570000000f210301")
 # A real press, from the add-on log: BRIGHTER on the tile with remote_id bb30e0eb.
@@ -157,6 +231,48 @@ class TestReconnectSessions:
         new.on_write(frame(bridge, old, old._iv))
         assert seen == {"notifies": [], "buttons": []}
 
+    def test_clean_restart_restores_recent_ivs_and_deduplicates_delivered_frames(
+        self, bridge, tmp_path,
+    ):
+        snapshot = tmp_path / "sessions.json"
+        history = bridge.NativeSessionHistory()
+        old, original = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        delivered = frame(bridge, old, old._iv)
+        old.on_write(delivered)
+        old.on_write(HANDSHAKE)
+        queued = frame(bridge, old, old._iv, plain=bytes.fromhex("f00306bb30e0eb030009012d"))
+        history.save(snapshot)
+
+        restored = bridge.NativeSessionHistory()
+        restored.load(snapshot)
+        new, seen = self.make_device(bridge, restored)
+        new.on_write(delivered)
+        new.on_write(queued)
+
+        assert len(original["buttons"]) == 1
+        assert [event[0] for event in seen["buttons"]] == ["DARKER"]
+        assert [ack[1:4] for ack in seen["notifies"]] == [delivered[1:4], queued[1:4]]
+
+    def test_restart_does_not_extend_session_lifetime(self, bridge, tmp_path, monkeypatch):
+        elapsed = [0]
+        monkeypatch.setattr(bridge.time, "monotonic", lambda: 100 + elapsed[0])
+        monkeypatch.setattr(bridge.time, "time", lambda: 1000 + elapsed[0])
+        snapshot = tmp_path / "sessions.json"
+        history = bridge.NativeSessionHistory()
+        old, _ = self.make_device(bridge, history)
+        old.on_write(HANDSHAKE)
+        queued = frame(bridge, old, old._iv)
+        elapsed[0] = 55
+        history.save(snapshot)
+        elapsed[0] = 61
+
+        restored = bridge.NativeSessionHistory()
+        restored.load(snapshot)
+        new, seen = self.make_device(bridge, restored)
+        new.on_write(queued)
+        assert seen == {"notifies": [], "buttons": []}
+
     def test_same_button_in_a_new_session_is_a_new_press(self, bridge):
         history = bridge.NativeSessionHistory()
         old, _ = self.make_device(bridge, history)
@@ -252,7 +368,6 @@ def test_mqtt_all_management_stays_on_raw_hci(bridge, monkeypatch, mode):
     ready = threading.Event()
     actions = []
     raw_calls = []
-    bluez_calls = []
     class Client:
         def subscribe(self, *args, **kwargs):
             pass
@@ -271,10 +386,6 @@ def test_mqtt_all_management_stays_on_raw_hci(bridge, monkeypatch, mode):
         if mode == "rejected":
             return {"ok": False, "failed_stage": "inventory", "error": "ATT rejected"}
         return {"ok": True, "responses": ["0100000000000000"], "transport": "raw_hci"}
-    def bluez(*args):
-        bluez_calls.append(args)
-        return {"ok": True, "responses": ["01"]}
-    monkeypatch.setattr(bridge, "run_remote_management", bluez)
     monkeypatch.setattr(bridge.time, "sleep", lambda _: None)
     mqtt.set_control_handler(lambda action: actions.append(action) or True,
                              adapter_name="hci0", adapter_address="8A:88:1B:E0:1F:92",
@@ -293,5 +404,28 @@ def test_mqtt_all_management_stays_on_raw_hci(bridge, monkeypatch, mode):
         assert published[0]["failed_stage"] == "bridge"
         assert published[0]["transport"] == "raw_hci"
     assert len(raw_calls) == 1
-    assert not bluez_calls
     assert not actions
+
+
+def test_startup_exits_when_raw_hci_is_unsupported(bridge, monkeypatch):
+    monkeypatch.setenv("ADAPTER", "hci0")
+    monkeypatch.setattr(bridge, "Mqtt", lambda *_: None)
+    monkeypatch.setattr(bridge.hci_multi, "resolve_adapter", lambda _: ("hci0", 0, ""))
+    monkeypatch.setattr(bridge.hci_multi, "probe_capabilities", lambda _: (False, 1))
+
+    with pytest.raises(SystemExit, match="raw HCI bridge on hci0:.*requires a compatible Bluetooth 5"):
+        bridge.main()
+
+
+def test_startup_reports_controller_error_without_fallback(bridge, monkeypatch):
+    monkeypatch.setenv("ADAPTER", "hci0")
+    monkeypatch.setattr(bridge, "Mqtt", lambda *_: None)
+    monkeypatch.setattr(bridge.hci_multi, "resolve_adapter", lambda _: ("hci0", 0, ""))
+    monkeypatch.setattr(bridge.hci_multi, "probe_capabilities", lambda _: (True, 4))
+
+    def fail_to_claim(_server):
+        raise OSError("controller busy")
+
+    monkeypatch.setattr(bridge.hci_multi.MultiAddressServer, "start", fail_to_claim)
+    with pytest.raises(SystemExit, match="raw HCI bridge on hci0: controller busy"):
+        bridge.main()

@@ -22,6 +22,23 @@ from .cloud_ir import find_cloud_items, profile_from_cloud
 _LOGGER = logging.getLogger(__name__)
 
 
+def store_device_table(hass, entry, table):
+    hass.data.setdefault(DOMAIN, {}).setdefault("_studio_device_tables", {})[entry.entry_id] = tuple(table)
+
+
+def cached_device_table(hass, entry):
+    return hass.data.get(DOMAIN, {}).get("_studio_device_tables", {}).get(entry.entry_id)
+
+
+async def read_device_table(hass, entry, client):
+    raw = await client.query(7)
+    if not raw:
+        raise ValueError("The remote did not answer with its device table.")
+    table = c.parse_added_devices(raw)
+    store_device_table(hass, entry, table)
+    return table
+
+
 def remote_identity(remote):
     return str(remote.get("remote_id") or remote.get("device_id") or "")
 
@@ -150,7 +167,7 @@ async def ws_physical_import(hass, connection, msg):
             raise ValueError("Integration not found")
         settings = entry.data.get("cloud")
         client = hass.data[DOMAIN][entry.entry_id]["client"]
-        table = c.parse_added_devices(await client.query(7))
+        table = await read_device_table(hass, entry, client)
 
         async def save_tokens(access_token, refresh_token):
             data = deepcopy(dict(entry.data))
@@ -359,7 +376,7 @@ async def ws_physical_table(hass, connection, msg):
         connection.send_error(msg["id"], "physical_unavailable", "WoRWS is not connected")
         return
     try:
-        table = c.parse_added_devices(await client.query(7))
+        table = await read_device_table(hass, entry, client)
     except (ValueError, TypeError) as err:
         connection.send_error(msg["id"], "physical_unavailable", str(err))
         return
@@ -385,8 +402,11 @@ async def ws_physical_table(hass, connection, msg):
         " first one and only its buttons work."
         for address, slots in by_address.items() if len(slots) > 1
     ]
-    connection.send_result(msg["id"], {"rows": rows, "next_free_slot": len(rows),
-                                       "warnings": warnings})
+    connection.send_result(msg["id"], {
+        "rows": rows,
+        "next_free_slot": len(rows) if c.remaining_remote_slots(len(rows)) else None,
+        "warnings": warnings,
+    })
 
 
 @websocket_api.require_admin
@@ -439,6 +459,7 @@ async def ws_physical_apply(hass, connection, msg):
                     "Could not find the physical remote in the device table; refresh the inventory first"
                 )
             if recovering_native:
+                c.require_remote_slot(len(table))
                 slot, device_type, control_type = len(table), c.NATIVE_DEVTYPE[str(remote["device_type"]).upper()], c.CTRL_NATIVE
             else:
                 slot, device_type, control_type, _ = matches[0]
@@ -523,7 +544,7 @@ async def ws_physical_apply(hass, connection, msg):
                 raise ValueError(f"{stage}: no acknowledgement")
             # Read-back of table identity proves the tile remains installed; it does not read keys.
             stage = "verify remote remains installed"
-            after = c.parse_added_devices(await client.query(7))
+            after = await read_device_table(hass, entry, client)
             if not any(item[3] == expected_id and item[2] == expected_control for item in after):
                 raise ValueError("The remote is missing from the physical table after writing")
             status = "Device acknowledged all pages."
@@ -549,9 +570,15 @@ async def ws_physical_apply(hass, connection, msg):
                     physical_status=status, **stored_changes)
             _migrate_button_actions(hass, entry, identity, identity_migrations,
                                     msg.get("identity_removals", []))
-            _, updated = resolve(hass, msg)
-            connection.send_result(msg["id"], {"status": status, "layout": physical.draft_for(updated),
-                                              "backup": updated.get("physical_backup")})
+            from .studio import _serialize_entry
+
+            entry, updated = resolve(hass, msg)
+            connection.send_result(msg["id"], {
+                "status": status,
+                "layout": physical.draft_for(updated),
+                "backup": updated.get("physical_backup"),
+                "entry": _serialize_entry(hass, entry),
+            })
         except asyncio.CancelledError:
             if mutated:
                 persist(hass, entry, msg["remote_id"], physical_status="Physical update interrupted. Load the previous layout to restore it.")

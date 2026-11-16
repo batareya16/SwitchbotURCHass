@@ -30,6 +30,7 @@ from . import addressing
 from . import studio_remotes
 from . import targets
 from .studio_catalog import cloud_client
+from .studio_physical import read_device_table, store_device_table
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -304,6 +305,11 @@ async def ws_remote_rename(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_remote_recreate(hass, connection, msg):
+    async with studio_remotes.remote_management_lock(hass):
+        await _recreate_remote(hass, connection, msg)
+
+
+async def _recreate_remote(hass, connection, msg):
     """Write a remote to the device again from what is stored for it.
 
     Use it when the tile on the screen is wrong or missing. IR remotes are reinstalled from
@@ -452,31 +458,41 @@ async def ws_remote_recreate(hass, connection, msg):
             appearance = physical_layout.native_appearance(managed)
             device_id = str(managed.get("physical_device_id") or managed["device_id"])
             moved_from = ""
+            source_key = bytes.fromhex(str(target["target_key"]))
             wanted = str(msg.get("target_address") or "").strip()
-            if msg.get("auto_address") and not wanted:
-                # The address this remote is leaving is free again, so release it before
-                # planning, or a full controller would refuse its own tile's move.
-                chosen = studio_remotes.allocate_address(
-                    hass, entry, release=device_id)
-                wanted = chosen.address
-            if wanted:
+            moving = bool(wanted or msg.get("auto_address"))
+            if moving and not wanted:
+                occupied = [bytes.fromhex(row["device_key"])[:6][::-1].hex()
+                            for row in inventory if row["physical"] and row["control_type"] == c.CTRL_NATIVE]
+                wanted = studio_remotes.next_move_address(hass, entry, [device_id, *occupied])
+                if not wanted:
+                    raise ValueError("No free destination is available on a running bridge.")
+            if moving:
                 if not addressing.is_valid(wanted):
-                    raise ValueError(
-                        "A bridge address is six hex bytes, like DA:71:16:E0:1F:92")
-                wanted = addressing.format_address(addressing.normalise(wanted))
-                if addressing.normalise(wanted) != addressing.normalise(device_id):
-                    moved_from, device_id = device_id, wanted
-            if moved_from:
-                # Checked before the delete, not after: the firmware refuses a second tile on
-                # one address with 0x02, and by then this remote's own tile would be gone.
-                table = c.parse_added_devices(await client.query(0x07))
-                if any(row[2] == c.CTRL_NATIVE
-                       and row[3][:6] == c.id_to_bytes(device_id)[:6]
-                       for row in table):
-                    raise ValueError(
-                        f"{device_id} already carries a native tile. Move that one first, or "
-                        "choose an address that is free."
-                    )
+                    raise ValueError("Enter a six-byte Bluetooth address.")
+                wanted = addressing.format_address(wanted)
+                if addressing.normalise(wanted) == addressing.normalise(device_id):
+                    raise ValueError("This remote already uses that address.")
+                wanted_id = c.id_to_bytes(wanted)[:6]
+                if any(row["physical"] and row["control_type"] == c.CTRL_NATIVE
+                       and bytes.fromhex(row["device_key"])[:6] == wanted_id
+                       for row in inventory):
+                    raise ValueError(f"{wanted} already carries a native tile. Choose a free address.")
+                target = await studio_remotes.prepare_move_destination(hass, entry, wanted)
+                moved_from, device_id = device_id, wanted
+            target_key = bytes.fromhex(str(target["target_key"]))
+            if len(target_key) != 16:
+                raise ValueError("The bridge key must be 16 bytes.")
+            if moved_from and item.get("physical") and source_key != target_key and any(
+                row["physical"] and row["control_type"] == c.CTRL_NATIVE
+                and row["index"] != item["index"]
+                and row["device_key"][:12] == item["device_key"][:12]
+                for row in inventory
+            ):
+                raise ValueError(
+                    "Another remote still shares the current address. Moving to a bridge "
+                    "with a different key could break that remote."
+                )
             if item.get("physical"):
                 error = await install.delete_and_verify(
                     client,
@@ -496,6 +512,7 @@ async def ws_remote_recreate(hass, connection, msg):
             if not raw:
                 raise ValueError("The remote did not answer with its device table")
             slot = len(c.parse_added_devices(raw))
+            c.require_remote_slot(slot)
             custom_layout = managed.get("custom_layout")
             native_icon = str(managed.get("icon") or "light")
             native_mode = appearance["control_mode"]
@@ -504,7 +521,7 @@ async def ws_remote_recreate(hass, connection, msg):
             if custom_layout:
                 stages = c.build_custom_native_bind_sequence(
                     key_id=0x01,
-                    target_key=bytes.fromhex(str(target["target_key"])),
+                    target_key=target_key,
                     remote_index=slot,
                     name=name,
                     device_id=device_id,
@@ -523,7 +540,7 @@ async def ws_remote_recreate(hass, connection, msg):
             else:
                 stages = c.build_native_bind_sequence(
                     key_id=0x01,
-                    target_key=bytes.fromhex(str(target["target_key"])),
+                    target_key=target_key,
                     device_type_name=device_type_name,
                     remote_index=slot,
                     name=name,
@@ -535,18 +552,9 @@ async def ws_remote_recreate(hass, connection, msg):
             await install.bind_native_once(client, stages, device_id=device_id)
             restored_id = c.id_to_bytes(device_id)
             restored_type = c.NATIVE_DEVTYPE[str(managed["device_type"]).upper()]
-            if (slot, restored_type, c.CTRL_NATIVE, restored_id) not in c.parse_added_devices(
-                await client.query(0x07)
-            ):
+            verified_table = await read_device_table(hass, entry, client)
+            if (slot, restored_type, c.CTRL_NATIVE, restored_id) not in verified_table:
                 raise ValueError("The saved Native remote was not found in its expected slot after writing")
-            # The bind sequence rewrote the key for this address; siblings on the same address
-            # were released by the delete above and are covered by the same association.
-            if item.get("physical"):
-                await install.reassociate_shared_target(client, device_id)
-            if moved_from:
-                # The tile it was moved off also loses its key entry, and a sibling may still
-                # be using that address.
-                await install.reassociate_shared_target(client, moved_from)
             remotes = deepcopy(list(entry.options.get("remotes", [])))
             for remote in remotes:
                 if str(remote.get("remote_id") or remote.get("device_id") or "") == msg["remote_id"]:
@@ -565,6 +573,7 @@ async def ws_remote_recreate(hass, connection, msg):
                         # by, so leaving it on the old address would make this remote
                         # undeletable — the row would never be found and the local record
                         # would be dropped while the tile stayed on the screen.
+                        remote.setdefault("remote_id", msg["remote_id"])
                         remote["physical_device_id"] = device_id
                         remote["device_id"] = device_id
                     remote.pop("icon_variant_backup_packet", None)
@@ -575,7 +584,17 @@ async def ws_remote_recreate(hass, connection, msg):
                 targets.remember_target(hass, entry, dict(target) | {
                     "device_id": device_id, "name": name,
                 })
-                warning = await studio_remotes.ask_bridge_to_serve(hass, entry, device_id)
+                if item.get("physical"):
+                    try:
+                        response = await install.reassociate_shared_target(
+                            client, moved_from, entries=verified_table)
+                        if response is not None and install.resp_error(response):
+                            raise ValueError(f"response {response.hex() or 'timeout'}")
+                    except Exception as err:  # move is already verified and saved
+                        _LOGGER.warning("could not restore the key on %s after moving: %s",
+                                        moved_from, err)
+                        warning = (f"Moved to {device_id}. The shared key on {moved_from} "
+                                   "could not be restored.")
             connection.send_result(msg["id"], {
                 "slot": slot, "kind": "native",
                 "address": device_id, "moved_from": moved_from, "warning": warning,
@@ -929,6 +948,11 @@ async def ws_pair_host(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_create_hid(hass, connection, msg):
+    async with studio_remotes.remote_management_lock(hass):
+        await _create_hid_remote(hass, connection, msg)
+
+
+async def _create_hid_remote(hass, connection, msg):
     """Install a HID remote: presses go out as Bluetooth keys to the paired host."""
     try:
         entry = _entry(hass, msg)
@@ -938,10 +962,11 @@ async def ws_create_hid(hass, connection, msg):
         unknown = [name for name in buttons if name not in allowed]
         if unknown:
             raise ValueError(f"Unknown button(s): {', '.join(unknown)}")
-        raw = await client.query(0x07)
-        if not raw:
-            raise ValueError("The remote did not answer with its device table")
-        slot = len(c.parse_added_devices(raw))
+        table = await read_device_table(hass, entry, client)
+        slot = len(table)
+        c.require_remote_slot(slot)
+        if not c.remaining_remote_kind_slots(table, c.CTRL_HID):
+            raise ValueError("No more HID remotes can be added.")
         response = await client.send_command(c.build_remote(
             device_type_name=msg["device_type"],
             remote_index=slot,
@@ -956,6 +981,9 @@ async def ws_create_hid(hass, connection, msg):
                 "the remote rejected it because no host is paired yet"
                 if error == "resp_hid_no_pair" else f"the remote rejected it ({error})"
             )
+        store_device_table(hass, entry, [*table, (
+            slot, c.DEVTYPE[msg["device_type"]], c.CTRL_HID, c.id_to_bytes(msg["device_id"]),
+        )])
         remote_id = studio_remotes.new_remote_id(entry)
         remotes = list(entry.options.get("remotes", []))
         remotes.append({

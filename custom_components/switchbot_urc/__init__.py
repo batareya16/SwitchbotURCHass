@@ -503,9 +503,10 @@ async def async_bridge_control(
     starts being answered without anyone editing the add-on's configuration.
     """
     store = hass.data[DOMAIN]
-    waiters: dict[str, asyncio.Future[bool]] = store.setdefault(
+    waiters: dict[str, tuple[asyncio.Future[bool], str]] = store.setdefault(
         "_bridge_control_waiters", {}
     )
+    expected_adapter = str((extra or {}).get("adapter_address") or "").upper()
     if not store.get("_mqtt_status_unsub"):
         # Subscriptions can fail at setup when the integration loads before the mqtt integration
         # is ready. Retry on demand before giving up — by the time the user triggers management
@@ -527,7 +528,7 @@ async def async_bridge_control(
     for attempt in range(1, attempts + 1):
         request_id = uuid.uuid4().hex
         future: asyncio.Future[bool] = hass.loop.create_future()
-        waiters[request_id] = future
+        waiters[request_id] = (future, expected_adapter)
         try:
             # mqtt.async_publish is a coroutine; without await the publish is never actually sent
             # (the control message silently never reaches the broker), which is exactly why the
@@ -557,9 +558,9 @@ async def async_bridge_control(
             return False
         finally:
             waiters.pop(request_id, None)
-        if result:
+        if result and action in {"pause", "resume"}:
             _LOGGER.warning("native bridge %sd for WoRWS management", action)
-        else:
+        elif not result:
             _LOGGER.warning("native bridge reported it could not %s", action)
         return result
     return False
@@ -631,14 +632,16 @@ def _apply_bridge_identity(hass: HomeAssistant, data: dict[str, object]) -> None
     store["_bridge_identity"] = {"adapter": adapter, "adapter_address": address}
     # What this controller can carry, so Remote Studio can plan addresses without anyone
     # reading an add-on log. Keyed by controller address: one add-on instance per adapter.
-    if data.get("multi_address"):
+    if address:
         bridges = dict(store.get("_bridge_capabilities") or {})
+        multi_address = bool(data.get("multi_address"))
         bridges[address.upper()] = {
             "adapter": adapter,
             "address": address.upper(),
-            "advertising_sets": int(data.get("advertising_sets") or 1),
-            "extended_advertising": bool(data.get("extended_advertising")),
-            "serving": [str(item) for item in (data.get("serving") or [])],
+            "advertising_sets": int(data.get("advertising_sets") or 1) if multi_address else 1,
+            "extended_advertising": multi_address and bool(data.get("extended_advertising")),
+            "serving": ([str(item) for item in (data.get("serving") or [])]
+                        if multi_address else [address.upper()]),
         }
         store["_bridge_capabilities"] = bridges
     for value in store.values():
@@ -729,9 +732,12 @@ async def _subscribe_bridge_mqtt(hass: HomeAssistant) -> None:
             return
         _apply_bridge_identity(hass, data)
         waiters = store.get("_bridge_control_waiters", {})
-        future = waiters.get(request_id)
-        if future is not None and not future.done():
-            future.set_result(bool(data.get("ok")))
+        pending = waiters.get(request_id)
+        if pending is not None:
+            future, expected_adapter = pending
+            adapter = str(data.get("adapter_address") or "").upper()
+            if not future.done() and (not expected_adapter or adapter == expected_adapter):
+                future.set_result(bool(data.get("ok")))
 
     @callback
     def _on_bridge_info(msg) -> None:  # noqa: ANN001
@@ -762,7 +768,7 @@ async def _subscribe_bridge_mqtt(hass: HomeAssistant) -> None:
             hass, MQTT_BRIDGE_STATUS_TOPIC, _on_status
         )
         store["_mqtt_info_unsub"] = await mqtt.async_subscribe(
-            hass, MQTT_BRIDGE_INFO_TOPIC, _on_bridge_info
+            hass, f"{MQTT_BRIDGE_INFO_TOPIC}/#", _on_bridge_info
         )
         store["_mqtt_manage_unsub"] = await mqtt.async_subscribe(
             hass, MQTT_BRIDGE_MANAGE_RESULT_TOPIC, _on_manage_result

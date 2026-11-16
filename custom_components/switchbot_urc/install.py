@@ -157,18 +157,19 @@ async def delete_and_verify(
     return delete_resp_error(response, command)
 
 
-async def reassociate_shared_target(client: Any, device_id: str) -> bytes | None:
+async def reassociate_shared_target(client: Any, device_id: str, *, entries=None) -> bytes | None:
     """Restore the target-key association when another native row still uses the address.
 
     Deleting a native remote releases the target-key entry, and that entry is keyed on the
     six-byte BLE address, not on the remote. Any surviving native profile on the same address
     would otherwise lose its key and stop right after service discovery.
     """
-    try:
-        entries = commands.parse_added_devices(await client.query(0x07))
-    except (ValueError, TypeError) as err:
-        _LOGGER.warning("could not re-check the device table after deleting: %s", err)
-        return None
+    if entries is None:
+        try:
+            entries = commands.parse_added_devices(await client.query(0x07))
+        except (ValueError, TypeError) as err:
+            _LOGGER.warning("could not re-check the device table after deleting: %s", err)
+            return None
     address = commands.id_to_bytes(device_id)[:6]
     survivors = [
         entry for entry in entries
@@ -186,7 +187,7 @@ async def reassociate_shared_target(client: Any, device_id: str) -> bytes | None
 
 async def restore_managed_after_sync(
     client: Any, *, remotes: list[dict[str, Any]], targets: list[dict[str, Any]]
-) -> None:
+) -> list:
     """Recreate locally managed HID/native entries if a full IR sync removed them."""
     raw = await client.query(0x07)
     if not raw:
@@ -214,6 +215,7 @@ async def restore_managed_after_sync(
             present[signature] -= 1
             continue
         index = len(entries)
+        commands.require_remote_slot(index)
         if device_type in commands.NATIVE_DEVTYPE:
             # Each native remote belongs to the bridge whose address it was bound to.
             wanted = str(remote.get("physical_device_id") or "").replace(":", "").lower()
@@ -288,6 +290,7 @@ async def restore_managed_after_sync(
         else:
             continue
         entries.append((index, expected_type, expected_control, expected))
+    return entries
 
 
 async def native_row_present(client: Any, device_id: str) -> bool:
@@ -345,6 +348,7 @@ async def install_ir_profile(
     status: Any = None,
     icon_name: str | None = None,
     icon_code: int | None = None,
+    observe_table: Any = None,
 ) -> tuple[dict[str, str], int | None, dict[str, Any] | None]:
     """Install any profile exposing the IrProfile protocol.
 
@@ -368,6 +372,8 @@ async def install_ir_profile(
         if not raw_table:
             return {"base": "ir_table_timeout"}, None, None
         entries = commands.parse_added_devices(raw_table)
+        if observe_table is not None:
+            observe_table(entries)
         duplicates = [entry for entry in entries if entry[3] == profile.remote_id]
         if duplicates and not replace_existing:
             return {"replace_existing": "ir_duplicate_requires_replace"}, None, None
@@ -397,6 +403,10 @@ async def install_ir_profile(
                 return {"base": "ir_delete_failed"}, None, None
 
         remote_index = len(entries)
+        if not commands.remaining_remote_slots(remote_index):
+            return {"base": "ir_device_table_full"}, None, None
+        if not commands.remaining_remote_kind_slots(entries, commands.CTRL_IR):
+            return {"base": "ir_capacity_full"}, None, None
         install_kwargs = {"remote_index": remote_index, "name": name,
                           "remote_count": len(entries) + 1}
         if icon_code is not None:
@@ -423,7 +433,9 @@ async def install_ir_profile(
         if errors:
             return errors, None, None
 
-        await restore_managed_after_sync(client, remotes=remotes, targets=targets)
+        final_table = await restore_managed_after_sync(client, remotes=remotes, targets=targets)
+        if observe_table is not None:
+            observe_table(final_table)
         record = {
             "index": remote_index,
             "name": name,

@@ -78,6 +78,21 @@ class TestSuggestionNeverBreaksTheDialog:
 class TestMoveDestination:
     """Moving onto an occupied address used to delete the tile first and fail afterwards."""
 
+    def test_byte_valid_but_unserved_move_destination_is_rejected(self):
+        fallback = a.Bridge("hci0", DONGLE, serving=[DONGLE], extended_advertising=False)
+        with pytest.raises(ValueError, match="No running bridge can serve 01:00:00:00:00:00"):
+            a.bridge_for_move([fallback], "01:00:00:00:00:00")
+        assert a.bridge_for_move([fallback], DONGLE) is fallback
+
+    def test_full_controller_can_move_to_an_already_advertised_free_address(self):
+        spare = "DA:71:16:E0:1F:92"
+        controller = bridge(sets=2, serving=[DONGLE, spare])
+        assert a.next_move_address([controller], [DONGLE]) == spare
+        assert a.bridge_for_move([controller], spare) is controller
+        with pytest.raises(ValueError, match="no spare advertising sets"):
+            a.bridge_for_move([controller], "C0:88:1B:E0:1F:92")
+        assert a.next_move_address([controller], [DONGLE, spare]) == ""
+
     def test_the_destination_is_detectably_occupied(self):
         used = [DONGLE, "C0:88:1B:E0:1F:92"]
         assert any(a.normalise(item) == a.normalise("c0881be01f92") for item in used)
@@ -120,3 +135,37 @@ class TestADestructiveBindIsNeverRepeated:
         addresses = {":".join(f"{b:02X}" for b in reversed(r[3:9])) for r in native}
         assert "DA:71:16:E0:1F:92" in addresses
         assert "8A:88:1B:E0:1F:92" in addresses
+
+
+def test_only_live_reported_free_addresses_are_offered_to_studio():
+    pinned = "DA:71:16:E0:1F:93"
+    first = bridge(serving=[DONGLE, pinned])
+    second = bridge(SECOND, serving=[pinned, SECOND], adapter="hci2")
+    free = list(a.free_advertised_addresses([first, second], ["8a881be01f92"]))
+    assert free == [(pinned, first), (SECOND, second)]
+    assert "C0:88:1B:E0:1F:92" not in [address for address, _ in free]
+
+
+def test_the_device_slot_limit_blocks_only_new_slots():
+    commands = load(INTEGRATION / "commands.py")
+    assert commands.remaining_remote_slots(24) == 1
+    commands.require_remote_slot(24)
+    assert commands.remaining_remote_slots(25) == commands.remaining_remote_slots(26) == 0
+    with pytest.raises(ValueError, match="no free device slots"):
+        commands.require_remote_slot(25)
+
+
+def test_remote_category_capacity_accounts_for_shared_bluetooth_and_total_limits():
+    commands = load(INTEGRATION / "commands.py")
+    def remaining(ir, native, hid, extra=0):
+        controls = ([commands.CTRL_IR] * ir + [commands.CTRL_NATIVE] * native
+                    + [commands.CTRL_HID] * hid + [3] * extra)
+        table = [(slot, 0, control, b"") for slot, control in enumerate(controls)]
+        return tuple(commands.remaining_remote_kind_slots(table, control)
+                     for control in (commands.CTRL_IR, commands.CTRL_NATIVE, commands.CTRL_HID))
+
+    assert remaining(0, 0, 0) == (10, 15, 3)
+    assert remaining(8, 11, 3) == (2, 1, 0)
+    assert remaining(10, 14, 1) == (0, 0, 0)
+    assert remaining(3, 14, 1) == (7, 0, 0)
+    assert remaining(3, 14, 1, 7) == (0, 0, 0)
