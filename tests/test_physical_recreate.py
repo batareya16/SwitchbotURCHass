@@ -7,6 +7,39 @@ c = load(INTEGRATION / "commands.py")
 physical = load(INTEGRATION / "physical_layout.py")
 
 
+def test_hid_pairing_uses_the_generated_profile_identifier_in_both_commands():
+    timestamp = 1791812216
+    first = c.new_hid_device_id("UNIVERSAL_BLE", timestamp, set())
+    assert first == "021791812216"
+    raw_id = bytes.fromhex("1622819117020000000000")
+    assert c.build_hid_pair(first) == bytes.fromhex("0f620e01") + raw_id
+    assert c.build_hid_pair_status(first) == bytes.fromhex("0f630e") + raw_id
+    assert c.new_hid_device_id("UNIVERSAL_BLE", timestamp, {raw_id}) == "121791812216"
+
+
+def test_default_hid_button_layout_writes_the_profile_commands():
+    for device_type in c.DEVTYPE:
+        remote = {
+            "device_type": device_type, "device_id": "001122334455",
+            "name": "TV", "icon": "tv", "buttons": physical.default_hid_buttons(device_type),
+        }
+        draft = physical.draft_for(remote)
+        uploads, (packet,) = physical.compile_pages(remote, draft, 1)
+        records = {packet[offset]: packet[offset + 1:offset + 4]
+                   for offset in range(90, len(packet), 36)}
+        assert not uploads
+        assert packet[8:10] == bytes((c.DEVTYPE[device_type], c.CTRL_HID))
+        assert packet[89] == len(records) == len(remote["buttons"])
+        assert records[c.TAG["ON"]] == bytes.fromhex("006906")
+        assert records[c.TAG["UP"]] == bytes.fromhex("000906")
+        assert records[c.TAG["VOLADD"]] == bytes.fromhex("000f06")
+        assert c.TAG["KATA"] not in records
+        if device_type == "UNIVERSAL_BLE":
+            assert records[c.TAG["A"]] == bytes.fromhex("083706")
+        if device_type == "GOOGLE_TV":
+            assert all(c.TAG[key] not in records for key in "ABCD")
+
+
 def test_ir_recreate_rewrites_saved_pages_and_uploads_custom_ir_code():
     device_id = "00112233445566778899aa"
     source = c.build_ir_pages(

@@ -52,9 +52,9 @@ notify cba20003:  01 00 00 00 <16-byte IV>        -> IV = reply[4:20]
 Using write-without-response here can lose the first packet right after notification setup and
 looks like a handshake timeout. The IV is fixed for the session and used for both directions.
 
-Read-only `0F 63 xx` queries are sent **unencrypted** as `57 00 00 00 0F 63 <sub>` and answered
-unencrypted, so they work without a handshake. A successful query therefore proves nothing about
-the encrypted path.
+Inventory reads such as `0F 63 07` are sent **unencrypted** as `57 00 00 00 0F 63 <sub>` and
+answered unencrypted. The app sends its HID pairing status request via the encrypted channel on
+V48.
 
 **The communication key rotates.** `keyId` is a byte in the frame (`95` on this unit). When every
 command starts returning `04`, the key has rotated; re-capture it from the app
@@ -292,9 +292,12 @@ control.
 Use UniversalBLE for a host you control: standard keyboard and consumer usages, no platform
 quirks. HID keys carry only their function number in the 32-byte field, with no device command.
 
-Pairing: `0F 62 0E 01 <hostMAC 11 reversed>`. The host must accept the incoming BLE-HID bond;
-macOS refuses it, Linux/BlueZ can be configured for it. A create for a HID profile returns `11`
-until the pairing exists.
+Create the HID profile first. `0F 62 0E 01 <profile id11>` starts pairing for the installed
+profile, then the user selects WoRWS in the host's Bluetooth settings. The start response
+`01` acknowledges the request. `0F 63 0E <profile id11>` reports `01` idle, `02` waiting,
+`03` paired or `04` expired. V48 reports the current attempt globally and consumes the final
+result when it is read. Creating a second HID profile before an earlier one is paired can
+return `11`.
 
 UniversalBLE usage map, button → `[usage_page_selector, usage]`:
 
@@ -325,14 +328,14 @@ which the report descriptor at `0x338f2` declares with usages 1..0x3FF.
 | 12, 2002 | `0x46` | Back |
 | 13, 2104 | `0x223` | AC Home |
 | 15 / 16 | `0xe9` / `0xea` | Volume up / down |
-| 22, 2101 | `0xcd` | Play / Pause |
+| 21, 22, 2001, 2101 | `0xcd` | Play / Pause |
 | 25, 2103 | `0xb4` | Rewind |
 | 26, 2102 | `0xb3` | Fast forward |
-| 2000 | `0xe2` | Mute |
+| 19, 2000, 2100 | `0xe2` | Mute |
 | 2105 | `0x40` | Menu |
 | 2106 | `0x224` | AC Back |
 
-`keyFun` 14, 17, 18, 19, 20 and 2100 map to index 0 and send nothing.
+`keyFun` 14, 17, 18, 20 and 2003 map to index 0 and send no action.
 
 **Next Track (`0xb5`) and Previous Track (`0xb6`) are in the table but unreachable.** `15190` never
 returns their indexes, and the only other caller of the lookup passes the fixed release index, so

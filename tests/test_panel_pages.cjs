@@ -168,6 +168,18 @@ test('native menu rows show the glyph picker without exposing the command select
   assert.match(instance._renderKeyEditor(button), /This key sends/);
 });
 
+test('HID Rewind aliases share a label while keeping the saved button code', () => {
+  const instance = panel();
+  instance._physicalFunctions = [
+    {value: 25, label: 'Rewind', aliases: [2103]},
+    {value: 26, label: 'Fast forward', aliases: [2102]},
+  ];
+  assert.match(instance._hidFunctionOptions(2103), /value="2103"\s+selected>Rewind/);
+  assert.equal(instance._hidFunctionOptions(2103).match(/>Rewind</g).length, 1);
+  assert.match(instance._hidFunctionOptions(2003), /value="2003" selected>No HID action \(0x07D3\)/);
+  assert.match(instance._hidFunctionOptions(2003), /value="25"\s*>Rewind/);
+});
+
 test('Native A–D keys keep icon and menu controls without exposing the saved command', () => {
   const instance = panel();
   instance._pageIndex = 0;
@@ -354,4 +366,41 @@ test('a full category blocks only that type and leaves IR replacement available'
   assert.equal(instance._installCapacityError({kind: 'hid'}), '');
   assert.match(instance._installCapacityError({kind: 'cloud'}), /replace/);
   assert.equal(instance._installCapacityError({kind: 'cloud', replace: true}), '');
+});
+
+test('HID creation opens its settings without requesting a MAC or manual button list', async () => {
+  const instance = panel();
+  instance._add = {kind: 'hid', name: 'TV', deviceType: 'UNIVERSAL_BLE',
+    icon: 'tv'};
+  const requests = [];
+  instance._hass = {async callWS(request) {requests.push(request); return {slot: 1, remote_id: 'tv'};}};
+  await instance._installRemote();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].type, 'switchbot_urc/studio/remote/create_hid');
+  assert.equal(requests[0].device_type, 'UNIVERSAL_BLE');
+  assert.equal(Object.hasOwn(requests[0], 'buttons'), false);
+  assert.equal(Object.hasOwn(requests[0], 'device_id'), false);
+  assert.equal(instance._add, null);
+  assert.equal(instance._iconPickerFor, 'tv');
+});
+
+test('HID settings report pairing only after the device confirms it', async () => {
+  const instance = panel();
+  instance._hidPairingByRemote = new Map();
+  let request;
+  let complete;
+  instance._hass = {callWS(value) {
+    request = value;
+    return new Promise(resolve => {complete = resolve;});
+  }};
+  const pairing = instance._enterHidPairMode();
+  const state = instance._hidPairingByRemote.get(instance._draftScope());
+  assert.equal(request.type, 'switchbot_urc/studio/remote/pair_hid');
+  assert.equal(request.remote_id, instance._remoteId);
+  assert.equal(state.busy, true);
+  assert.match(state.message, /Open Bluetooth settings/);
+  complete({status: 'paired'});
+  await pairing;
+  assert.equal(state.busy, false);
+  assert.equal(state.message, 'Pairing complete.');
 });

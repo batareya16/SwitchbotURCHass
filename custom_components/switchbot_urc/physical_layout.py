@@ -165,6 +165,18 @@ HID_FUNCTIONS = {
     "Fast forward": 26,
     "Mute": 2000,
     "Menu": 2105,
+    "Back (AC Back)": 2106,
+}
+
+# Alternate keyFun values that produce the same Consumer report in V48.
+HID_FUNCTION_ALIASES = {
+    5: (105,),
+    12: (2002,),
+    13: (2104,),
+    22: (21, 2001, 2101),
+    25: (2103,),
+    26: (2102,),
+    2000: (19, 0x834),
 }
 
 
@@ -184,6 +196,13 @@ def hid_usage(device_type: str, position: str) -> int:
         common.update({"A": 0x7D1, "B": 0x7D3, "C": 0x7D3, "D": 0x7D3,
                        "BACK": 0x7D2, "HOME": 0x839, "SOUNDOFF": 0x7D0})
     return common.get(position, 115)
+
+
+def default_hid_buttons(device_type: str) -> list[str]:
+    """Include the stock positions that emit a HID action in this profile."""
+    functions = set(HID_FUNCTIONS.values())
+    functions.update(alias for aliases in HID_FUNCTION_ALIASES.values() for alias in aliases)
+    return [position for position in c.TAG if hid_usage(device_type, position) in functions]
 
 
 def hid_draft_from_cloud(device_type: str, items: list[dict]) -> dict:

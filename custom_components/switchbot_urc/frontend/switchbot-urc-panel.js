@@ -259,6 +259,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._mappingDraftsByRemote = new Map();
     this._layoutDraftsByRemote = new Map();
     this._appearanceDraftsByRemote = new Map();
+    this._hidPairingByRemote = new Map();
     this._presetDraftsByRemote = new Map();
     this._activeButton = null;
     this._activeEntryId = null;
@@ -1021,6 +1022,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const artwork = native ? this._nativeArtworkSrc(profile, installedArtwork)
       : this._hidArtworkSrc(remote.device_type, remote.artwork_id) || this._irArtworkSrc(remote);
     const canChooseIcon = !firmwareArtwork;
+    const hidPairing = isHid ? this._hidPairingByRemote?.get(this._draftScope()) : null;
     return `<section class="appearance">
       <div class="appearance-head"><div><b>Appearance</b><span>How this remote is shown and arranged</span></div></div>
       <div class="appearance-grid">
@@ -1051,7 +1053,11 @@ class SwitchBotUrcPanel extends HTMLElement {
           class="appearance-icon-choice${name === pickedIcon ? " selected" : ""}"
           data-pick-icon="${escapeHtml(name)}" type="button" aria-label="${escapeHtml(APP_ICON_LABELS[name] || name)}"
           aria-pressed="${name === pickedIcon}">${this._iconImage(name)}<span>${escapeHtml(APP_ICON_LABELS[name] || name)}</span></button>`).join("")}</div>` : ""}
-        ${isHid ? `<p class="appearance-note">This remote keeps its saved icon code.</p>`
+        ${isHid ? `<div class="action-box">
+          <div class="key-actions"><button class="secondary compact" id="enterHidPairMode"
+            ${hidPairing?.busy || this._physicalBusy ? "disabled" : ""}>Enter pairing mode</button></div>
+          ${hidPairing?.message ? `<p class="small" role="status">${escapeHtml(hidPairing.message)}</p>` : ""}
+        </div>`
           : isIr ? `<p class="appearance-note">This remote keeps its saved icon code. The app's 18 icon names are not 18 distinct firmware illustrations.</p>`
           : ""}
       </div>` : ""}
@@ -1629,16 +1635,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <div class="add-native-artwork"><div class="artwork-preview">${hidArtwork
           ? `<img src="${hidArtwork}" alt="Firmware artwork for ${escapeHtml(add.deviceType)}">`
           : "—"}</div><p class="small">The HID type determines the built-in screen illustration.</p></div>
-        <label>Paired host<input type="text" data-add-field="device_id" value="${escapeHtml(add.deviceId || "")}"
-          placeholder="AA:BB:CC:DD:EE:FF — the machine that receives the key presses"></label>
-        <p class="small">${sources.hid?.host_mac
-          ? `This remote is paired with ${escapeHtml(sources.hid?.host_mac)}.`
-          : "No host is paired yet. The remote refuses a HID remote until one is."}
-          <button class="link-button" id="pairHost">${sources.hid?.host_mac ? "Pair a different host" : "Pair a host"}</button></p>
-        <label>Buttons</label>
-        <div class="button-picks">${(sources.hid?.buttons || []).map((name) =>
-          `<label class="inline"><input type="checkbox" data-add-button="${escapeHtml(name)}"
-            ${(add.buttons || []).includes(name) ? "checked" : ""}>${escapeHtml(name)}</label>`).join("")}</div>` : ""}
+        <p class="small">After adding the remote, pair it from its settings.</p>` : ""}
       <label>Name<input type="text" data-add-field="name" value="${escapeHtml(add.name || "")}"
         placeholder="What it is called on the remote's screen"></label>
       ${add.kind === "native" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
@@ -1715,8 +1712,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       icon: (kind === "native"
         ? "light"
         : (sources.hid?.icons || [])[0]) || "",
-      deviceId: sources.hid?.host_mac || "",
-      buttons: [...(sources.hid?.default_buttons || [])],
       targetId: "",
       targetKey: "",
     };
@@ -1783,7 +1778,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         else if (name === "remote_id") add.remoteId = field.value;
         else if (name === "device_type") add.deviceType = field.value;
         else if (name === "icon") add.icon = field.value;
-        else if (name === "device_id") add.deviceId = field.value;
         else if (name === "target_key") add.targetKey = field.value.replace(/\s+/g, "");
       });
       field.addEventListener("change", () => {
@@ -1847,33 +1841,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     });
 
-    root.querySelectorAll("[data-add-button]").forEach((box) => {
-      box.addEventListener("change", () => {
-        const name = box.dataset.addButton;
-        const picked = new Set(add.buttons || []);
-        if (box.checked) picked.add(name); else picked.delete(name);
-        // Keep the catalog's own order so the remote's screen matches the list.
-        add.buttons = (this._sources?.hid?.buttons || []).filter((item) => picked.has(item));
-      });
-    });
-
-    root.getElementById("pairHost")?.addEventListener("click", async () => {
-      const current = this._sources?.hid?.host_mac || add.deviceId || "";
-      const host = prompt("Bluetooth address of the host that should receive the key presses", current);
-      if (!host) return;
-      add.busy = true;
-      this._render();
-      try {
-        await this._hass.callWS({ type: `${DOMAIN}/studio/host/pair`,
-          entry_id: this._entryId, host_mac: host });
-        if (this._sources?.hid) this._sources.hid.host_mac = host;
-        if (!add.deviceId) add.deviceId = host;
-        add.error = "";
-        this._notify(`Paired with ${host}`);
-      } catch (error) { add.error = error?.message || String(error); }
-      finally { add.busy = false; this._render(); }
-    });
-
     root.getElementById("addRemoteCancel")?.addEventListener("click", () => {
       this._add = null;
       this._render();
@@ -1892,10 +1859,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     if (add.kind === "cloud" && !add.remoteId) {
       add.error = "Choose one of your saved remotes."; this._render(); return;
-    }
-    if (add.kind === "hid") {
-      if (!add.deviceId) { add.error = "Give the address of the host to send keys to."; this._render(); return; }
-      if (!(add.buttons || []).length) { add.error = "Pick at least one button."; this._render(); return; }
     }
     if (add.kind === "native" && this._needsBridgeKey(add) && !/^[0-9a-fA-F]{32}$/.test(add.targetKey)) {
       add.error = "Enter the add-on’s 32-character device key.";
@@ -1916,7 +1879,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       } else if (add.kind === "hid") {
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create_hid`,
           entry_id: this._entryId, name, device_type: add.deviceType,
-          device_id: add.deviceId, icon: add.icon, buttons: add.buttons });
+          icon: add.icon });
+        if (result?.remote_id) {
+          this._remoteId = result.remote_id;
+          this._iconPickerFor = result.remote_id;
+          this._pageIndex = 0;
+          this._buttonId = null;
+        }
       } else {
         result = await this._hass.callWS({
           type: `${DOMAIN}/studio/remote/install_ir`,
@@ -1944,6 +1913,30 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalBusy = false;
       this._sources = null;
       await this._load();
+    }
+  }
+
+  async _enterHidPairMode() {
+    const scope = this._draftScope();
+    const states = this._hidPairingByRemote;
+    if (states.get(scope)?.busy) return;
+    const state = {
+      busy: true,
+      message: "Open Bluetooth settings on your TV or player and select the SwitchBot Universal Remote.",
+    };
+    states.set(scope, state);
+    this._render();
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/pair_hid`,
+        entry_id: this._entryId, remote_id: this._remoteId });
+      state.message = result.status === "paired" ? "Pairing complete."
+        : result.status === "expired" ? "Pairing timed out. Start pairing mode again to retry."
+        : "WoRWS did not confirm pairing. Check your TV or player's Bluetooth settings.";
+    } catch (error) {
+      state.message = error?.message || String(error);
+    } finally {
+      state.busy = false;
+      if (scope === this._draftScope()) this._render();
     }
   }
 
@@ -2157,6 +2150,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelector('[data-key-field="transport"]')?.addEventListener("change", (event) => {
       key.transport = event.target.value;
+      if (key.transport === "hid") key.function ??= 0;
       this._render();
     });
 
@@ -2398,8 +2392,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         transports.map((item) => `<option value="${item}" ${key.transport === item ? "selected" : ""}>${label[item]}</option>`).join("")
       }</select></label>
       ${key.transport === "hid" ? `<label>This key sends<select data-key-field="function">${
-        (this._physicalFunctions || []).map((item) =>
-          `<option value="${item.value}" ${key.function === item.value ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")
+        this._hidFunctionOptions(key.function)
       }</select></label>` : ""}
       ${key.transport === "ir" ? `
         ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
@@ -2415,6 +2408,18 @@ class SwitchBotUrcPanel extends HTMLElement {
       </div>
       ${pageControl}
     </div>`;
+  }
+
+  _hidFunctionOptions(current = 0) {
+    const functions = this._physicalFunctions || [];
+    const selected = functions.find((item) => item.value === current || item.aliases?.includes(current));
+    const options = functions.map((item) => `<option value="${item === selected ? current : item.value}"
+      ${item === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`);
+    if (!selected) {
+      const code = current.toString(16).toUpperCase().padStart(4, "0");
+      options.unshift(`<option value="${current}" selected>No HID action (0x${code})</option>`);
+    }
+    return options.join("");
   }
 
   _renderCatalogPicker() {
@@ -2779,6 +2784,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._render();
       });
     });
+    root.getElementById("enterHidPairMode")?.addEventListener("click", () => this._enterHidPairMode());
 
     const editAppearance = (change) => {
       const remote = this._remote();
@@ -3078,7 +3084,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .action.accent .g{opacity:1}
       .action.accent:hover{box-shadow:0 8px 20px color-mix(in srgb,var(--primary-color,#03a9f4) 38%,transparent)}
       .action.danger{color:#d33b47;border-color:#f0c2c6}
-      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.button-picks{display:flex;flex-wrap:wrap;gap:6px 14px}.button-picks label{font-weight:600;font-size:11px}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
+      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
       .device-wrap{width:min(100%,360px)}
       .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
       .device .shell{stroke:#d2d5da;stroke-width:1.2}

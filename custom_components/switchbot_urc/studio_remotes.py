@@ -23,7 +23,7 @@ from . import addressing
 from . import install
 from . import ir_catalog
 from . import targets
-from .catalog import DEFAULT_BUTTONS, DEVICE_TYPES, ICONS, buttons_for
+from .catalog import DEVICE_TYPES, ICONS
 from .cloud import CloudError
 from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
@@ -646,14 +646,9 @@ async def ws_remote_sources(hass, connection, msg):
             "screen_profiles": c.native_type_picker_options(),
             "default_icon": str((known[0] if known else {}).get("icon", "strip")),
         },
-        # HID remotes need a paired host before the firmware accepts them, so the panel is
-        # told the current pairing as well as the choices.
         "hid": {
-            "host_mac": str(entry.options.get("host_mac", "")),
             "device_types": list(DEVICE_TYPES),
             "icons": list(ICONS),
-            "buttons": buttons_for(DEVICE_TYPES[0]),
-            "default_buttons": list(DEFAULT_BUTTONS),
         },
     })
 

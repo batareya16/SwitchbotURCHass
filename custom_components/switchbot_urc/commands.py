@@ -12,7 +12,8 @@ Opcodes (plaintext, 0x0F = 15, 0x62 = 98):
   0F 62 03 <count><len><crc>  finish an IR-code-bank transfer
   0F 62 0C <count><phase>     begin/end IR remote synchronisation
   0F 62 04 02 <idx>...        delete remote         (deleteDeviceByIdBin)
-  0F 62 0E 01 <mac11>         HID-pair remote to a host (startPairHIDDevice)
+  0F 62 0E 01 <id11>          enter pairing mode for an installed HID profile
+  0F 63 0E <id11>             read HID pairing status
   0F 41 02 <ac-state>         AC set-state (draw on screen)
   02                          status poll
 """
@@ -911,13 +912,27 @@ def device_type_bytes(device_type: int | bytes | bytearray) -> bytes:
     return value
 
 
-def build_hid_pair(host_mac: str) -> bytes:
-    """startPairHIDDevice: tell the remote to HID-pair (become a BLE keyboard) to `host_mac`.
+HID_PAIR_STATUS_COMMAND = b"\x0f\x63\x0e"
 
-    `host_mac` = the TARGET host's real BLE MAC (12 hex). Response 01=ok, 11=HIDNoPairError.
-    NOTE: the host must accept the incoming BLE-HID pairing (Linux/BlueZ; macOS does not).
-    """
-    return bytes([0x0F, 0x62, 0x0E, 0x01]) + id_to_bytes(host_mac)
+
+def build_hid_pair(device_id: str) -> bytes:
+    """Start pairing for an installed HID profile. The acknowledgement only confirms start."""
+    return b"\x0f\x62\x0e\x01" + id_to_bytes(device_id)
+
+
+def build_hid_pair_status(device_id: str) -> bytes:
+    """Read the firmware's current pairing result: idle, waiting, paired or expired."""
+    return HID_PAIR_STATUS_COMMAND + id_to_bytes(device_id)
+
+
+def new_hid_device_id(device_type: str, timestamp: int, taken: set[bytes]) -> str:
+    """Generate the app's decimal instance/type/timestamp identifier."""
+    type_digit = DEVTYPE[device_type] - DEVTYPE["APPLE_TV"]
+    for instance in range(MAX_HID_REMOTES):
+        identifier = f"{instance}{type_digit}{timestamp:010d}"
+        if id_to_bytes(identifier) not in taken:
+            return identifier
+    raise ValueError("Could not allocate a HID profile ID. Try adding it again.")
 
 
 def build_create(

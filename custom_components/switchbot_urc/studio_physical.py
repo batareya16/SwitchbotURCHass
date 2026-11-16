@@ -109,17 +109,9 @@ def _functions_for(device_type: str, remote: dict) -> list[dict]:
     with the generic list kept behind them so nothing becomes unreachable.
     """
     if device_type in c.DEVTYPE:
-        # Start from what the firmware can really transmit — it includes media keys that have no
-        # matching position on the screen — then add the positions themselves.
-        offered = [{"value": value, "label": label}
-                   for label, value in physical.HID_FUNCTIONS.items()]
-        seen = {item["value"] for item in offered}
-        for position in c.TAG:
-            value = physical.hid_usage(device_type, position)
-            if value not in seen:
-                seen.add(value)
-                offered.append({"value": value, "label": position})
-        return offered
+        return [{"value": value, "label": label,
+                 "aliases": physical.HID_FUNCTION_ALIASES.get(value, ())}
+                for label, value in physical.HID_FUNCTIONS.items()]
     generic = {
         value: c.custom_action_label(name) for name, value in c.CUSTOM_ACTION_FUNCTIONS.items()
     }

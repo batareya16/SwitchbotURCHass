@@ -8,9 +8,11 @@ SwitchBot account.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from copy import deepcopy
+from time import time
 from typing import Any
 
 import voluptuous as vol
@@ -30,7 +32,7 @@ from . import addressing
 from . import studio_remotes
 from . import targets
 from .studio_catalog import cloud_client
-from .studio_physical import read_device_table, store_device_table
+from .studio_physical import read_device_table, resolve, store_device_table
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -913,27 +915,56 @@ async def ws_native_icon_variant_test(hass, connection, msg):
 
 @websocket_api.require_admin
 @websocket_api.websocket_command({
-    vol.Required("type"): f"{DOMAIN}/studio/host/pair",
+    vol.Required("type"): f"{DOMAIN}/studio/remote/pair_hid",
     vol.Required("entry_id"): str,
-    vol.Required("host_mac"): str,
+    vol.Required("remote_id"): str,
 })
 @websocket_api.async_response
-async def ws_pair_host(hass, connection, msg):
-    """Point the remote's HID side at the machine that should receive key presses."""
+async def ws_pair_hid(hass, connection, msg):
+    """Start pairing and read the firmware's one-shot result for that attempt."""
     try:
-        entry = _entry(hass, msg)
-        client = _client(hass, entry)
-        response = await client.send_command(c.build_hid_pair(msg["host_mac"]))
-        error = install.resp_error(response)
-        if error:
-            raise ValueError(f"the remote rejected the pairing ({error})")
-        options = deepcopy(dict(entry.options))
-        options["host_mac"] = msg["host_mac"]
-        hass.config_entries.async_update_entry(entry, options=options)
-        connection.send_result(msg["id"], {"host_mac": msg["host_mac"]})
+        entry, remote = resolve(hass, msg)
+        if str(remote.get("device_type", "")).upper() not in c.DEVTYPE:
+            raise ValueError("Select an installed HID remote.")
+        active = hass.data.setdefault(DOMAIN, {}).setdefault("_active_hid_pairing", set())
+        if entry.entry_id in active:
+            raise ValueError("Pairing is already in progress on this Universal Remote.")
+        active.add(entry.entry_id)
+        try:
+            status = await _pair_hid(_client(hass, entry), remote["device_id"])
+        finally:
+            active.discard(entry.entry_id)
+        connection.send_result(msg["id"], {"status": status})
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
-        _LOGGER.exception("Remote Studio host pairing failed")
-        connection.send_error(msg["id"], "pair_failed", str(err))
+        _LOGGER.exception("Remote Studio HID pairing failed")
+        connection.send_error(msg["id"], "pair_failed", str(err) or type(err).__name__)
+
+
+async def _pair_hid(client, device_id: str) -> str:
+    response = await client.send_command(c.build_hid_pair(device_id))
+    if response == b"\x02":
+        raise ValueError("WoRWS refused pairing mode. The HID profile may already be paired.")
+    if error := install.resp_error(response):
+        raise ValueError(f"Could not enter pairing mode ({error}).")
+    query = c.build_hid_pair_status(device_id)
+    try:
+        async with asyncio.timeout(125):
+            while True:
+                await asyncio.sleep(2)
+                try:
+                    response = await client.send_command(query, timeout=5)
+                except (ConnectionError, TimeoutError):
+                    continue
+                if response == b"\x03":
+                    return "paired"
+                if response == b"\x04":
+                    return "expired"
+                if response == b"\x01":
+                    return "ended"
+                if response and response != b"\x02":
+                    raise ValueError(f"Unexpected HID pairing status: {response.hex()}.")
+    except TimeoutError:
+        return "unknown"
 
 
 @websocket_api.require_admin
@@ -942,7 +973,6 @@ async def ws_pair_host(hass, connection, msg):
     vol.Required("entry_id"): str,
     vol.Required("name"): str,
     vol.Required("device_type"): vol.In(DEVICE_TYPES),
-    vol.Required("device_id"): str,
     vol.Optional("icon", default=ICONS[0]): vol.In(ICONS),
     vol.Optional("buttons"): [str],
 })
@@ -957,8 +987,9 @@ async def _create_hid_remote(hass, connection, msg):
     try:
         entry = _entry(hass, msg)
         client = _client(hass, entry)
-        buttons = list(msg.get("buttons") or DEFAULT_BUTTONS)
-        allowed = set(buttons_for(msg["device_type"]))
+        device_type = msg["device_type"]
+        buttons = list(msg.get("buttons") or physical_layout.default_hid_buttons(device_type))
+        allowed = set(buttons_for(device_type))
         unknown = [name for name in buttons if name not in allowed]
         if unknown:
             raise ValueError(f"Unknown button(s): {', '.join(unknown)}")
@@ -967,33 +998,30 @@ async def _create_hid_remote(hass, connection, msg):
         c.require_remote_slot(slot)
         if not c.remaining_remote_kind_slots(table, c.CTRL_HID):
             raise ValueError("No more HID remotes can be added.")
-        response = await client.send_command(c.build_remote(
-            device_type_name=msg["device_type"],
-            remote_index=slot,
-            name=msg["name"],
-            device_id=msg["device_id"],
-            icon_name=msg["icon"],
-            buttons=buttons,
-        ))
+        device_id = c.new_hid_device_id(device_type, int(time()), {row[3] for row in table})
+        remote = {
+            "index": slot, "name": msg["name"], "device_type": device_type,
+            "icon": msg["icon"], "device_id": device_id, "buttons": buttons,
+        }
+        draft = physical_layout.draft_for(remote)
+        _, (packet,) = physical_layout.compile_pages(remote, draft, slot)
+        response = await client.send_command(packet)
         error = install.resp_error(response)
         if error:
             raise ValueError(
-                "the remote rejected it because no host is paired yet"
+                "Finish pairing the existing HID profile before adding another one."
                 if error == "resp_hid_no_pair" else f"the remote rejected it ({error})"
             )
         store_device_table(hass, entry, [*table, (
-            slot, c.DEVTYPE[msg["device_type"]], c.CTRL_HID, c.id_to_bytes(msg["device_id"]),
+            slot, c.DEVTYPE[device_type], c.CTRL_HID, c.id_to_bytes(device_id),
         )])
         remote_id = studio_remotes.new_remote_id(entry)
         remotes = list(entry.options.get("remotes", []))
         remotes.append({
-            "index": slot,
-            "name": msg["name"],
-            "device_type": msg["device_type"],
-            "icon": msg["icon"],
-            "device_id": msg["device_id"],
+            **remote,
             "remote_id": remote_id,
-            "buttons": buttons,
+            "physical_layout": draft,
+            "physical_packets": [packet.hex()],
         })
         _save_remotes(hass, entry, remotes)
         connection.send_result(msg["id"], {"remote_id": remote_id, "slot": slot})
@@ -1171,7 +1199,7 @@ def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_recreate)
     websocket_api.async_register_command(hass, ws_native_icon_update)
     websocket_api.async_register_command(hass, ws_native_icon_variant_test)
-    websocket_api.async_register_command(hass, ws_pair_host)
+    websocket_api.async_register_command(hass, ws_pair_hid)
     websocket_api.async_register_command(hass, ws_create_hid)
     websocket_api.async_register_command(hass, ws_diagnostics)
     websocket_api.async_register_command(hass, ws_bindings_cleanup)

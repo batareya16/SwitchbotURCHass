@@ -12,6 +12,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import establish_connection
 
+from .commands import HID_PAIR_STATUS_COMMAND
 from .const import CHAR_NOTIFY, CHAR_WRITE
 from .crypto import UrcCrypto
 
@@ -733,6 +734,8 @@ class UrcClient:
         self._expect_status_reply = plaintext == bytes([0x02])
         if plaintext == bytes([0x02]):
             self._expected_response_codes = _STATUS_POLL_RESPONSES
+        elif plaintext.startswith(HID_PAIR_STATUS_COMMAND):
+            self._expected_response_codes = frozenset({0x01, 0x02, 0x03, 0x04})
         elif plaintext.startswith(bytes([0x0F])):
             self._expected_response_codes = _STATUS_RESPONSES
         else:
@@ -807,7 +810,8 @@ class UrcClient:
         # happens when the handshake produced an IV the remote does not accept, and a fresh
         # connection and handshake clears it. Only the first step qualifies — once any step has
         # been accepted, re-running the list could repeat a change that already took effect.
-        if responses and responses[0][:1] == b"\x04":
+        if (steps and responses and responses[0][:1] == b"\x04"
+                and not str(steps[0].get("plaintext", "")).startswith(HID_PAIR_STATUS_COMMAND.hex())):
             _LOGGER.warning(
                 "add-on management session rejected its first command with 0x04; retrying once "
                 "with a new connection and handshake"
@@ -850,6 +854,7 @@ class UrcClient:
                     response = await self._send_command_locked(plaintext, timeout)
                     if (
                         response[:1] == b"\x04"
+                        and not plaintext.startswith(HID_PAIR_STATUS_COMMAND)
                         and not credentials_refreshed
                         and await self._refresh_credentials()
                     ):
