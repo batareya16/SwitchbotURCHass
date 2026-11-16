@@ -147,6 +147,69 @@ test('adding the first row selects its editor and gives it a new physical identi
   assert.equal(instance._pageEditing, false);
   assert.equal(instance._button().draft_only, true);
   assert.equal(instance._physical.pages[1].buttons.length, 1);
+  assert.equal(instance._mode, 'actions');
+  const first = instance._button();
+  assert.equal(first.button_function, 22);
+
+  instance._addKeyToCurrentPage();
+  assert.equal(instance._buttonId, 'p1_k1');
+  assert.equal(instance._button().button_function, first.button_function);
+});
+
+test('native menu rows show the glyph picker without exposing the command selector', () => {
+  const instance = panel();
+  const button = instance._button();
+  const html = instance._renderKeyEditor(button);
+  assert.match(html, /Button icon/);
+  assert.doesNotMatch(html, /On the remote|This key sends|data-key-field/);
+
+  instance._physical.kind = 'hid';
+  instance._physical.pages[1].buttons[0].transport = 'hid';
+  assert.match(instance._renderKeyEditor(button), /This key sends/);
+});
+
+test('Native A–D keys keep icon and menu controls without exposing the saved command', () => {
+  const instance = panel();
+  instance._pageIndex = 0;
+  instance._buttonId = 'p0_k1';
+  const key = {index: 1, transport: 'native', function: 323};
+  instance._physical.pages[0].buttons.push(key);
+  const html = instance._editor(instance._button(), instance._remote());
+  assert.match(html, /Button icon/);
+  assert.match(html, /Turn key B into a page/);
+  assert.doesNotMatch(html, /On the remote|This key sends|data-key-field|<dt>Function<\/dt>/);
+  assert.equal(key.function, 323);
+});
+
+test('a Native key outside the stock layout can get HA actions while KATA stays reserved', () => {
+  const instance = panel();
+  instance._nativeProfile = () => ({
+    main_positions: Array.from({length: 19}, (_, index) => index).filter(index => index !== 13),
+    main_keys: [{index: 4, actionable: true, function: 5}],
+    subpages: [{index: 1, link_index: 0}],
+  });
+  instance._pageIndex = 0;
+  instance._buttonId = 'p0_k15';
+  assert.equal(instance._button().position, 'VOLADD');
+  assert.ok(!instance._page().buttons.some(button => button.position === 'KATA'));
+  const emptyEditor = instance._editor(instance._button(), instance._remote());
+  assert.match(emptyEditor, /Assign an action/);
+  assert.doesNotMatch(emptyEditor, /On the remote|This key sends/);
+  assert.match(instance._key({}, 'KATA', ''), /Reserved for the Universal Remote/);
+
+  let assign;
+  instance._wireKeyEditor({
+    querySelectorAll: () => [],
+    getElementById(id) {
+      return id === 'addKeyHere' ? {addEventListener(_event, handler) {assign = handler;}} : null;
+    },
+  });
+  assign();
+  assert.equal(instance._button().button_id, 'p0_k15');
+  assert.equal(instance._button().button_function, 22);
+  assert.equal(instance._mode, 'actions');
+  assert.doesNotMatch(instance._renderKeyEditor(instance._button()), /On the remote|This key sends/);
+  assert.equal(instance._nativeProfileConflicts(instance._nativeProfile()).length, 0);
 });
 
 

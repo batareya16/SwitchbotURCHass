@@ -92,6 +92,37 @@ def test_native_glyphs_round_trip_without_changing_key_commands_or_page_link():
     assert changed == layout["glyphs"].keys()
 
 
+def test_native_menu_rows_sharing_a_function_have_independent_actions():
+    packets = dict(c.build_custom_native_pages(
+        remote_index=3, name="Light", device_id="AA:BB:CC:DD:EE:FF",
+        icon_name="strip", event_remote_id="12345678", template="STRIP",
+        main_buttons={"ON": "ON"}, page_buttons={4: ["PAUSE", "PAUSE"]},
+        glyphs={"p4_k0": 0x0141, "p4_k1": 0x0142},
+    ))
+    first_action = [{"action": "light.turn_on"}]
+    second_action = [{"action": "light.turn_off"}]
+    binding = {
+        "remote_id": "12345678", "profile": "light", "mappings": {"ON": "turn_on"},
+        "button_actions": {"p4_k0": first_action, "p4_k1": second_action},
+    }
+    packet = packets[4]
+    assert packet[89] == 2
+    for index, actions in enumerate((first_action, second_action)):
+        offset = 90 + index * 36
+        record = packet[offset:offset + 36]
+        assert int.from_bytes(record[1:3], "big") == 0x0141 + index
+        command = record[4:17]
+        assert command[:3] == c.BRIDGE_EVENT_MAGIC_V3
+        assert command[9:] == bytes([4, index, 0, 22])
+        event = {
+            "remote_id": command[4:8].hex(),
+            "button_id": f"p{command[9]}_k{command[10]}",
+            "button_function": 22, "button_name": "PAUSE",
+        }
+        assert bindings.resolve_binding_action(binding, event) is None
+        assert bindings.resolve_button_action_sequence(binding, event) == actions
+
+
 def test_all_supported_profiles_can_rebuild_their_stock_editable_layout():
     for template in c.NATIVE_PROFILE_LAYOUTS:
         device_type = c.native_profile_device_type(template)
@@ -357,24 +388,33 @@ def test_picker_omits_extended_device_types_and_local_builder_rejects_them():
                              name="Test", device_id="AA:BB:CC:DD:EE:FF")
 
 
-def test_physical_validation_names_main_positions_missing_from_selected_profile():
-    remote = {"device_type": "FAN", "remote_id": "12345678",
+def test_vacuum_can_write_every_main_key_except_kata():
+    remote = {"device_type": "VACUUM_S1_MINI", "remote_id": "12345678",
               "device_id": "AA:BB:CC:DD:EE:FF"}
     draft = physical.draft_for(remote)
-    profile = c.native_profile_metadata("BULB")
-    unsupported = next(index for index in range(19)
-                       if index not in profile["main_positions"])
-    draft["template"] = "BULB"
-    draft["pages"][0]["buttons"].append({
-        "index": unsupported, "transport": "native", "function": 5,
-    })
+    positions = {index for name, index in c.TAG.items() if name != "KATA"}
+    for template in c.NATIVE_PROFILE_LAYOUTS:
+        assert set(c.native_profile_metadata(template)["main_positions"]) == positions
+    draft["pages"][0]["buttons"] = [
+        {"index": index, "transport": "native", "function": 22} for index in sorted(positions)
+    ]
+    layout = physical.native_layout(physical.validate(remote, draft))
+    args = dict(remote_index=3, name="Vacuum", device_id=remote["device_id"],
+                icon_name=layout["icon_name"], event_remote_id=remote["remote_id"],
+                main_buttons=layout["main_buttons"], page_buttons={},
+                template=layout["template"], device_type_name=remote["device_type"])
+    packet = dict(c.build_custom_native_pages(**args))[0]
+    records = {packet[offset]: packet[offset:offset + 36]
+               for offset in range(90, len(packet), 36)}
+    assert set(records) == positions
+    assert records[c.TAG["VOLADD"]][13:17] == bytes([0, c.TAG["VOLADD"], 0, 22])
 
-    try:
+    draft["pages"][0]["buttons"][0]["index"] = c.TAG["KATA"]
+    with pytest.raises(ValueError, match="KATA is reserved"):
         physical.validate(remote, draft)
-    except ValueError as err:
-        assert "has no Main-page position" in str(err)
-    else:
-        raise AssertionError("unsupported button positions must be rejected before writing")
+    args["main_buttons"] = {"KATA": "PAUSE"}
+    with pytest.raises(ValueError, match="KATA is reserved"):
+        c.build_custom_native_pages(**args)
 
 
 def test_button_action_migrations_follow_moved_keys_without_overwriting_actions():

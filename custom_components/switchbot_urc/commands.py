@@ -148,6 +148,7 @@ TAG = {
     "DOWN": 9, "OK": 10, "BACK": 11, "HOME": 12, "KATA": 13, "SOUNDOFF": 14, "VOLADD": 15,
     "VOLDEL": 16, "CHUP": 17, "CHDOWN": 18,
 }
+NATIVE_MAIN_POSITIONS = set(TAG.values()) - {TAG["KATA"]}
 
 # URC device-type codes (HID remotes; all go direct-BLE, no hub).
 DEVTYPE = {"APPLE_TV": 0xF0, "FIRE_TV": 0xF1, "UNIVERSAL_BLE": 0xF2, "GOOGLE_TV": 0xF3}
@@ -519,8 +520,8 @@ def native_profile_metadata(profile_name: str) -> dict:
         "control_mode": int(profile.get("control_mode", 0)),
         "artwork_id": NATIVE_PROFILE_ARTWORK.get(profile_name, 0x13 if profile_name == "TRV" else 0),
         "pages": [0, *(item["index"] for item in subpages)],
-        # Native DSP constructs A-D from nonempty key records for every product.
-        "main_positions": sorted({0, 1, 2, 3} | {item["index"] for item in main_keys}),
+        # Native key records use shared physical indexes. The profile provides their defaults.
+        "main_positions": sorted(NATIVE_MAIN_POSITIONS),
         "main_keys": main_keys,
         "subpages": subpages,
     }
@@ -720,28 +721,15 @@ def custom_native_layout(
     *, template: str | None = None,
 ) -> dict[int, list[dict]]:
     """Build an editable layout using the selected stock screen profile."""
-    # Older callers built the generic four-page layout without naming a profile. Keep that
-    # behaviour for them; Remote Studio always passes a concrete profile and gets strict checks.
-    legacy_layout = template is None
     template = template or "FAN"
     template = NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
     profile = NATIVE_PROFILE_LAYOUTS.get(template)
     if profile is None or native_profile_device_type(template) is None:
         raise ValueError(f"unsupported native screen profile {template!r}")
     normalized_main = normalize_main_buttons(main_buttons)
+    if "KATA" in normalized_main:
+        raise ValueError("KATA is reserved for the Universal Remote")
     enabled_pages = {int(page) for page, actions in page_buttons.items() if actions}
-    profile_main = profile["pages"][0]
-    profile_main = profile_main() if callable(profile_main) else profile_main
-    profile_positions = {name for name, index in TAG.items()
-                         if any(int(item.get("keyIndex", -1)) == index for item in profile_main)}
-    profile_positions.update("ABCD")
-    page_positions = {"ABCD"[page - 1] for page in enabled_pages if 1 <= page <= 4}
-    hidden_positions = sorted(set(normalized_main) - profile_positions - page_positions)
-    if hidden_positions and not legacy_layout:
-        raise ValueError(
-            f"{template} has no screen position for {', '.join(hidden_positions)}; "
-            "the saved buttons are still intact."
-        )
     page_links = {}
     for page_index in enabled_pages:
         page_links[page_index] = native_menu_function(template, page_index)

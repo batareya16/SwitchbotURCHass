@@ -34,7 +34,7 @@ from . import studio_remotes
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.58"
+FRONTEND_VERSION = "0.50.66"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -418,6 +418,10 @@ async def ws_studio_save_button_action(
         connection.send_error(msg["id"], "not_found", "Remote not found")
         return
     current_binding = _binding_for(entry, msg["remote_id"])
+    if (str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE
+            and msg["button_id"] == f"p0_k{commands.TAG['KATA']}"):
+        connection.send_error(msg["id"], "reserved_button", "KATA is reserved for the Universal Remote")
+        return
     known_button_ids = {
         button["button_id"]
         for page in _remote_pages(remote, current_binding)

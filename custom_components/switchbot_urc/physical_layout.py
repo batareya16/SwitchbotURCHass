@@ -346,6 +346,8 @@ def validate(remote: dict, draft: dict) -> dict:
             index = key.get("index")
             if type(index) is not int or not 0 <= index <= (18 if number == 0 else limit - 1) or index in seen:
                 raise ValueError("Button positions must be unique and within the page")
+            if expected == "native" and number == 0 and index not in c.NATIVE_MAIN_POSITIONS:
+                raise ValueError("KATA is reserved for the Universal Remote")
             seen.add(index)
             if "title" in key:
                 key["title"] = _menu_title(key["title"])
@@ -380,21 +382,6 @@ def validate(remote: dict, draft: dict) -> dict:
             raise ValueError("Native submenu positions must be consecutive starting at zero")
     if 0 not in seen_pages:
         raise ValueError("The Main page is required")
-    if expected == "native":
-        profile = c.NATIVE_PROFILE_LAYOUTS[result["template"]]
-        main_keys = profile["pages"][0]
-        main_keys = main_keys() if callable(main_keys) else main_keys
-        supported_positions = {0, 1, 2, 3} | {int(key["keyIndex"]) for key in main_keys}
-        main = next((page for page in pages if page["index"] == 0), {"buttons": []})
-        positions = {index: name for name, index in c.TAG.items()}
-        unsupported_positions = sorted({key["index"] for key in main["buttons"]} - supported_positions)
-        if unsupported_positions:
-            labels = ", ".join(positions.get(index, f"position {index}")
-                                for index in unsupported_positions)
-            raise ValueError(
-                f"{result['template']} has no Main-page position for {labels}. "
-                "Move those buttons to an available position; the saved layout is still intact."
-            )
     if expected in ("native", "hid", "ir"):
         main = next(page for page in pages if page["index"] == 0)
         reserved = {number - 1 for number in seen_pages if number}
