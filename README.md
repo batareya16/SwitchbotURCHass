@@ -1,350 +1,91 @@
-# SwitchBot Universal Remote — Home Assistant (Work in progress, contain bugs)
+# SwitchBot Universal Remote for Home Assistant
 
-<img width="2800" height="3142" alt="image" src="https://github.com/user-attachments/assets/873e0168-d907-4101-bd9c-f072dde912e0" />
+Use your SwitchBot Universal Remote (WoRWS) to control lights, start a robot vacuum, run scripts, or launch scenes in Home Assistant. **Remote Studio** lets you set this up by clicking buttons on a preview of the remote. You can also manage infrared and Bluetooth remotes from the same screen.
 
+<img width="560" alt="SwitchBot Universal Remote project preview" src="https://github.com/user-attachments/assets/873e0168-d907-4101-bd9c-f072dde912e0" />
 
-Two local pieces, no SwitchBot hub and no cloud dependency for anything on the BLE path:
+## Which kind of remote do I need?
 
-- a custom integration that configures the WoRWS remote over its encrypted BLE protocol;
-- an add-on that presents a fake native SwitchBot device, accepts the remote's button commands
-  over GATT and publishes them to MQTT.
+| In Remote Studio | Use it for | What you need |
+| --- | --- | --- |
+| **Bridge remote** | Home Assistant lights, scenes, scripts and automations | The Bridge app, a dedicated Bluetooth dongle and MQTT |
+| **IR from the catalog** or **IR saved in your account** | TVs, audio equipment and other infrared appliances | A SwitchBot account to download the codes |
+| **HID remote** | A TV, streaming box or computer that accepts a Bluetooth remote or keyboard | Bluetooth pairing with the TV, box or computer |
 
-Protocol details and what has actually been verified on hardware are in `PROTOCOL.md`.
+One physical WoRWS can hold remotes of all three kinds. IR and HID send commands directly to the appliance. You can use both without a Bridge dongle or a SwitchBot Hub.
 
-## Disclaimer
+## Before you buy a dongle
 
-This project is not affiliated with, endorsed by, or supported by SwitchBot. SwitchBot and
-related names are trademarks of their respective owners.
+For **Bridge remotes**, use **Home Assistant OS** and two Bluetooth adapters. Keep your existing adapter for Home Assistant. Give the Bridge its own USB dongle.
 
-It talks to the remote over an undocumented BLE protocol recovered by analysing the device's
-own firmware and the vendor's app. Nothing here is sanctioned by the vendor: a firmware or app
-update can break it at any time, and misuse can leave a remote in a state that needs
-re-pairing. Use it at your own risk, on hardware you own.
+**Buy a Linux-compatible Bluetooth 5.0 or newer dongle with BLE peripheral mode and connectable LE Extended Advertising.** Look for **LE Extended Advertising** in the adapter or chipset specs, or ask the seller to confirm it. The Bluetooth version on the box alone does not guarantee this feature. An adapter that can scan for Bluetooth devices can still lack the advertising support the Bridge needs. [Bluetooth LE features](https://www.bluetooth.com/bluetooth-le-primer/)
 
-## Requirements
-
-- Home Assistant OS or Supervised.
-- Two BLE controllers. One stays with Home Assistant to talk to the WoRWS; the other is handed
-  entirely to the add-on as a BLE peripheral. The second adapter must not also be used by Home
-  Assistant as a scanner — disable it under Settings → Connectivity → Bluetooth → Adapters.
-- A SwitchBot account, or the WoRWS communication key and key id if you would rather not
-  connect one. The key rotates, and the account is where it comes from.
-- A separate 16-byte AES key of your choosing for the fake device. The same value goes in the
-  add-on configuration and in `bind_native`.
+If you want several Bridge remotes, look for a dongle that can run several **connectable advertising sets** at the same time. One compatible dongle can serve several remotes. After installation, **Native remotes available** in Studio shows how many more you can add with your setup.
 
 ## Install
 
-1. Copy `custom_components/switchbot_urc/` to `/config/custom_components/switchbot_urc/` and
-   restart Home Assistant.
-2. Add the **SwitchBot Universal Remote (WoRWS)** integration. Home Assistant normally
-   discovers the remote over Bluetooth and fills in its address. Leave the key and key ID empty
-   and sign in to your SwitchBot account on the next screen: the communication key is fetched
-   from the account, which is where it comes from anyway and which is also where it rotates.
-   Entering the key by hand still works if you do not want to connect an account.
-3. Install the bridge add-on from
-   [switchbot-urc-addon](https://github.com/batareya16/switchbot-urc-addon): add that repository
-   under Settings → Add-ons → Add-on Store → ⋮ → Repositories, install **SwitchBot URC Bridge**,
-   assign it the spare BLE adapter, set `device_key`, and start it.
-4. Check the add-on log for the GATT server and advertising, and note its adapter MAC. The add-on
-   must be running during bind — the remote may check that the target answers.
-
-## Creating a native bridge remote
-
-Settings → Devices & Services → SwitchBot Universal Remote → **Configure** →
-**Add remote → Add native remote**. Enter the add-on adapter's MAC and the same `device_key` the
-add-on uses. The form reads the device table first, picks the required sequential index itself,
-runs all three commands and, on failure, shows which stage failed and what the device answered.
-
-If that MAC already belongs to a remote, the form requires **Replace existing target**, deletes
-the exact match and re-checks the table before binding.
-
-The target-key id is fixed by the protocol (`01`) and is not the remote's own communication
-`key_id`. Native control mode is likewise fixed at `00`: other values can bind successfully and
-then never connect to the target on a press.
-
-The service runs three commands in one BLE session:
-
-1. `0F 20 09` — store the target's key;
-2. `0F 20 08` — associate that key with the target address;
-3. `0F 62 06` — write the native page(s).
-
-Each stage must return `01`, and each result is also fired as a `switchbot_urc_native_bind` event.
-`62 0A` is deliberately not used: it is a full device-order table, not a registration, and a
-partial one can hide remotes that already exist.
-
-Everything runs as one transaction — new connection, handshake, commands, disconnect. Each stage
-gets up to 35 seconds and up to three retries, each in a fresh connection with a fresh IV. An
-explicit error reply (`02`, `04`, …) is never retried.
-
-### As an action
-
-```yaml
-action: switchbot_urc.bind_native
-data:
-  name: HASS Bridge
-  device_id: "AA:BB:CC:DD:EE:FF"
-  device_type: STRIP
-  icon: strip
-  target_key: "00112233445566778899aabbccddeeff"
-  replace_existing: false
-```
-
-`device_id` is the add-on adapter's MAC, not the remote's. `target_key` is the fake device's key,
-not the remote's. `remote_index` is no longer needed: the service reads the table and uses its
-length, exactly as the official app does.
-
-### Editing the layout afterwards
-
-The native type chosen at creation is only a starting template. Any native remote can be opened
-through **Manage existing remote → Edit pages and buttons** to change Main, pages A–D and the
-function of each physical position. A native remote created before this existed gets an editable
-copy of its stock profile the first time the editor opens.
-
-Applying a physical layout uses a delete/recreate transaction, but the stable `remote_id`, Quick
-Bind and the individual Home Assistant actions survive it. Remote Studio's **Edit layout** button
-leads to the same editor.
-
-## IR remotes
-
-**Remote manager → Add IR remote** offers two paths:
-
-- install a remote already saved in the SwitchBot cloud (`code`, `keyMap`, AC fast-binaries and
-  custom key details via `queryIrRemote`);
-- add from the IR catalog (`custom_components/switchbot_urc/ir_catalog.db`): type → brand →
-  model, with the code bank fetched through the official `querymodel` and a cloud record created
-  after BLE install.
-
-The integration unpacks the base64/zlib code bank the way the app does, checks every `keyMap`
-offset, builds up to five `0F 62 06` pages and runs a full sync. Slot, remote count, CRC and
-packet fragmentation are computed automatically. If the local install succeeds but the cloud save
-fails, re-submitting the form retries only the cloud part.
-
-### About the IR catalog file
-
-`ir_catalog.db` holds only IR **metadata** — device type, brand, model and the `hxd_index` used
-to request a code bank. No IR codes are in it; those come from SwitchBot's cloud with your own
-account. It is derived from `assets/IRLibarayDb.pack` in the SwitchBot Android app, which is a
-gzip-compressed SQLite database, and the data in it belongs to SwitchBot.
-
-The file is **optional**. If it is absent, the catalog path is simply not offered and the
-saved-cloud IR path still works. To build your own from an app APK you already have:
-
-```bash
-python3 tools/build_ir_catalog.py --apk /path/to/switchbot_assets.apk \
-    --output custom_components/switchbot_urc/ir_catalog.db
-```
-
-Nothing is downloaded and nothing leaves the machine. In a split install the asset usually lives
-in `switchbot_assets.apk`; the script prints which entry it used and the library version.
-
-These buttons transmit IR from the WoRWS itself — the bridge add-on and MQTT are not involved.
-
-## HID remotes
-
-A HID remote turns the WoRWS into a BLE-HID keyboard bonded to a host, and presses go straight to
-that host as HID reports. Pair first (`hid_pair`), then create the profile; a create before the
-pairing exists returns `11`. The host must accept an incoming BLE-HID bond — macOS refuses, Linux
-with BlueZ can be configured for it. Usage maps and device types are in `PROTOCOL.md`.
-
-## Remote manager and the cloud account
-
-**Configure → Remote manager** reads the real `0F 63 07` table every time it opens, matches it
-against locally created and cloud remotes by stable id, and shows one list. Add, rename and delete
-do not take a slot number: the current index is resolved immediately before the command, and the
-firmware's table compaction after a delete is accounted for.
-
-Connecting a SwitchBot cloud account is optional and can be done later through **Configure**. It
-needs only the account email and password; the integration follows the app's login flow, resolves
-the region and home itself, and does not store the password. Accounts created solely through
-Google/Apple/Amazon sign-in need a different auth flow and will not work with password login. The
-cloud is used only for IR and HID lists and names — every BLE operation against the WoRWS stays
-local.
-
-**Refresh all remotes from device + cloud** re-reads both sides, merges them by stable id and
-saves a cleaned snapshot with a timestamp. Opening the Remote manager does the same automatically.
+### 1. Install the integration
 
-### Adding and removing remotes from Studio
+1. In **HACS**, open **⋮ → Custom repositories**, add `https://github.com/batareya16/SwitchbotURCHass` and select **Integration**.
+2. Download **SwitchBot Universal Remote (WoRWS)** and restart Home Assistant.
+3. Open **Settings → Devices & services**. Use the discovery card for your Universal Remote, or choose **Add integration** and search for **SwitchBot Universal Remote (WoRWS)**. If the Bluetooth address is blank, enter the address of the physical Universal Remote.
+4. Leave the communication key fields blank and choose **Connect SwitchBot cloud**. Sign in with your SwitchBot email and password. If asked, select the home that contains the Universal Remote. The integration fetches the key and keeps the sign-in tokens for renewal. It does not store the password.
+5. Open **Remote Studio** from the Home Assistant sidebar. Use an administrator account.
 
-The remote selector has **Add native remote** and **Delete remote**. Creating reuses the bridge
-credentials captured when the first native remote was installed, so it only asks for a name;
-IR and HID remotes still need the integration settings, because one needs a catalogue choice and
-the other a pairing step. Deleting reads the device table, proves the row is there, performs the
-single destructive write in that same session and then re-reads the table before dropping the
-local record.
-
-### Whether a press reaches Home Assistant
-
-Each remote says so, because offering an action for a press that never arrives is the most
-confusing thing the panel can do:
-
-- **native** — presses go to the bridge add-on and arrive as Home Assistant events;
-- **HID** — presses go to the host the remote is paired with, and reach Home Assistant only when
-  that host is this machine and it is connected;
-- **IR** — the remote transmits to the appliance and nothing comes back. For these the Home
-  Assistant mapping is not offered at all; the key itself stays editable.
+If you already have the remote's communication key and key ID, you can enter them and skip account sign-in. The account is needed for the IR catalog and your saved IR remotes. If your account uses Google, Apple or Amazon sign-in, the setup form needs a SwitchBot email and password login. [HACS custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/)
 
-## Diagnostics and maintenance
-
-**Configure → Diagnostics and maintenance** groups the checks that are only needed when
-something is wrong: a connectivity test that reaches the fake target from Home Assistant's other
-adapter (so an add-on problem can be told apart from a remote problem), a read-only sweep of the
-`0F 63` query namespace, and HID pairing to a host.
-
-**Update WoRWS communication key** stays in the main menu on purpose: the key rotates, every
-command starts failing with `04` when it does, and that is not the moment to go hunting through
-submenus.
-
-## Remote Studio
-
-The integration registers an admin page **Remote Studio** in the sidebar. It shows any locally
-managed remote, switches between its Main/A/B/C/D pages, displays the stable id and slot, applies
-Quick bind to a light, and lets each physical button be selected on a graphical mock-up. The dot
-colour shows where the action comes from: blue Quick bind, green a per-button Home Assistant
-action, red disabled, grey none. **Test** sends a normalized press through the same dispatcher,
-and real presses light up live over WebSocket. The action editor uses the standard `ha-selector`
-with a JSON fallback, and the backend validates with the standard Script validator before saving.
-
-Remotes created in the SwitchBot app do not appear in Studio by themselves: the integration
-sees them in the device table but has no record of what their buttons do. **Refresh** picks them
-up, each kind by the only means available:
-
-- IR — `queryIrRemote` returns the same code bank and key map the app installed, and the pages
-  are rebuilt from it;
-- HID — `getButtonData` returns the saved button list;
-- native — nothing needs downloading: the app installs one of the stock profiles, and Studio
-  renders those from the device type alone.
-
-Nothing is written to the remote by any of this. An IR or HID remote with no saved cloud record
-cannot be rebuilt, and a native remote of an unrecognised type is skipped; both are reported.
-
-Every button is edited in one place. Selecting it on the mock-up shows both what the key *is*
-on the remote — its command type, function, or IR code — and what Home Assistant does when it is
-pressed. There is no separate layout mode.
-
-One **Save** stores everything for that button: the names, the Home Assistant mapping, and —
-only when the key itself changed — the layout on the remote. The button says "Save and write to
-remote" when a device write is part of it, and a bar above counts the outstanding changes.
-Nothing is written to the remote unless its layout actually differs, because for a native
-remote any such change is a full delete and recreate.
-
-Giving a Main A–D key the function **Open a custom page** creates a new, empty page tab and
-turns that key into its link. Buttons are added to it the same way as anywhere else.
-
-The button editor also shows **Installed on the remote**: the device table read from the remote
-itself — slot, kind, type, target address and the next free slot. It is read-only and a failure to
-read it does not block the editor. When several native profiles share one target address, the
-block says so: the firmware stores the same id for all of them, presses are served by the first,
-and the others' buttons do nothing.
-
-A table row is identified by its slot, not by its device id. When several rows carry the same id,
-the editor picks the row whose slot matches the stored one.
-
-## Custom native remotes and bindings
-
-The **Custom Native Remote Builder** creates a main screen plus the chosen A–D sub-pages, links
-the pages, keeps readable page names in Home Assistant, and writes a bridge event on every active
-button carrying `device_type=CUSTOM`, the page, index and a semantic function. The screen template
-is the native Fan profile — the one recovered handler that opens all four sub-pages.
-
-Only icons built into the WoRWS firmware are sent to the screen. Arbitrary images and general
-screen-state synchronisation are not confirmed in the protocol and are deliberately not faked.
-
-**Remote bindings** in the integration options has **Quick bind**, which binds a whole logical
-remote to a light by its stable `remote_id` (ON/OFF for power, brightness in 10% steps,
-LEFT/RIGHT for colour temperature), and **Edit mappings** for changing the light, disabling the
-binding or assigning an action per button group. Changing a mapping does not rewrite the WoRWS and
-does not depend on the physical slot.
-
-A diagnostic **Battery** sensor is created for the remote. It updates passively from the FD3D
-advertisement and never wakes the remote with an extra connection.
-
-## Verifying presses
-
-Leave `diagnostic_scan: false`, open the new remote on the WoRWS and press a few buttons. The
-add-on log should show `connected=True`, `notify sub=True`, `REMOTE wrote`, then the decoded
-command. The add-on publishes to `switchbot_urc/button` and the integration re-fires it:
-
-```yaml
-event_type: switchbot_urc_button
-event_data:
-  source: mqtt
-  button: ON
-```
-
-Each active button sends a short bridge event. The MQTT JSON carries `device_type`, `remote_id`,
-`remote_slot`, `button_page`, `button_index`, `button_function`, a stable `button_id` and
-`button_icon`.
-
-Repeated connect / discovery / disconnect lines before a delivered press are normal for this
-remote and bridge, and happen for a tile that works.
-
-## Actions
-
-- `switchbot_urc.bind_native` — the full native provisioning sequence above.
-- `switchbot_urc.create_remote` — send one `0F 62 06` page; for a new native target `bind_native`
-  is easier and safer.
-- `switchbot_urc.delete_remote` — delete a remote (`0F 62 04 02`). For a native remote it then
-  re-sends `0F 20 08` automatically if another native profile still targets the same address: the
-  firmware's key entry is keyed on the address, not on the profile, so the survivor would
-  otherwise be left without a key.
-- `switchbot_urc.dump_device_table` — read the remote's device table (`0F 63 07`) and return slot,
-  type, control type, the eleven-byte id, the target MAC and the id tail. Read-only.
-- `switchbot_urc.send_command` — raw plaintext hex, without the `57` transport magic.
-- `switchbot_urc.send_command_sequence` — several raw commands in **one** session, as binding
-  does, with a response per step. Needed for commands the firmware only accepts after an earlier
-  command in the same connection, and for diagnostics: send `02` as step 0 and discard the run
-  unless it answers `01`.
-- `switchbot_urc.poll_status` — status poll (`02`).
-- `switchbot_urc.hid_pair` — HID-pair the remote to a host.
-- `switchbot_urc.set_state_ac` — push AC state to the screen.
-
-Command replies are logged: `01` ok, `02` value error, `04` format error or an unusable session,
-`05` duplicate device id, `11` HID not paired.
-
-## Known limits
-
-- **Several native tiles on one adapter MAC do not work.** They can be installed — the bind check
-  reads eleven id bytes and a distinct tail passes it — but the firmware stores only the six-byte
-  address, so the rows become indistinguishable and presses on the second tile are served by the
-  first profile's data. Separate tiles need separate BLE addresses. Measured on hardware; the full
-  evidence is in `PROTOCOL.md`.
-- **Button count is not the limit.** A native profile allows 18 buttons per page across Main and
-  A–D, about 91 positions against the firmware's ceiling of 100 keys.
-- **Mixed profiles**: a key's type cannot be changed to cross transports, and the screen type
-  cannot be chosen independently of the transport. The one untested combination is a HID screen
-  with named IR keys.
-
-## Credentials and what is stored
-
-- The SwitchBot account password is sent only to SwitchBot's own account endpoint and is never
-  stored. Only the renewable tokens it returns are kept, in the config entry — Home Assistant's
-  normal credential store.
-- The WoRWS communication key, the fake target's key and the account tokens are never written to
-  the log. The cloud module logs only the resolved region, the endpoint and how many homes were
-  returned.
-- The Remote Studio panel receives remote metadata and the device address over its WebSocket API,
-  and no key material. Every one of its commands requires an admin user.
-- Key fields in the configuration forms are masked.
-- The integration ships no diagnostics handler, so nothing is bundled into a downloadable
-  diagnostics file.
-
-## Troubleshooting
-
-**Bind reports that the encrypted reply could not be decoded.** The remote's communication key
-has rotated or is wrong. Open **Configure → Update WoRWS communication key**, enter a fresh
-`key_id` and key, wait for the reload and retry. This is not the add-on's `device_key` — the
-remote and the fake device have different credentials.
-
-**`0x04` during `set_key`.** The integration first tries to fetch a fresh communication key
-through the configured SwitchBot cloud, saves it and reloads; retry the bind once afterwards. If
-no cloud account is configured, or it returned the same key, update the key manually.
-
-**A command fails for no apparent reason.** A session can reject its first command with `04` even
-when that command is a one-byte status poll that works a minute later. The client now retries the
-whole step list once with a new connection and handshake in that case. When testing by hand, send
-`02` first and discard any run where it does not answer `01`.
-
-## License
-
-Apache License 2.0 — see `LICENSE`. Section 7 ("Disclaimer of Warranty") and section 8
-("Limitation of Liability") of that licence apply to everything in this repository.
+<details>
+<summary>Manual installation without HACS</summary>
+
+Download the repository, copy its `custom_components/switchbot_urc` folder into your Home Assistant `/config/custom_components/` folder, then restart Home Assistant and continue with step 3.
+
+</details>
+
+### 2. Install the Bridge for Home Assistant button actions
+
+1. Install and start the official **Mosquitto broker** app in Home Assistant. Open **Settings → Devices & services** and set up the discovered **MQTT** integration. [Home Assistant MQTT setup](https://www.home-assistant.io/integrations/mqtt/)
+2. Plug in the dedicated dongle. In **Settings → Connectivity → Bluetooth → Adapters**, find it and disable **Home Assistant's use of that adapter**. Leave your regular Bluetooth adapter enabled and the Bridge dongle plugged in. Note the Bridge dongle's Bluetooth address. [Finding your Bluetooth adapters](https://www.home-assistant.io/connectivity/bluetooth/#viewing-your-bluetooth-adapters-and-proxies)
+3. Open **Settings → Apps → Install app → ⋮ → Repositories**. On older Home Assistant versions, look for **Add-ons → Add-on Store**. Add `https://github.com/batareya16/switchbot-urc-addon`, then install **SwitchBot URC Bridge**. [Adding a third-party app repository](https://www.home-assistant.io/common-tasks/os/#installing-a-third-party-app-repository)
+4. In the Bridge's **Configuration**, set `adapter` to the dedicated dongle's Bluetooth address. For a new installation, set `device_key` to a private random value of 32 characters using only `0–9` and `a–f`. You will paste that same key into Studio when prompted. Keep your existing key if you are updating a working Bridge.
+5. Leave **Addresses (optional)** empty for automatic setup. Save, start the Bridge and enable **Start on boot**. In the Bridge log, look for a line saying it is running.
+
+Studio picks a free address for new Bridge remotes. The Bridge remembers its addresses across restarts. Leave **Bridge options** on **Automatic** for normal use.
+
+## Use Remote Studio
+
+### Control Home Assistant
+
+1. Wake up the Universal Remote. In Studio, choose **Add a remote → Bridge remote**.
+2. Pick a **Type** by its icon, give the remote a name and choose **Install**. If asked for the **Bridge device key**, paste the value from the Bridge configuration.
+3. For a light, select it under **Quick bind** and click **Save**. The preset assigns common light controls such as power and brightness.
+4. To set up a specific button, click it on the remote preview. Choose **Assign an action** if it is empty, then open **Custom actions** and choose what Home Assistant should do. You can add several actions in order. For example, **Scene: Turn on** activates a scene and **Script: Turn on** runs a script.
+5. Click **Save** at the bottom of the editor. Use **Test saved mapping** to try the action from Studio. Then open the new remote on the physical WoRWS and press the button to check that the Bridge receives it.
+
+Use the pencil next to a remote's name on the preview to edit its name and appearance. To make a submenu, select an A–D key and choose **Turn key … into a page**. Open the new page and choose **Add row**. You can move or delete rows and choose from the remote's built-in button icons. Click **Save** to apply your edits.
+
+### Control an infrared appliance
+
+Choose **Add a remote → IR from the catalog** and select the device type, brand and model. Or choose **IR saved in your account** to install a remote you set up in the SwitchBot app. After installation, select it on the WoRWS and point the remote at the appliance.
+
+### Control a Bluetooth TV or streaming box
+
+Choose **Add a remote → HID remote**, pick the type and select **Install**. Studio opens the new remote's settings. Click **Enter pairing mode**, open the TV or box's Bluetooth settings, and select the Universal Remote when it appears. Studio reports when the remote confirms pairing. To find the pairing button later, open the remote's settings with the pencil.
+
+Studio starts with that HID type's standard buttons. You can edit individual commands later.
+
+### Bring in a remote you already set up
+
+Choose **Refresh** in Studio while the Universal Remote is awake and nearby. Studio reads what's installed and imports supported remotes. For IR and HID remotes made in the SwitchBot app, sign in to the account where the original remote was saved so Studio can look up its buttons.
+
+## If something doesn't work
+
+| What you see | What to check |
+| --- | --- |
+| **Remote Studio** is missing | Restart Home Assistant after installing the integration, then open it with an administrator account. |
+| The Bridge reports **no extended advertising support** | Confirm `adapter` points to the spare dongle. If it does, that controller cannot run the Bridge. |
+| **Bridge remote** is unavailable | Check that Mosquitto, the MQTT integration and the Bridge app are running. Reopen **Add a remote** to refresh availability. |
+| **Test saved mapping** works, but the physical button does nothing | Open the matching remote on the WoRWS, move closer to the Bridge and check that Home Assistant has released the dedicated dongle for the Bridge. |
+| Studio can't read or write the Universal Remote | Wake it, bring it closer and close the SwitchBot app if it is connected to the remote. If Studio reports an invalid communication key, open **SwitchBot account → Fetch a fresh key**. |
+| The IR catalog or saved remotes are missing | Sign in under the integration's **Configure → SwitchBot cloud account**. The saved list only appears if the account has saved IR remotes. |
+
+This is a community project for the SwitchBot Universal Remote. Firmware updates can affect compatibility. [Report an issue](https://github.com/batareya16/SwitchbotURCHass/issues) · [Protocol and hardware notes](PROTOCOL.md) · [License](LICENSE)
