@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.51.2
+
+- Add and manage scenes from **Add a remote → Scene** or the **Scenes** button in Remote Studio. Assign a Home Assistant scene or script and edit the name, icon, and color shown on the Universal Remote.
+- Refresh the Studio frontend version so the scene controls load after updating and restarting Home Assistant.
+- Run CI against **SwitchBot URC Bridge 0.32.5**, which assembles fragmented scene-list responses. The previous CI pin used 0.32.4 and failed the long scene-list test. Use Bridge 0.32.5 for complete scene-list reads.
+
 ## 0.51.0
 
 Changes since 0.50.4.
