@@ -177,16 +177,6 @@ def _bridges(hass):
     ]
 
 
-def _target_for_bridge(entry, bridge, address):
-    known = {
-        addressing.normalise(str(item["device_id"])): item
-        for item in targets.all_targets(entry) if item.get("target_key")
-    }
-    return next((known[key] for key in map(addressing.normalise, [
-        bridge.address, address, *bridge.serving,
-    ]) if key in known), {})
-
-
 def remote_management_lock(hass):
     return hass.data.setdefault(DOMAIN, {}).setdefault("_remote_management_lock", asyncio.Lock())
 
@@ -304,7 +294,6 @@ async def _delete_remote(hass, connection, msg):
     vol.Optional("icon"): str,
     vol.Optional("target_id"): str,
     vol.Optional("new_target_address"): str,
-    vol.Optional("target_key"): str,
     vol.Optional("auto_address", default=False): bool,
 })
 @websocket_api.async_response
@@ -319,10 +308,6 @@ async def _create_native_remote(hass, connection, msg):
         entry = hass.config_entries.async_get_entry(msg["entry_id"])
         if entry is None or entry.domain != DOMAIN:
             raise ValueError("Integration not found")
-        supplied_key = str(msg.get("target_key") or "").strip().replace(" ", "")
-        if supplied_key and (len(supplied_key) != 32
-                             or any(char not in "0123456789abcdefABCDEF" for char in supplied_key)):
-            raise ValueError("The AES key must be exactly 32 hexadecimal characters.")
         wanted = str(msg.get("new_target_address") or msg.get("target_id") or "").strip()
         if wanted and not addressing.is_valid(wanted):
             raise ValueError("Enter a six-byte Bluetooth address.")
@@ -341,16 +326,7 @@ async def _create_native_remote(hass, connection, msg):
                     if addressing.normalise(address) == addressing.normalise(wanted)]
         if not free:
             raise ValueError("No free advertised bridge address is available.")
-        if not wanted and not supplied_key:
-            free = [(address, bridge) for address, bridge in free
-                    if _target_for_bridge(entry, bridge, address)]
-            if not free:
-                raise ValueError("Enter the add-on's device key once to set up the bridge.")
         address, bridge = free[0]
-        saved_target = _target_for_bridge(entry, bridge, address)
-        target_key = supplied_key or saved_target.get("target_key", "")
-        if len(bytes.fromhex(target_key)) != 16:
-            raise ValueError(f"Enter the device key for the bridge at {bridge.address}.")
         if not await _confirm_bridge_address(hass, bridge, address):
             raise ValueError("The add-on did not confirm the selected address. Try again when it is ready.")
         slot = len(table)
@@ -361,7 +337,7 @@ async def _create_native_remote(hass, connection, msg):
         remote_id = new_remote_id(entry)
         stages = c.build_native_bind_sequence(
             key_id=0x01,
-            target_key=bytes.fromhex(target_key),
+            target_key=None,
             device_type_name=device_type,
             remote_index=slot,
             name=msg["name"],
@@ -392,21 +368,6 @@ async def _create_native_remote(hass, connection, msg):
             "physical_packets": [packet.hex() for stage, packet in stages if stage.startswith("bind_")],
         })
         _save_remotes(hass, entry, remotes)
-        if supplied_key and address != bridge.address:
-            targets.remember_target(hass, entry, {
-                "name": bridge.adapter,
-                "device_id": bridge.address,
-                "device_type": device_type,
-                "target_key_id": "01",
-                "target_key": target_key,
-            })
-        targets.remember_target(hass, entry, {
-            "name": msg["name"],
-            "device_id": address,
-            "device_type": device_type,
-            "target_key_id": "01",
-            "target_key": target_key,
-        })
         connection.send_result(msg["id"], {
             "remote_id": remote_id, "slot": slot, "bridge": address,
         })
@@ -535,9 +496,9 @@ async def _install_ir_remote(hass, connection, msg):
 def next_move_address(hass, entry, occupied=()) -> str:
     table = cached_device_table(hass, entry)
     used = _used_addresses(entry) if table is None else _native_table_addresses(table)
-    return next((address for address, bridge in addressing.free_advertised_addresses(
+    return next((address for address, _ in addressing.free_advertised_addresses(
         _bridges(hass), [*used, *occupied],
-    ) if _target_for_bridge(entry, bridge, address)), "")
+    )), "")
 
 
 async def _confirm_bridge_address(hass, owner, address: str) -> bool:
@@ -548,22 +509,18 @@ async def _confirm_bridge_address(hass, owner, address: str) -> bool:
     })
 
 
-async def prepare_move_destination(hass, entry, address: str) -> dict:
-    """Confirm the destination and its key before removing a working tile."""
+async def prepare_move_destination(hass, address: str) -> None:
+    """Confirm the destination before removing a working tile."""
     compact = addressing.normalise(address)
     owner = next((bridge for bridge in _bridges(hass)
                   if any(addressing.normalise(item) == compact for item in bridge.serving)), None)
     if owner is None:
         raise ValueError(f"No running bridge reports {address} as an advertised address.")
-    target = _target_for_bridge(entry, owner, address)
-    if not target:
-        raise ValueError(f"Set up the bridge credentials for {owner.address} before moving.")
     if not await _confirm_bridge_address(hass, owner, address):
         raise ValueError(
             f"The bridge did not confirm advertising {address}. "
             "The remote was left at its current address."
         )
-    return target
 
 
 @websocket_api.require_admin
@@ -609,8 +566,7 @@ async def ws_remote_sources(hass, connection, msg):
         "remote_capacity": remote_capacity,
         "capacity_read_failed": capacity_error,
         "bridges": [
-            {"target_id": address, "name": f"{bridge.adapter} · {address}",
-             "has_key": bool(_target_for_bridge(entry, bridge, address))}
+            {"target_id": address, "name": f"{bridge.adapter} · {address}"}
             for address, bridge in free
         ],
         "catalog": await hass.async_add_executor_job(ir_catalog.available),

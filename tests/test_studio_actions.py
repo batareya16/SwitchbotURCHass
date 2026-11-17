@@ -95,6 +95,52 @@ def studio():
 ACTIONS = [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]
 
 
+def test_studio_creates_bridge_remote_without_saved_credentials(studio, monkeypatch):
+    from switchbot_urc import studio_remotes
+
+    address = "DA:71:16:E0:1F:93"
+    entry = types.SimpleNamespace(entry_id="entry", domain=studio_remotes.DOMAIN,
+                                  data={}, options={})
+    entries = types.SimpleNamespace(
+        async_get_entry=lambda _: entry,
+        async_update_entry=lambda item, **changes: vars(item).update(changes),
+    )
+    hass = types.SimpleNamespace(data={}, config_entries=entries)
+    captured = {}
+    connection = types.SimpleNamespace(
+        send_result=lambda _, result: captured.update(result),
+        send_error=lambda _, code, message: pytest.fail(f"{code}: {message}"),
+    )
+    controller = studio_remotes.addressing.Bridge(
+        adapter="hci0", address=address, advertising_sets=1,
+        serving=[address], extended_advertising=True,
+    )
+
+    async def read_table(*_args):
+        return []
+
+    async def confirm(_hass, _controller, selected):
+        return selected == address
+
+    async def bind(_client, stages, *, device_id):
+        assert device_id == address
+        assert [packet[:3] for _, packet in stages] == [bytes.fromhex("0f6206")]
+
+    monkeypatch.setattr(studio_remotes, "_client", lambda *_: object())
+    monkeypatch.setattr(studio_remotes, "_bridges", lambda _: [controller])
+    monkeypatch.setattr(studio_remotes, "read_device_table", read_table)
+    monkeypatch.setattr(studio_remotes, "_confirm_bridge_address", confirm)
+    monkeypatch.setattr(studio_remotes.install, "bind_native_once", bind)
+    asyncio.run(studio_remotes.ws_remote_create(hass, connection, {
+        "id": 1, "entry_id": entry.entry_id, "name": "Lamp", "native_type": "PLUG",
+    }))
+
+    (remote,) = entry.options["remotes"]
+    assert remote["physical_device_id"] == address
+    assert captured["remote_id"] == remote["remote_id"]
+    assert entry.data == {}
+
+
 @pytest.mark.parametrize("readback_received", [True, False])
 def test_layout_write_reads_back_in_the_same_bridge_session(studio, readback_received):
     from switchbot_urc.client import UrcClient

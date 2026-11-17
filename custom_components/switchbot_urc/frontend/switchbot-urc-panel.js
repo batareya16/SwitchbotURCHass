@@ -1637,11 +1637,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             ${option("", "Automatic", !add.targetId)}
             ${sources.bridges.map((item) => option(item.target_id, item.name, item.target_id === add.targetId)).join("")}
           </select></label>
-        </details>` : ""}
-        ${this._needsBridgeKey(add, sources) ? `<label>Bridge device key
-          <input type="password" autocomplete="off" data-add-field="target_key" spellcheck="false"
-            value="${escapeHtml(add.targetKey || "")}" placeholder="32 hex characters"></label>
-          <p class="small">Enter the add-on's device key once. Studio reuses it for this bridge.</p>` : ""}` : ""}
+        </details>` : ""}` : ""}
       ${add.kind === "cloud" ? `<label>Remote<select data-add-field="remote_id">${
         (sources.cloud_remotes || []).map((item) => option(item.remote_id, item.name, item.remote_id === add.remoteId)).join("")
       }</select></label>` : ""}
@@ -1730,16 +1726,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         ? "light"
         : (sources.hid?.icons || [])[0]) || "",
       targetId: "",
-      targetKey: "",
     };
     this._render();
-  }
-
-  _needsBridgeKey(add, sources = this._sources) {
-    const available = sources?.bridges || [];
-    if (!available.length) return false;
-    if (add.targetId) return !available.find((item) => item.target_id === add.targetId)?.has_key;
-    return !available.some((item) => item.has_key);
   }
 
   _wireAddRemote() {
@@ -1795,7 +1783,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         else if (name === "remote_id") add.remoteId = field.value;
         else if (name === "device_type") add.deviceType = field.value;
         else if (name === "icon") add.icon = field.value;
-        else if (name === "target_key") add.targetKey = field.value.replace(/\s+/g, "");
       });
       field.addEventListener("change", () => {
         const name = field.dataset.addField;
@@ -1811,7 +1798,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         if (name === "icon") add.icon = field.value;
         if (name === "target_id") {
           add.targetId = field.value;
-          add.targetKey = "";
           this._render();
         }
       });
@@ -1877,10 +1863,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (add.kind === "cloud" && !add.remoteId) {
       add.error = "Choose one of your saved remotes."; this._render(); return;
     }
-    if (add.kind === "native" && this._needsBridgeKey(add) && !/^[0-9a-fA-F]{32}$/.test(add.targetKey)) {
-      add.error = "Enter the add-on’s 32-character device key.";
-      this._render(); return;
-    }
     add.busy = true;
     add.error = "";
     this._physicalBusy = true;
@@ -1891,7 +1873,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create`,
           entry_id: this._entryId, name,
           native_type: add.nativeType || add.deviceType, icon: add.icon,
-          ...(this._needsBridgeKey(add) ? { target_key: add.targetKey } : {}),
           ...(add.targetId ? { target_id: add.targetId } : { auto_address: true }) });
       } else if (add.kind === "hid") {
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create_hid`,

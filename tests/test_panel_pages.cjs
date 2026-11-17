@@ -357,16 +357,17 @@ test('a select action checks the options of its actual entity', () => {
 });
 
 
-test('automatic bridge setup reuses a stored key and only prompts for an unconfigured bridge', () => {
+test('automatic Bridge installation needs no device key', async () => {
   const instance = panel();
-  instance._sources = {bridges: [
-    {target_id: '8A:88:1B:E0:1F:92', has_key: true},
-    {target_id: 'DA:71:16:E0:1F:93', has_key: false},
-  ]};
-  assert.equal(instance._needsBridgeKey({}), false);
-  assert.equal(instance._needsBridgeKey({targetId: 'DA:71:16:E0:1F:93'}), true);
-  instance._sources.bridges.shift();
-  assert.equal(instance._needsBridgeKey({}), true);
+  instance._add = {kind: 'native', name: 'Lamp', nativeType: 'STRIP'};
+  instance._sources = {native: true, bridges: [{target_id: 'DA:71:16:E0:1F:93'}]};
+  const requests = [];
+  instance._hass = {async callWS(request) {requests.push(request); return {slot: 1};}};
+  await instance._installRemote();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].type, 'switchbot_urc/studio/remote/create');
+  assert.equal(requests[0].auto_address, true);
+  assert.equal(Object.hasOwn(requests[0], 'target_key'), false);
 });
 
 

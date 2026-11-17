@@ -868,7 +868,7 @@ def build_associate_target_key(key_id: int, device_id: str) -> bytes:
 def build_native_bind_sequence(
     *,
     key_id: int,
-    target_key: bytes,
+    target_key: bytes | None,
     device_type_name: str,
     remote_index: int,
     name: str,
@@ -877,7 +877,7 @@ def build_native_bind_sequence(
     control_mode: int = 0,
     event_remote_id: str | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
-    """Return target-key, association, and every official native-device page command."""
+    """Return every Native page, with key provisioning when a target key is supplied."""
     pages = build_native_pages(
         device_type_name=device_type_name,
         remote_index=remote_index,
@@ -898,6 +898,8 @@ def build_native_bind_sequence(
         else:
             stage = f"bind_page_{page_index}"
         page_stages.append((stage, page))
+    if target_key is None:
+        return tuple(page_stages)
     return (
         ("set_key", build_set_target_key(key_id, target_key)),
         ("associate", build_associate_target_key(key_id, device_id)),
@@ -1590,7 +1592,7 @@ def build_custom_native_pages(
 def build_custom_native_bind_sequence(
     *,
     key_id: int,
-    target_key: bytes,
+    target_key: bytes | None,
     remote_index: int,
     name: str,
     device_id: str,
@@ -1617,10 +1619,13 @@ def build_custom_native_bind_sequence(
         device_type_name=device_type_name,
         glyphs=glyphs,
     )
+    page_stages = tuple((f"bind_page_{page_index}", command) for page_index, command in pages)
+    if target_key is None:
+        return page_stages
     return (
         ("set_key", build_set_target_key(key_id, target_key)),
         ("associate", build_associate_target_key(key_id, device_id)),
-        *((f"bind_page_{page_index}", command) for page_index, command in pages),
+        *page_stages,
     )
 
 

@@ -46,7 +46,7 @@ Download the repository, copy its `custom_components/switchbot_urc` folder into 
 1. Install and start the official **Mosquitto broker** app in Home Assistant. Open **Settings → Devices & services** and set up the discovered **MQTT** integration. [Home Assistant MQTT setup](https://www.home-assistant.io/integrations/mqtt/)
 2. Plug in the dedicated dongle. In **Settings → Connectivity → Bluetooth → Adapters**, find its Linux adapter name, such as `hci0` or `hci1`, and disable **Home Assistant's use of that adapter**. Leave your regular Bluetooth adapter enabled and the Bridge dongle plugged in. [Finding your Bluetooth adapters](https://www.home-assistant.io/connectivity/bluetooth/#viewing-your-bluetooth-adapters-and-proxies)
 3. Open **Settings → Apps → Install app → ⋮ → Repositories**. On older Home Assistant versions, look for **Add-ons → Add-on Store**. Add `https://github.com/batareya16/switchbot-urc-addon`, then install **SwitchBot URC Bridge**. [Adding a third-party app repository](https://www.home-assistant.io/common-tasks/os/#installing-a-third-party-app-repository)
-4. In the Bridge's **Configuration**, set `adapter` to the dedicated dongle's Linux name from step 2. For a new installation, set `device_key` to a private random value of 32 characters using only `0–9` and `a–f`. You will paste that same key into Studio when prompted. Keep your existing key if you are updating a working Bridge.
+4. In the Bridge's **Configuration**, set `adapter` to the dedicated dongle's Linux name from step 2.
 5. Leave **Addresses (optional)** empty for automatic setup. Save, start the Bridge and enable **Start on boot**. In the Bridge log, look for a line saying it is running.
 
 Studio picks a free address for new Bridge remotes. The Bridge remembers its addresses across restarts. Leave **Bridge options** on **Automatic** for normal use.
@@ -56,7 +56,7 @@ Studio picks a free address for new Bridge remotes. The Bridge remembers its add
 ### Control Home Assistant
 
 1. Wake up the Universal Remote. In Studio, choose **Add a remote → Bridge remote**.
-2. Pick a **Type** by its icon, give the remote a name and choose **Install**. If asked for the **Bridge device key**, paste the value from the Bridge configuration.
+2. Pick a **Type** by its icon, give the remote a name and choose **Install**.
 3. For a light, select it under **Quick bind** and click **Save**. The preset assigns common light controls such as power and brightness.
 4. To set up a specific button, click it on the remote preview. Choose **Assign an action** if it is empty, then open **Custom actions** and choose what Home Assistant should do. You can add several actions in order. For example, **Scene: Turn on** activates a scene and **Script: Turn on** runs a script.
 5. Click **Save** at the bottom of the editor. Use **Test saved mapping** to try the action from Studio. Then open the new remote on the physical WoRWS and press the button to check that the Bridge receives it.

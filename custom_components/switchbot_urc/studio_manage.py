@@ -316,8 +316,8 @@ async def _recreate_remote(hass, connection, msg):
 
     Use it when the tile on the screen is wrong or missing. IR remotes are reinstalled from
     their account record; HID remotes are deleted and rebuilt from
-    the stored button list; native remotes are deleted and bound again from the stored bridge
-    credentials. A native profile missing from the device table is restored from its local
+    the stored button list; native remotes are deleted and bound again from the stored pages.
+    A native profile missing from the device table is restored from its local
     record without issuing another delete.
 
     A native remote can also move: `target_address` binds it to a different address and
@@ -449,18 +449,14 @@ async def _recreate_remote(hass, connection, msg):
             return
 
         if item["control_type"] == c.CTRL_NATIVE:
-            target = targets.target_for(entry, managed)
-            if not managed or not target.get("target_key"):
-                raise ValueError(
-                    "No stored bridge credentials for this remote, so it cannot be written again"
-                )
+            if not targets.is_bridge_remote(entry, managed):
+                raise ValueError("This Native remote does not have a saved Bridge target")
             device_type_name = str(managed["device_type"])
             if not c.native_device_type_supported(device_type_name):
                 raise ValueError("WoRWS local page writes require a one-byte native device type")
             appearance = physical_layout.native_appearance(managed)
             device_id = str(managed.get("physical_device_id") or managed["device_id"])
             moved_from = ""
-            source_key = bytes.fromhex(str(target["target_key"]))
             wanted = str(msg.get("target_address") or "").strip()
             moving = bool(wanted or msg.get("auto_address"))
             if moving and not wanted:
@@ -480,40 +476,18 @@ async def _recreate_remote(hass, connection, msg):
                        and bytes.fromhex(row["device_key"])[:6] == wanted_id
                        for row in inventory):
                     raise ValueError(f"{wanted} already carries a native tile. Choose a free address.")
-                target = await studio_remotes.prepare_move_destination(hass, entry, wanted)
+                await studio_remotes.prepare_move_destination(hass, wanted)
                 moved_from, device_id = device_id, wanted
-            target_key = bytes.fromhex(str(target["target_key"]))
-            if len(target_key) != 16:
-                raise ValueError("The bridge key must be 16 bytes.")
-            if moved_from and item.get("physical") and source_key != target_key and any(
+            if not moved_from and item.get("physical") and any(
                 row["physical"] and row["control_type"] == c.CTRL_NATIVE
                 and row["index"] != item["index"]
                 and row["device_key"][:12] == item["device_key"][:12]
                 for row in inventory
             ):
                 raise ValueError(
-                    "Another remote still shares the current address. Moving to a bridge "
-                    "with a different key could break that remote."
+                    "Another remote still shares this bridge address. Move this remote to a free address."
                 )
-            if item.get("physical"):
-                error = await install.delete_and_verify(
-                    client,
-                    c.build_delete(
-                        remote_index=int(item["index"]),
-                        device_type=int(item["device_type_byte"]),
-                        control_type=int(item["control_type"]),
-                        device_id=item["device_key"],
-                    ),
-                    device_type=int(item["device_type_byte"]),
-                    control_type=int(item["control_type"]),
-                    device_id=str(item["device_key"]),
-                )
-                if error:
-                    raise ValueError(f"could not remove the old copy ({error})")
-            raw = await client.query(0x07)
-            if not raw:
-                raise ValueError("The remote did not answer with its device table")
-            slot = len(c.parse_added_devices(raw))
+            slot = sum(row["physical"] for row in inventory) - bool(item.get("physical"))
             c.require_remote_slot(slot)
             custom_layout = managed.get("custom_layout")
             native_icon = str(managed.get("icon") or "light")
@@ -523,7 +497,7 @@ async def _recreate_remote(hass, connection, msg):
             if custom_layout:
                 stages = c.build_custom_native_bind_sequence(
                     key_id=0x01,
-                    target_key=target_key,
+                    target_key=None,
                     remote_index=slot,
                     name=name,
                     device_id=device_id,
@@ -542,7 +516,7 @@ async def _recreate_remote(hass, connection, msg):
             else:
                 stages = c.build_native_bind_sequence(
                     key_id=0x01,
-                    target_key=target_key,
+                    target_key=None,
                     device_type_name=device_type_name,
                     remote_index=slot,
                     name=name,
@@ -551,6 +525,25 @@ async def _recreate_remote(hass, connection, msg):
                     control_mode=native_mode or 0,
                     event_remote_id=managed.get("remote_id"),
                 )
+            if item.get("physical"):
+                # V48 clears the address's target key when deleting the row (ARM c724).
+                # Compile the replacement before deleting so invalid pages cannot remove it.
+                error = await install.delete_and_verify(
+                    client,
+                    c.build_delete(
+                        remote_index=int(item["index"]),
+                        device_type=int(item["device_type_byte"]),
+                        control_type=int(item["control_type"]),
+                        device_id=item["device_key"],
+                    ),
+                    device_type=int(item["device_type_byte"]),
+                    control_type=int(item["control_type"]),
+                    device_id=str(item["device_key"]),
+                )
+                if error:
+                    raise ValueError(f"could not remove the old copy ({error})")
+                if len(await read_device_table(hass, entry, client)) != slot:
+                    raise ValueError("The device table changed. Refresh before writing again.")
             await install.bind_native_once(client, stages, device_id=device_id)
             restored_id = c.id_to_bytes(device_id)
             restored_type = c.NATIVE_DEVTYPE[str(managed["device_type"]).upper()]
@@ -583,9 +576,6 @@ async def _recreate_remote(hass, connection, msg):
             _save_remotes(hass, entry, remotes)
             warning = ""
             if moved_from:
-                targets.remember_target(hass, entry, dict(target) | {
-                    "device_id": device_id, "name": name,
-                })
                 if item.get("physical"):
                     try:
                         response = await install.reassociate_shared_target(

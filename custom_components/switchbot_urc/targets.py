@@ -51,6 +51,16 @@ def target_for(entry, remote: dict[str, Any] | None) -> dict[str, Any]:
     return targets[0]
 
 
+def is_bridge_remote(entry, remote: dict[str, Any]) -> bool:
+    """Recognize Studio-created remotes and older remotes with a saved Bridge target."""
+    if remote.get("physical_device_id"):
+        return True
+    wanted = normalise(str(remote.get("device_id") or ""))
+    return bool(wanted) and any(
+        normalise(str(target["device_id"])) == wanted for target in all_targets(entry)
+    )
+
+
 def remember_target(hass, entry, target: dict[str, Any]) -> None:
     """Record a bridge, replacing any earlier one at the same address."""
     if not _usable(target):

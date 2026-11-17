@@ -465,15 +465,13 @@ async def ws_physical_apply(hass, connection, msg):
             stored_changes = {}
             verify_appearance = False
             if draft["kind"] == "native":
-                target = targets.target_for(entry, remote)
-                key = bytes.fromhex(target.get("target_key", ""))
-                if len(key) != 16:
-                    raise ValueError("The native target key is missing")
+                if not targets.is_bridge_remote(entry, remote):
+                    raise ValueError("This Native remote does not have a saved Bridge target")
                 layout = physical.native_layout(draft)
                 selected_type = c.native_type_metadata(layout["native_type"])
                 new_slot = len(table) if recovering_native else slot
                 bind = c.build_custom_native_bind_sequence(
-                    key_id=1, target_key=key, remote_index=new_slot, name=remote["name"],
+                    key_id=1, target_key=None, remote_index=new_slot, name=remote["name"],
                     device_id=bound_address, icon_name=layout["icon_name"],
                     event_remote_id=identity, main_buttons=layout["main_buttons"],
                     page_buttons={int(p): values for p, values in layout["pages"].items()},
@@ -482,26 +480,18 @@ async def ws_physical_apply(hass, connection, msg):
                     device_type_name=selected_type["device_type"],
                     glyphs=layout["glyphs"],
                 )
-                page_stages = [
-                    (name, packet, frozenset({1}))
-                    for name, packet in bind if packet[:3] == b"\x0f\x62\x06"
-                ]
-                if recovering_native:
-                    # A missing tile needs the full key setup and page bind. Existing tiles
-                    # keep their slot and target association; firmware updates each page record
-                    # in place when 0F 62 06 matches its slot and device ID.
-                    stages = [(name, packet, frozenset({1})) for name, packet in bind]
-                else:
+                stages = [(name, packet, frozenset({1})) for name, packet in bind]
+                if not recovering_native:
                     # 0F 62 06 updates only the records it carries. Explicitly clear
                     # positions left empty after a deletion, move or row compaction.
-                    stages = page_stages + [
+                    stages.extend(
                         (f"clear page {page} key {index}", c.build_delete_native_key(
                             remote_index=slot, device_type=c.NATIVE_DEVTYPE[selected_type["device_type"]],
                             device_id=expected_id, page=page, index=index,
                         ), frozenset({1}))
                         for page, index in physical.removed_native_keys(previous_layout, draft)
-                    ]
-                pages = [packet for _, packet in bind if packet[:3] == b"\x0f\x62\x06"]
+                    )
+                pages = [packet for _, packet in bind]
                 stored_changes = {"device_type": selected_type["device_type"],
                                   "custom_layout": layout,
                                   "native_type": layout["native_type"],
