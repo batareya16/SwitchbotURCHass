@@ -175,7 +175,6 @@
           "device_id": "Target Bluetooth MAC / device ID",
           "device_type": "Remote layout",
           "icon": "Screen icon",
-          "target_key": "Target AES key (same as add-on device_key)",
           "buttons": "Buttons",
           "confirm": "Confirm recreation"
         }
@@ -211,7 +210,7 @@
       },
       "update_credentials": {
         "title": "Update WoRWS communication key",
-        "description": "Update the rotating communication key and key ID used to encrypt commands sent to the Universal Remote. This is not the add-on target key. The integration reloads after saving.",
+        "description": "Update the rotating communication key and key ID used to encrypt commands sent to the Universal Remote. The integration reloads after saving.",
         "data": {
           "key_id": "WoRWS key ID (hex)",
           "key": "WoRWS communication key (32 hex characters)"
@@ -224,8 +223,7 @@
           "name": "Name shown on the remote",
           "device_id": "Bridge add-on Bluetooth adapter MAC",
           "device_type": "Native layout",
-          "icon": "Screen icon",
-          "target_key": "Target AES key (same as add-on device_key)"
+          "icon": "Screen icon"
         }
       },
       "custom_native_builder": {
@@ -235,7 +233,6 @@
           "name": "Remote name",
           "device_id": "Bridge add-on Bluetooth adapter MAC",
           "icon": "Screen icon",
-          "target_key": "Target AES key (same as add-on device_key)",
           "pages": "Enabled submenu pages",
           "page_1_name": "Page A name in Home Assistant",
           "page_2_name": "Page B name in Home Assistant",
@@ -384,18 +381,10 @@
       "resp_format_err": "Device rejected the command (format error, 0x04).",
       "resp_hid_no_pair": "Remote is not HID-paired to a host yet (0x11). Pair it first.",
       "resp_unknown": "Device returned an unexpected error code.",
-      "target_key_id_hex": "Target key ID must be hexadecimal.",
-      "target_key_id_range": "Target key ID must fit in one byte (00-FF).",
-      "target_key_hex": "Target key must be valid hexadecimal.",
-      "target_key_length": "Target key must be 16 bytes (32 hexadecimal characters).",
       "native_table_timeout": "The Universal Remote device table could not be read.",
       "device_id_invalid": "Enter exactly six hexadecimal MAC bytes.",
       "native_target_mac_in_use": "This target MAC already belongs to a native tile. WoRWS requires a different live BLE MAC for every additional native tile.",
       "communication_key_invalid": "An encrypted reply arrived but could not be decoded. The WoRWS communication key/key ID is stale or incorrect; update it and retry.",
-      "native_set_key_timeout": "The remote did not answer the target-key command (set_key timeout).",
-      "native_set_key_rejected": "The remote rejected the target-key command. The response code is shown above.",
-      "native_associate_timeout": "The remote did not answer the target association command (associate timeout).",
-      "native_associate_rejected": "The remote rejected the target association command. The response code is shown above.",
       "native_bind_timeout": "The remote did not answer the native page command (bind timeout).",
       "native_bind_main_timeout": "The remote did not answer the native main-page command (bind_main timeout).",
       "native_bind_page_1_timeout": "The remote did not answer the native Page A command.",
@@ -428,7 +417,6 @@
       "rename_failed": "The Universal Remote rejected the rename command.",
       "delete_failed": "The Universal Remote rejected the delete command.",
       "remote_operation_failed": "The remote operation failed. Check the Home Assistant log.",
-      "recreate_credentials_missing": "This native remote cannot be recreated because its saved bridge credentials are unavailable. Add it again through Add remote instead.",
       "recreate_profile_missing": "This remote cannot be recreated because its complete local or cloud profile is unavailable.",
       "recreate_not_supported": "Recreation is not supported for this remote type.",
       "cloud_auth_failed": "Sign-in failed. Check the email and password. Accounts that use Google, Apple, or Amazon sign-in are not supported by password login yet.",

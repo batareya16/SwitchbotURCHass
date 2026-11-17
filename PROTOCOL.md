@@ -167,10 +167,10 @@ not the key index (`r1`, copied to `r5`). The DSP key-record lookup `2002238c`
 separately accepts key indexes `0..99`. The earlier attribution of the key bound
 to the ARM comparison was incorrect.
 
-The command a native key sends is plain target-device traffic such as `57 0F 49 01 01`, not the
-`57 95 …` phone-control envelope, and no session handshake precedes it. A target must answer the
-write with a notify whose first byte is `01`, `06` or `0E`; otherwise the firmware requeues the
-command up to five times (`122f4`).
+Bridge remotes are installed without a target key association. The lookup leaves the queued key
+zero, so the firmware skips the get-random exchange and sends the stored command over ATT
+unchanged. The bridge acknowledges the button command with a `01` notification. The firmware
+requeues commands without an accepted acknowledgement up to five times (`122f4`).
 
 ### Multiple native profiles on one address — measured 2026-10-30
 
@@ -198,8 +198,7 @@ Two further consequences:
 
 - Such rows can only be deleted **by slot index**; by device id they are indistinguishable.
 - Deleting a native row calls `c724`, which clears the key entry matched on the six-byte address
-  and so takes the key away from any other profile on that address. The integration's
-  `delete_remote` re-sends `0F 20 08` afterwards for this reason.
+  and so takes the key away from any other profile on that address.
 
 ### Inventory reads through the user-channel bridge — hardware validation pending
 

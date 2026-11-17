@@ -205,22 +205,12 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=600.0)
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument(
-        "--device-key", default=os.environ.get("DEVICE_KEY", "00112233445566778899aabbccddeeff"),
-        help="the 32-hex device key, matching the add-on's own DEVICE_KEY")
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s")
     bridge = load_bridge()
-    try:
-        device_key = bytes.fromhex(args.device_key)
-        if len(device_key) != 16:
-            raise ValueError
-    except ValueError:
-        print("--device-key must be exactly 32 hexadecimal characters")
-        return 2
     index = int(args.adapter.removeprefix("hci"))
 
     if not args.yes:
@@ -309,7 +299,7 @@ def main() -> int:
                     # connection's writes to the newest device.
                     protocol = bridge.FastAttProtocol(
                         lambda value, box=link_box: box["device"].on_write(value))
-                    device = bridge.SwitchBotDevice(device_key, protocol.notify, on_button)
+                    device = bridge.SwitchBotDevice(protocol.notify, on_button)
                     link_box["device"] = device
                     protocol.begin_session()
                     protocol.sender = lambda data, h=handle: writer.send(h, data)

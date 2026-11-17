@@ -104,8 +104,8 @@ poll_status:
 bind_native:
   name: Bind native target
   description: >
-    Provision the fake target key (0F 20 09), associate it with the target MAC (0F 20 08), then
-    bind the real native strip/light page (0F 62 06). Start the bridge add-on before calling this.
+    Install a Native remote that sends button presses to a Bridge address. Start the
+    Bridge add-on before calling this.
   fields:
     address: { name: Address, description: BLE MAC (optional if single), selector: { text: {} } }
     remote_index:
@@ -133,12 +133,6 @@ bind_native:
       name: Icon
       default: strip
       selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch] } }
-    target_key:
-      name: Target AES key
-      description: 32 hexadecimal characters; must match device_key in the bridge add-on.
-      required: true
-      example: "00112233445566778899aabbccddeeff"
-      selector: { text: {} }
     replace_existing:
       name: Replace existing target
       description: Delete an existing remote that already uses the same fake-target MAC before binding.

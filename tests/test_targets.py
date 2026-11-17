@@ -1,8 +1,4 @@
-"""Tests for the record of which bridges a WoRWS can send native presses to.
-
-This is what decides which key a tile is bound with and which bridge serves it, so a mistake
-here binds a remote to an address nothing answers on.
-"""
+"""Tests for the record of which bridges a WoRWS can send native presses to."""
 import pytest
 
 from conftest import INTEGRATION, load
@@ -11,24 +7,42 @@ targets = load(INTEGRATION / "targets.py", "urc_targets")
 
 DONGLE = "8A:88:1B:E0:1F:92"
 SECOND = "DA:71:16:E0:1F:92"
-KEY = "00" * 16
-OTHER_KEY = "ff" * 16
 
 
 class Entry:
-    def __init__(self, data):
+    def __init__(self, data, options=None):
         self.data = data
+        self.options = options or {}
 
 
 class Hass:
     class config_entries:
         @staticmethod
-        def async_update_entry(entry, data=None):
+        def async_update_entry(entry, data=None, options=None):
             entry.data = data
+            if options is not None:
+                entry.options = options
 
 
-def target(address, key=KEY, **extra):
-    return {"device_id": address, "target_key": key, **extra}
+def target(address, **extra):
+    return {"device_id": address, **extra}
+
+
+def test_removing_press_keys_preserves_addresses_and_management_credentials():
+    first = target(DONGLE, name="First")
+    second = target(SECOND, name="Second")
+    old_first = {**first, "target_key": "00" * 16, "target_key_id": "01"}
+    old_second = {**second, "target_key": "11" * 16, "target_key_id": "01"}
+    management = {"key": "22" * 16, "key_id": "95"}
+    entry = Entry(
+        {**management, "native_target": old_first, "native_targets": [old_first, old_second]},
+        {"native_key_id": "01", "native_device_id": DONGLE},
+    )
+
+    targets.remove_saved_press_keys(Hass, entry)
+
+    assert entry.data == {**management, "native_target": first, "native_targets": [first, second]}
+    assert entry.options == {"native_device_id": DONGLE}
 
 
 class TestReading:
@@ -41,7 +55,7 @@ class TestReading:
         assert targets.target_for(Entry({}), {}) == {}
 
     def test_an_entry_without_an_address_is_ignored(self):
-        assert targets.all_targets(Entry({"native_target": {"target_key": KEY}})) == []
+        assert targets.all_targets(Entry({"native_target": {"name": "Bridge"}})) == []
 
     def test_the_list_wins_over_the_single_key(self):
         entry = Entry({"native_target": target(DONGLE), "native_targets": [target(SECOND)]})
@@ -72,7 +86,7 @@ class TestChoosing:
 class TestWriting:
     def test_adding_a_second_bridge_keeps_the_first(self):
         entry = Entry({"native_target": target(DONGLE)})
-        targets.remember_target(Hass, entry, target(SECOND, OTHER_KEY))
+        targets.remember_target(Hass, entry, target(SECOND))
         assert [item["device_id"] for item in targets.all_targets(entry)] == [DONGLE, SECOND]
 
     def test_the_legacy_key_still_points_at_the_first_bridge(self):
@@ -81,22 +95,22 @@ class TestWriting:
         assert entry.data["native_target"]["device_id"] == DONGLE
 
     def test_the_same_address_is_replaced_not_duplicated(self):
-        entry = Entry({"native_targets": [target(DONGLE, KEY)]})
-        targets.remember_target(Hass, entry, target("8a881be01f92", OTHER_KEY))
+        entry = Entry({"native_targets": [target(DONGLE, name="Old")]})
+        targets.remember_target(Hass, entry, target("8a881be01f92", name="New"))
         stored = targets.all_targets(entry)
         assert len(stored) == 1
-        assert stored[0]["target_key"] == OTHER_KEY
+        assert stored[0]["name"] == "New"
 
     def test_a_stored_bridge_is_a_copy(self):
-        original = target(SECOND)
+        original = target(SECOND, name="Bridge")
         entry = Entry({})
         targets.remember_target(Hass, entry, original)
-        original["target_key"] = "changed"
-        assert targets.all_targets(entry)[0]["target_key"] == KEY
+        original["name"] = "Changed"
+        assert targets.all_targets(entry)[0]["name"] == "Bridge"
 
     def test_a_bridge_without_an_address_is_refused(self):
         with pytest.raises(ValueError):
-            targets.remember_target(Hass, Entry({}), {"target_key": KEY})
+            targets.remember_target(Hass, Entry({}), {"name": "Bridge"})
 
 
 class TestForgetting:

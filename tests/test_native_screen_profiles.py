@@ -11,15 +11,13 @@ physical = load(INTEGRATION / "physical_layout.py")
 
 
 def test_plaintext_bridge_bind_only_writes_pages_with_tagged_commands():
-    common = dict(key_id=1, remote_index=3, name="Lamp", device_id="AA:BB:CC:DD:EE:FF",
+    common = dict(remote_index=3, name="Lamp", device_id="AA:BB:CC:DD:EE:FF",
                   event_remote_id="12345678", device_type_name="STRIP")
-    stock = c.build_native_bind_sequence(**common, target_key=None)
+    stock = c.build_native_bind_sequence(**common)
     custom = c.build_custom_native_bind_sequence(
-        **common, target_key=None, template="STRIP", icon_name="strip",
+        **common, template="STRIP", icon_name="strip",
         main_buttons={"ON": "ON"}, page_buttons={4: ["OFF"]},
     )
-    encrypted = c.build_native_bind_sequence(**common, target_key=bytes(range(16)))
-    assert stock == encrypted[2:]
     assert {packet[88] for _, packet in stock} == {0, 4}
     assert {packet[88] for _, packet in custom} == {0, 4}
     for _, packet in (*stock, *custom):

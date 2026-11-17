@@ -496,8 +496,6 @@ async def _recreate_remote(hass, connection, msg):
                                 if value == appearance["icon_code"]), native_icon)
             if custom_layout:
                 stages = c.build_custom_native_bind_sequence(
-                    key_id=0x01,
-                    target_key=None,
                     remote_index=slot,
                     name=name,
                     device_id=device_id,
@@ -515,8 +513,6 @@ async def _recreate_remote(hass, connection, msg):
                 )
             else:
                 stages = c.build_native_bind_sequence(
-                    key_id=0x01,
-                    target_key=None,
                     device_type_name=device_type_name,
                     remote_index=slot,
                     name=name,
@@ -574,22 +570,9 @@ async def _recreate_remote(hass, connection, msg):
                     remote.pop("icon_variant_backup_packet", None)
                     remote.pop("washer_artwork_backup_packet", None)
             _save_remotes(hass, entry, remotes)
-            warning = ""
-            if moved_from:
-                if item.get("physical"):
-                    try:
-                        response = await install.reassociate_shared_target(
-                            client, moved_from, entries=verified_table)
-                        if response is not None and install.resp_error(response):
-                            raise ValueError(f"response {response.hex() or 'timeout'}")
-                    except Exception as err:  # move is already verified and saved
-                        _LOGGER.warning("could not restore the key on %s after moving: %s",
-                                        moved_from, err)
-                        warning = (f"Moved to {device_id}. The shared key on {moved_from} "
-                                   "could not be restored.")
             connection.send_result(msg["id"], {
                 "slot": slot, "kind": "native",
-                "address": device_id, "moved_from": moved_from, "warning": warning,
+                "address": device_id, "moved_from": moved_from,
             })
             return
 

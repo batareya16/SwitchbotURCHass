@@ -36,7 +36,7 @@ RESP_HID_NO_PAIR = 0x11
 EVENT_NOTIFY = f"{DOMAIN}_notify"
 # HASS event fired when we recognise a physical button press (HID report, notify, or add-on MQTT).
 EVENT_BUTTON = f"{DOMAIN}_button"
-# Fired after each stage of native provisioning: set_key, associate, bind_main, bind_colors.
+# Fired after writing each page during Native remote installation.
 EVENT_NATIVE_BIND = f"{DOMAIN}_native_bind"
 
 # MQTT topic the switchbot_urc_bridge add-on publishes button presses to. Subscribing here lets

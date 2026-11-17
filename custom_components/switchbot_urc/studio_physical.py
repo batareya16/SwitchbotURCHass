@@ -471,7 +471,7 @@ async def ws_physical_apply(hass, connection, msg):
                 selected_type = c.native_type_metadata(layout["native_type"])
                 new_slot = len(table) if recovering_native else slot
                 bind = c.build_custom_native_bind_sequence(
-                    key_id=1, target_key=None, remote_index=new_slot, name=remote["name"],
+                    remote_index=new_slot, name=remote["name"],
                     device_id=bound_address, icon_name=layout["icon_name"],
                     event_remote_id=identity, main_buttons=layout["main_buttons"],
                     page_buttons={int(p): values for p, values in layout["pages"].items()},

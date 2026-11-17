@@ -1,10 +1,7 @@
 """The bridge targets a WoRWS can send native presses to.
 
-A native tile connects to one fixed BLE address, and the firmware keeps the target key per
-six-byte address rather than per tile, so two tiles on one address are not independently usable
-— binding the second is refused outright with `native_target_mac_in_use`. Several native tiles
-therefore mean several addresses, which today means several Bluetooth controllers, one add-on
-instance each.
+A Native tile connects to one fixed BLE address. Each tile needs its own address, and a
+Bridge controller can serve several addresses.
 
 The integration originally stored exactly one bridge in `entry.data["native_target"]`. It now
 keeps a list in `entry.data["native_targets"]` and leaves the old key in place as the first
@@ -20,6 +17,27 @@ from .addressing import normalise
 
 def _usable(target: Any) -> bool:
     return isinstance(target, dict) and bool(target.get("device_id"))
+
+
+def remove_saved_press_keys(hass, entry) -> None:
+    """Discard old button-command keys from saved Bridge targets."""
+    data = dict(entry.data)
+    for field in ("native_target", "native_targets"):
+        stored = data.get(field)
+        records = stored if isinstance(stored, list) else [stored]
+        cleaned = [
+            {key: value for key, value in record.items()
+             if key not in ("target_key", "target_key_id")}
+            if isinstance(record, dict) else record
+            for record in records
+        ]
+        if records != cleaned:
+            data[field] = cleaned if isinstance(stored, list) else cleaned[0]
+
+    options = dict(entry.options)
+    options.pop("native_key_id", None)
+    if data != entry.data or options != entry.options:
+        hass.config_entries.async_update_entry(entry, data=data, options=options)
 
 
 def all_targets(entry) -> list[dict[str, Any]]:

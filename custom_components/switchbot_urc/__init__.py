@@ -26,6 +26,7 @@ from homeassistant.helpers.script import Script, async_validate_actions_config
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from . import commands
+from . import targets
 from .bindings import (
     ACTION_BRIGHTER,
     ACTION_COOLER,
@@ -109,8 +110,6 @@ BIND_NATIVE_SCHEMA = vol.Schema(
         vol.Optional("device_type", default="STRIP"): cv.string,
         vol.Optional("icon", default="strip"): cv.string,
         vol.Optional("control_mode", default=0): int,
-        vol.Optional("target_key_id", default="01"): cv.string,
-        vol.Required("target_key"): cv.string,
         vol.Optional("replace_existing", default=False): cv.boolean,
     }
 )
@@ -132,6 +131,7 @@ SEND_COMMAND_SEQUENCE_SCHEMA = vol.Schema(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up from a config entry."""
+    targets.remove_saved_press_keys(hass, entry)
     address: str = entry.data[CONF_ADDRESS]
     key = bytes.fromhex(entry.data[CONF_KEY])
     key_id = int(entry.data[CONF_KEY_ID], 16)
@@ -858,47 +858,12 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         resp = await client.send_command(plaintext)
         _log_resp(resp, f"delete_remote[{call.data['remote_index']}] {device_type}")
-        if not resp or resp[0] != RESP_OK or control_type != commands.CTRL_NATIVE:
-            return
-        # Deleting a native remote releases the target-key entry, and that entry is keyed on
-        # the six-byte BLE address rather than on the remote. Any other native profile aiming
-        # at the same address loses its key and then stops after service discovery, so the
-        # association has to be written back.
-        await _reassociate_shared_target(client, call.data["device_id"])
-
-    async def _reassociate_shared_target(client: UrcClient, device_id: str) -> None:
-        """Restore the target-key association when another native row still uses the address."""
-        try:
-            entries = commands.parse_added_devices(await client.query(0x07))
-        except (ValueError, TypeError) as err:
-            _LOGGER.warning("could not re-check the device table after deleting: %s", err)
-            return
-        address = commands.id_to_bytes(device_id)[:6]
-        survivors = [
-            entry for entry in entries
-            if entry[2] == commands.CTRL_NATIVE and entry[3][:6] == address
-        ]
-        if not survivors:
-            return
-        _LOGGER.info(
-            "slot(s) %s still target %s; re-associating the shared target key",
-            ", ".join(str(entry[0]) for entry in survivors),
-            ":".join(f"{byte:02X}" for byte in reversed(address)),
-        )
-        resp = await client.send_command(
-            commands.build_associate_target_key(0x01, device_id)
-        )
-        _log_resp(resp, "delete_remote re-associate shared target key")
 
     async def _bind_native(call: ServiceCall) -> None:
-        """Provision target credentials, associate its id, then bind its real native page."""
+        """Bind a Native remote to a Bridge address."""
         device_type = call.data.get("device_type", "STRIP")
         client = _pick(call)
         try:
-            # Native provisioning uses the fixed target selector 0x01. This is unrelated
-            # to the rotating WoRWS communication key ID.
-            key_id = 0x01
-            target_key = bytes.fromhex(call.data["target_key"])
             raw_table = await client.query(0x07)
             if not raw_table:
                 raise HomeAssistantError("could not read the current WoRWS device table")
@@ -951,8 +916,6 @@ def _register_services(hass: HomeAssistant) -> None:
                     remote_index,
                 )
             stages = commands.build_native_bind_sequence(
-                key_id=key_id,
-                target_key=target_key,
                 device_type_name=device_type,
                 remote_index=remote_index,
                 name=call.data["name"],

@@ -849,26 +849,8 @@ def build_status_poll() -> bytes:
     return bytes([0x02])
 
 
-def build_set_target_key(key_id: int, key: bytes) -> bytes:
-    """Store the 16-byte AES key used when the remote connects to a native target (0F 20 09)."""
-    if not 0 <= key_id <= 0xFF:
-        raise ValueError("target key id must fit in one byte")
-    if len(key) != 16:
-        raise ValueError("target key must be exactly 16 bytes")
-    return bytes([0x0F, 0x20, 0x09, key_id]) + key
-
-
-def build_associate_target_key(key_id: int, device_id: str) -> bytes:
-    """Associate a stored target key with the native target's 11-byte device id (0F 20 08)."""
-    if not 0 <= key_id <= 0xFF:
-        raise ValueError("target key id must fit in one byte")
-    return bytes([0x0F, 0x20, 0x08, key_id]) + id_to_bytes(device_id)
-
-
 def build_native_bind_sequence(
     *,
-    key_id: int,
-    target_key: bytes | None,
     device_type_name: str,
     remote_index: int,
     name: str,
@@ -877,7 +859,7 @@ def build_native_bind_sequence(
     control_mode: int = 0,
     event_remote_id: str | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
-    """Return every Native page, with key provisioning when a target key is supplied."""
+    """Return every Native page for a Bridge remote."""
     pages = build_native_pages(
         device_type_name=device_type_name,
         remote_index=remote_index,
@@ -898,13 +880,7 @@ def build_native_bind_sequence(
         else:
             stage = f"bind_page_{page_index}"
         page_stages.append((stage, page))
-    if target_key is None:
-        return tuple(page_stages)
-    return (
-        ("set_key", build_set_target_key(key_id, target_key)),
-        ("associate", build_associate_target_key(key_id, device_id)),
-        *page_stages,
-    )
+    return tuple(page_stages)
 
 
 def device_type_bytes(device_type: int | bytes | bytearray) -> bytes:
@@ -1591,8 +1567,6 @@ def build_custom_native_pages(
 
 def build_custom_native_bind_sequence(
     *,
-    key_id: int,
-    target_key: bytes | None,
     remote_index: int,
     name: str,
     device_id: str,
@@ -1605,7 +1579,7 @@ def build_custom_native_bind_sequence(
     device_type_name: str | None = None,
     glyphs: dict[str, int] | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
-    """Return provisioning plus all pages for an editable native bridge remote."""
+    """Return all pages for an editable Native Bridge remote."""
     pages = build_custom_native_pages(
         remote_index=remote_index,
         name=name,
@@ -1619,14 +1593,7 @@ def build_custom_native_bind_sequence(
         device_type_name=device_type_name,
         glyphs=glyphs,
     )
-    page_stages = tuple((f"bind_page_{page_index}", command) for page_index, command in pages)
-    if target_key is None:
-        return page_stages
-    return (
-        ("set_key", build_set_target_key(key_id, target_key)),
-        ("associate", build_associate_target_key(key_id, device_id)),
-        *page_stages,
-    )
+    return tuple((f"bind_page_{page_index}", command) for page_index, command in pages)
 
 
 def devtype_byte(device_type_name: str) -> int:

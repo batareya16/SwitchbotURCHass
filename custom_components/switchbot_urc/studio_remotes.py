@@ -267,17 +267,10 @@ async def _delete_remote(hass, connection, msg):
         if _count(after) >= _count(table):
             raise ValueError("the remote is still in the device table after the delete")
 
-        # Deleting a native row clears the target key, which is held per six-byte address and
-        # not per profile, so any sibling profile on that address loses its key here.
-        key_restored = False
-        if control_type == c.CTRL_NATIVE:
-            key_restored = await install.reassociate_shared_target(
-                client, bound_address) is not None
-
         dropped = _forget_remote(hass, entry, msg["remote_id"])
         connection.send_result(msg["id"], {
             "bindings_removed": dropped,
-            "deleted": msg["remote_id"], "rows": len(after), "key_restored": key_restored,
+            "deleted": msg["remote_id"], "rows": len(after),
         })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio delete failed")
@@ -336,8 +329,6 @@ async def _create_native_remote(hass, connection, msg):
         device_type = selected_type["device_type"]
         remote_id = new_remote_id(entry)
         stages = c.build_native_bind_sequence(
-            key_id=0x01,
-            target_key=None,
             device_type_name=device_type,
             remote_index=slot,
             name=msg["name"],

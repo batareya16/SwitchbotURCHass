@@ -967,7 +967,6 @@ class UrcOptionsFlow(OptionsFlow):
             "name": managed.get("name", item["name"]),
             "device_id": managed.get("physical_device_id", target.get("device_id", "")),
             "icon": managed.get("icon", target.get("icon", "tv")),
-            "target_key": target.get("target_key", ""),
             "main_buttons": commands.normalize_main_buttons(
                 layout.get("main_buttons", {})
             ),
@@ -1007,12 +1006,7 @@ class UrcOptionsFlow(OptionsFlow):
                     event_remote_id = str(
                         managed.get("remote_id") or uuid.uuid4().hex[:8]
                     )
-                    try:
-                        target_key = bytes.fromhex(user_input["target_key"])
-                        if len(target_key) != 16:
-                            errors["target_key"] = "target_key_length"
-                    except ValueError:
-                        errors["target_key"] = "target_key_hex"
+
                     try:
                         commands.native_logical_device_id(
                             user_input["device_id"], event_remote_id
@@ -1048,7 +1042,6 @@ class UrcOptionsFlow(OptionsFlow):
                                 "device_id": user_input["device_id"],
                                 "device_type": user_input["device_type"],
                                 "icon": user_input["icon"],
-                                "target_key": user_input["target_key"],
                                 "_event_remote_id": event_remote_id,
                                 "_replaces_remote_id": event_remote_id,
                             }
@@ -1142,11 +1135,6 @@ class UrcOptionsFlow(OptionsFlow):
                     vol.Required("icon", default=(user_input or {}).get(
                         "icon", target.get("icon", "strip")
                     )): vol.In(ICONS),
-                    vol.Required("target_key", default=(user_input or {}).get(
-                        "target_key", target.get("target_key", "")
-                    )): selector.TextSelector(
-                        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-                    ),
                     vol.Required("confirm", default=(user_input or {}).get(
                         "confirm", False
                     )): cv.boolean,
@@ -1821,12 +1809,6 @@ class UrcOptionsFlow(OptionsFlow):
         existing = self._custom_native_draft or {}
         if user_input is not None:
             try:
-                key = bytes.fromhex(user_input["target_key"])
-                if len(key) != 16:
-                    errors["target_key"] = "target_key_length"
-            except ValueError:
-                errors["target_key"] = "target_key_hex"
-            try:
                 commands.id_to_bytes(user_input["device_id"])
             except ValueError:
                 errors["device_id"] = "device_id_invalid"
@@ -1838,7 +1820,6 @@ class UrcOptionsFlow(OptionsFlow):
                     "name": user_input["name"],
                     "device_id": user_input["device_id"],
                     "icon": user_input["icon"],
-                    "target_key": user_input["target_key"],
                     "main_buttons": commands.normalize_main_buttons(
                         existing.get("main_buttons", {})
                         or ["ON", "OFF", "UP", "DOWN", "OK"]
@@ -1886,13 +1867,6 @@ class UrcOptionsFlow(OptionsFlow):
                             "ventilator": "Fan",
                         }
                     ),
-                    vol.Required(
-                        "target_key",
-                        default=values.get(
-                            "target_key",
-                            saved_native.get("target_key", "00112233445566778899aabbccddeeff"),
-                        ),
-                    ): str,
                     vol.Required(
                         "pages",
                         default=[str(page) for page in existing_pages]
@@ -2074,7 +2048,6 @@ class UrcOptionsFlow(OptionsFlow):
                 "device_id": draft["device_id"],
                 "device_type": "FAN",
                 "icon": draft["icon"],
-                "target_key": draft["target_key"],
                 "_custom_layout": {
                     "layout_version": 2,
                     "main_buttons": dict(
@@ -2096,13 +2069,6 @@ class UrcOptionsFlow(OptionsFlow):
         """Provision a fake native target and bind every page of its decoded layout."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            target_key = b""
-            try:
-                target_key = bytes.fromhex(user_input["target_key"])
-                if len(target_key) != 16:
-                    errors["target_key"] = "target_key_length"
-            except ValueError:
-                errors["target_key"] = "target_key_hex"
             try:
                 commands.id_to_bytes(user_input["device_id"])
             except ValueError:
@@ -2139,8 +2105,6 @@ class UrcOptionsFlow(OptionsFlow):
                     custom_layout = user_input.get("_custom_layout")
                     if custom_layout:
                         stages = commands.build_custom_native_bind_sequence(
-                            key_id=0x01,
-                            target_key=target_key,
                             remote_index=remote_index,
                             name=user_input["name"],
                             device_id=logical_device_id,
@@ -2156,12 +2120,6 @@ class UrcOptionsFlow(OptionsFlow):
                         )
                     else:
                         stages = commands.build_native_bind_sequence(
-                            # 0x01 is the fixed selector observed in every successful native bind.
-                            # Exposing it as a configurable key ID allowed the WoRWS communication
-                            # key ID (for example 0x95) to be entered here, which firmware rejects
-                            # as malformed (0x04).
-                            key_id=0x01,
-                            target_key=target_key,
                             device_type_name=user_input["device_type"],
                             remote_index=remote_index,
                             name=user_input["name"],
@@ -2226,18 +2184,12 @@ class UrcOptionsFlow(OptionsFlow):
                         stored_remote["custom_layout"] = user_input["_custom_layout"]
                     self.options["remotes"].append(stored_remote)
                     self.options["native_device_id"] = user_input["device_id"]
-                    self.options["native_key_id"] = "01"
-                    # Needed to restore this locally managed target if a future full IR sync
-                    # unexpectedly removes it. Config-entry data is HA's normal credential
-                    # store; never expose this value in logs or descriptions.
                     targets.remember_target(self.hass, self._entry, {
                         "name": user_input["name"],
                         "device_id": user_input["device_id"],
                         "device_type": user_input["device_type"],
                         "icon": user_input["icon"],
                         "control_mode": 0,
-                        "target_key_id": "01",
-                        "target_key": user_input["target_key"],
                     })
                     await self._persist()
                     if user_input.get("_custom_layout"):
@@ -2271,13 +2223,6 @@ class UrcOptionsFlow(OptionsFlow):
                 vol.Required(
                     "icon", default=values.get("icon", saved_native.get("icon", "strip"))
                 ): vol.In(ICONS),
-                vol.Required(
-                    "target_key",
-                    default=values.get(
-                        "target_key",
-                        saved_native.get("target_key", "00112233445566778899aabbccddeeff"),
-                    ),
-                ): str,
             }
         )
         return self.async_show_form(

@@ -495,9 +495,9 @@ class UrcClient:
     async def _negotiate_mtu(self) -> None:
         """Make BlueZ acquire the real ATT MTU before any encrypted command is sent.
 
-        Bleak's BlueZ backend otherwise commonly reports the fallback MTU 23. That splits the
-        24-byte target-key frame into 20+4 bytes, while Android requests a large MTU and sends it
-        as one WNR packet. `_acquire_mtu` is Bleak's documented BlueZ workaround; keep the
+        Bleak's BlueZ backend otherwise commonly reports the fallback MTU 23. Android requests
+        a large MTU so it can send longer commands as one WNR packet.
+        `_acquire_mtu` is Bleak's documented BlueZ workaround; keep the
         fallback for other backends and future Bleak versions.
         """
         assert self._client is not None
@@ -701,9 +701,8 @@ class UrcClient:
 
         # Prefer Android's WNR path when the negotiated characteristic limit can carry the frame.
         # BlueZ can occasionally keep reporting the fallback 20-byte WNR limit even after MTU
-        # acquisition. Do not split a small command such as the 24-byte target-key frame into
-        # 20+4: that opcode has no embedded length and the remote may discard both writes. A
-        # response=True write lets BlueZ perform one reliable ATT long write (up to 512 bytes).
+        # acquisition. A response=True write lets BlueZ send the frame as one reliable ATT
+        # long write (up to 512 bytes), including for opcodes without an embedded length.
         char = self._client.services.get_characteristic(CHAR_WRITE)
         chunk_size = self._write_without_response_size(char)
         if len(payload) <= 512 and len(payload) > chunk_size:

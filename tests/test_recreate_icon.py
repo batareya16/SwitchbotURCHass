@@ -31,7 +31,6 @@ def test_cloud_ir_icon_rewrites_header_and_pages():
 
 def test_custom_native_recreate_keeps_pages_and_changes_only_icon():
     kwargs = dict(
-        key_id=1, target_key=bytes.fromhex("00112233445566778899aabbccddeeff"),
         remote_index=3, name="Home Control", device_id="DA:71:16:E0:1F:92",
         event_remote_id="abcdef01", main_buttons={"ON": "ON", "OFF": "OFF"},
         page_buttons={1: ["BRIGHTER", "DARKER"]},

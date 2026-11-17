@@ -64,11 +64,6 @@ async def delete_and_verify(
     """
     target_id = stable_id_for_local(device_id)
     expected_index = command[4] if len(command) > 4 else -1
-    # Native rows delete like any other, but the firmware's key entry is keyed on the six-byte
-    # address rather than on the profile, so `c724` takes the key away from every other native
-    # profile aiming at the same address. Callers deleting a native row must therefore run
-    # `reassociate_shared_target` afterwards. (A `0x04` seen here is the ordinary format/session
-    # error, not a refusal to delete native rows.)
 
     def _target_exists(raw: bytes) -> bool:
         return any(
@@ -157,34 +152,6 @@ async def delete_and_verify(
     return delete_resp_error(response, command)
 
 
-async def reassociate_shared_target(client: Any, device_id: str, *, entries=None) -> bytes | None:
-    """Restore the target-key association when another native row still uses the address.
-
-    Deleting a native remote releases the target-key entry, and that entry is keyed on the
-    six-byte BLE address, not on the remote. Any surviving native profile on the same address
-    would otherwise lose its key and stop right after service discovery.
-    """
-    if entries is None:
-        try:
-            entries = commands.parse_added_devices(await client.query(0x07))
-        except (ValueError, TypeError) as err:
-            _LOGGER.warning("could not re-check the device table after deleting: %s", err)
-            return None
-    address = commands.id_to_bytes(device_id)[:6]
-    survivors = [
-        entry for entry in entries
-        if entry[2] == commands.CTRL_NATIVE and entry[3][:6] == address
-    ]
-    if not survivors:
-        return None
-    _LOGGER.info(
-        "slot(s) %s still target %s; re-associating the shared target key",
-        ", ".join(str(entry[0]) for entry in survivors),
-        ":".join(f"{byte:02X}" for byte in reversed(address)),
-    )
-    return await client.send_command(commands.build_associate_target_key(0x01, device_id))
-
-
 async def restore_managed_after_sync(
     client: Any, *, remotes: list[dict[str, Any]], targets: list[dict[str, Any]]
 ) -> list:
@@ -227,8 +194,8 @@ async def restore_managed_after_sync(
             physical_device_id = str(
                 remote.get("physical_device_id") or native_target.get("device_id", "")
             )
-            if not native_target or not physical_device_id:
-                raise RuntimeError("native recovery credentials are unavailable")
+            if not physical_device_id:
+                raise RuntimeError("native recovery bridge address is unavailable")
             appearance = native_appearance(remote)
             native_icon = next((name for name, code in commands.ICON.items()
                                 if code == appearance["icon_code"]),
@@ -236,8 +203,6 @@ async def restore_managed_after_sync(
             custom_layout = remote.get("custom_layout")
             if custom_layout:
                 stages = commands.build_custom_native_bind_sequence(
-                    key_id=0x01,
-                    target_key=bytes.fromhex(str(native_target["target_key"])),
                     remote_index=index,
                     name=str(remote.get("name", "Home Control")),
                     device_id=str(remote["device_id"]),
@@ -255,10 +220,6 @@ async def restore_managed_after_sync(
                 )
             else:
                 stages = commands.build_native_bind_sequence(
-                    # Captured native provisioning uses the fixed selector 0x01 here. This is
-                    # not the WoRWS communication key ID (commonly 0x95) and is not a user slot.
-                    key_id=0x01,
-                    target_key=bytes.fromhex(str(native_target["target_key"])),
                     device_type_name=device_type,
                     remote_index=index,
                     name=str(remote.get("name", native_target.get("name", "HASS Bridge"))),

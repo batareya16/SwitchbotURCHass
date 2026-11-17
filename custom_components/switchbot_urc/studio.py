@@ -26,7 +26,6 @@ from .bindings import (
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
 from . import studio_catalog
 from . import studio_cloud
-from . import targets
 from . import studio_manage
 from . import studio_physical
 from .physical_layout import native_appearance, remote_artwork_id
@@ -366,14 +365,12 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "pages": remote_pages(remote, binding),
             }
         )
-    bridges = [item for item in targets.all_targets(entry) if item.get("target_key")]
     return {
         "entry_id": entry.entry_id,
         "title": entry.title,
         "address": entry.data[CONF_ADDRESS],
         "battery": battery_state.state if battery_state else None,
         "remotes": remotes,
-        "can_create_native": bool(bridges),
         # Drawn on the remote's own screen, so the panel can show the device as it looks.
         "icons": list(ICONS),
     }

@@ -33,8 +33,7 @@ HID_DEVICE_TYPES = ["UNIVERSAL_BLE", "GOOGLE_TV", "FIRE_TV", "APPLE_TV"]
 # target MAC — point them at the fake-device add-on to catch presses in HASS).
 from .commands import NATIVE_DEVICE_TYPES
 
-# The basic HID editor stays HID-only. Native layouts are installed atomically by the dedicated
-# Add/Recreate Native Remote UI because they also require target-key provisioning.
+# The basic HID editor stays HID-only. Native layouts use the dedicated Add/Recreate flow.
 DEVICE_TYPES = HID_DEVICE_TYPES
 
 
