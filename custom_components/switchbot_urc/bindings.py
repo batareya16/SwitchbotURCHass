@@ -4,6 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .commands import KATA_BUTTON_ID, KATA_POSITION
+
 ACTION_NONE = "none"
 ACTION_TURN_ON = "turn_on"
 ACTION_TURN_OFF = "turn_off"
@@ -22,6 +24,8 @@ def _button_identity(value: str) -> tuple[int, int]:
         raise ValueError(f"Invalid button identity {value!r}") from None
     if not 0 <= page_index <= 4 or not 0 <= key_index <= 18:
         raise ValueError(f"Invalid button identity {value!r}")
+    if (page_index, key_index) == (0, KATA_POSITION):
+        raise ValueError("KATA is reserved for the Universal Remote")
     return page_index, key_index
 
 
@@ -226,6 +230,10 @@ def event_mapping_candidates(event_data: dict[str, Any]) -> list[str]:
     """Return stable-to-legacy keys that may identify one button press."""
     candidates: list[str] = []
     button_id = event_data.get("button_id")
+    if button_id == KATA_BUTTON_ID or (
+        event_data.get("button_page"), event_data.get("button_index")
+    ) == (0, KATA_POSITION):
+        return []
     if button_id:
         candidates.append(str(button_id))
     for field in ("button_name", "button"):

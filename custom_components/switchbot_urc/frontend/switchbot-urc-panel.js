@@ -589,7 +589,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           .map((item) => item.index - 1));
         const visibleMainPositions = page.index === 0
           ? Array.from({ length: 19 }, (_, index) => index).filter((index) => {
-            if (linkedPositions.has(index)) return false;
+            if (positions[index] === "KATA" || linkedPositions.has(index)) return false;
             if (this._physical.kind !== "native") return true;
             return nativeProfile?.main_positions?.includes(index);
           }) : [];
@@ -919,11 +919,12 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   // Each key the WoRWS actually has, by its firmware position name.
   _key(byPos, tag, body, label) {
+    if (tag === "KATA") {
+      return `<g class="k ghost" tabindex="-1"><title>KATA · Reserved for the Universal Remote</title>${body}</g>`;
+    }
     const button = byPos[tag];
     if (!button) {
-      const title = tag === "KATA" && this._physical?.kind === "native"
-        ? "KATA · Reserved for the Universal Remote" : `${tag} — not used by this remote`;
-      return `<g class="k ghost" tabindex="-1"><title>${title}</title>${body}</g>`;
+      return `<g class="k ghost" tabindex="-1"><title>${tag} — not used by this remote</title>${body}</g>`;
     }
     const [status, statusLabel] = this._status(button);
     const selected = button.button_id === this._buttonId ? " selected" : "";
@@ -977,11 +978,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!keys.length) {
         return `<p class="scr-empty">This page has no buttons yet</p>`;
       }
+      const catalogGlyphs = this._remote()?.ir_screen_preview?.catalog_glyphs;
       return keys.map((item) => {
         const [status] = this._status(item);
         const on = item.button_id === this._buttonId;
         const draft = this._draftLabel(item);
-        const glyph = this._nativeGlyph(item, "scr-icon");
+        const glyph = this._nativeGlyph(catalogGlyphs
+          ? { button_glyph: catalogGlyphs[item.button_function] } : item, "scr-icon");
         return `<div class="scr-row k ${status}${on ? " on" : ""}${draft ? " unsaved" : ""}" role="button" tabindex="0"
           data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}${draft ? ` · ${draft} in draft` : ""}">
           ${glyph}
@@ -1005,7 +1008,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           ${artwork ? `<img class="ic-img" src="${artwork}" alt="">`
             : item.can_test_native_icon ? `<span class="ic-fallback" aria-hidden="true">▣</span>`
               : this._iconImage(item.icon)}<span class="nm">${escapeHtml(item.name)}</span></button>
-        ${current ? `<button class="k ic-btn" data-icon-for="${escapeHtml(item.remote_id)}"
+        ${current && item.layout_editable ? `<button class="k ic-btn" data-icon-for="${escapeHtml(item.remote_id)}"
           title="Edit this remote's name and appearance">✎</button>` : ""}
       </div>`;
     }).join("");
@@ -1084,6 +1087,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const profile = this._nativeProfile(this._physical?.native_type || this._physical?.template);
     const isIr = this._physical?.kind === "ir"
       || String(this._remote()?.device_type || "").startsWith("IR_");
+    const irPreview = this._remote()?.ir_screen_preview;
     // Glyphs are drawn around their own origin and moved onto the key's centre, so a key and
     // its mark cannot drift apart the way hand-placed coordinates did.
     const mark = (cx, cy, d) => `<path d="${d}" transform="translate(${cx} ${cy})" class="mark"/>`;
@@ -1137,14 +1141,19 @@ class SwitchBotUrcPanel extends HTMLElement {
             : softkeys[tag];
           // The IR A–D widget reads keyFun from the Main-page record, including for menu links.
           // WoRWS leaves positions with no record or keyFun zero empty.
-          const irFunction = linked ? Number.parseInt(linkDraft?.link_record?.slice(2, 6), 16)
+          const disabledFunction = irPreview?.disabled_softkeys?.[index];
+          const recordedFunction = linked
+            ? Number.parseInt(linkDraft?.link_record?.slice(2, 6), 16)
             : glyphButton?.button_function;
+          const irFunction = irPreview?.softkeys
+            ? irPreview.softkeys[index] : recordedFunction || disabledFunction;
           const glyphSrc = isIr
             ? (irFunction ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
             : this._nativeGlyphSrc(glyphButton);
+          const dim = isIr && disabledFunction && !recordedFunction;
           const x = 52 + index * 52;
           const shape = `<rect x="${x}" y="265" width="44" height="27" rx="5" class="cap"/>
-            ${glyphSrc ? `<image href="${glyphSrc}" x="${x + 6}" y="269" width="19" height="19"/>` : ""}
+            ${glyphSrc ? `<image href="${glyphSrc}" x="${x + 6}" y="269" width="19" height="19"${dim ? ' opacity="0.5"' : ""}/>` : ""}
             <text x="${x + (glyphSrc ? 33 : 22)}" y="282" class="cap-t">${tag}</text>`;
           // A key that opens a page has no command of its own: that is what the firmware does
           // with it, and it is why it cannot carry a Home Assistant action.
@@ -1256,7 +1265,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           <div class="toolbar">
             ${this._action("addRemote", "＋", "Add a remote",
               "Install a new remote on the Universal Remote", "accent")}
-            ${remote ? this._action("recreateRemote", "↻", "Write again",
+            ${remote?.layout_editable ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
               "Bind this remote to a different Bluetooth address") : ""}
@@ -1283,7 +1292,9 @@ class SwitchBotUrcPanel extends HTMLElement {
                 <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span>${this._physical ? '<span><i class="unsaved"></i>Unsaved change</span>' : ""}</div>
               </section>
               <aside class="editor">
-                <div ${this._saving ? "inert" : ""}>${this._iconPickerFor === remote.remote_id
+                <div ${this._saving ? "inert" : ""}>${!remote.layout_editable
+                  ? '<div class="empty small">This IR remote is installed. Refresh can load its buttons if the profile is saved in your SwitchBot account.</div>'
+                  : this._iconPickerFor === remote.remote_id
                   ? this._renderAppearance(remote)
                   : page?.index && this._physical ? this._renderPageEditor(page, button, remote)
                   : (button ? this._editor(button, remote)

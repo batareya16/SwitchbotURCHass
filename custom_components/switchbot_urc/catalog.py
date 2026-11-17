@@ -60,7 +60,7 @@ def keys_from_names(names: list[str], device_type: str = "UNIVERSAL_BLE") -> lis
     """Turn selected button names into create() key dicts (keyIndex + keyFun)."""
     keys: list[dict] = []
     for name in names:
-        if name not in TAG:
+        if name not in TAG or name == "KATA":
             continue
         keys.append({"keyIndex": TAG[name], "keyFun": TAG[name]})
     return keys

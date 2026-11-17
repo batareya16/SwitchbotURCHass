@@ -29,14 +29,14 @@ from . import studio_catalog
 from . import studio_cloud
 from . import studio_manage
 from . import studio_physical
-from .physical_layout import native_appearance, remote_artwork_id
+from .physical_layout import ir_screen_preview, native_appearance, remote_artwork_id
 from . import studio_remotes
 
 _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.72"
+FRONTEND_VERSION = "0.51.0"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -279,6 +279,11 @@ def remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None = None) 
     # for no benefit. Still applied so a configuration written before that keeps its names.
     labels = remote.get("studio_labels", {})
     for page in pages:
+        if page["index"] == 0:
+            page["buttons"] = [
+                button for button in page["buttons"]
+                if button["button_index"] != commands.KATA_POSITION
+            ]
         page["name"] = labels.get(f"page_{page['index']}", page["name"])
         for button in page["buttons"]:
             button["label"] = labels.get(button["button_id"], button["label"])
@@ -354,8 +359,9 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "name": str(remote.get("name") or remote_id),
                 "device_type": device_type,
                 "reachability": _reachability(remote),
-                "layout_editable": True,
+                "layout_editable": not remote.get("ir_profile_pending", False),
                 "remote_slot": remote.get("index"),
+                "ir_screen_preview": ir_screen_preview(remote),
                 "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
                 "icon": str(remote.get("icon", "")),
                 "icon_code": remote.get("icon_code") if isinstance(remote.get("icon_code"), int) else None,
@@ -417,13 +423,12 @@ async def ws_studio_save_button_action(
         connection.send_error(msg["id"], "not_found", "Remote not found")
         return
     current_binding = _binding_for(entry, msg["remote_id"])
-    if (str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE
-            and msg["button_id"] == f"p0_k{commands.TAG['KATA']}"):
+    if msg["button_id"] == commands.KATA_BUTTON_ID:
         connection.send_error(msg["id"], "reserved_button", "KATA is reserved for the Universal Remote")
         return
     known_button_ids = {
         button["button_id"]
-        for page in _remote_pages(remote, current_binding)
+        for page in remote_pages(remote, current_binding)
         for button in page["buttons"]
     }
     if msg["button_id"] not in known_button_ids:
@@ -545,7 +550,7 @@ def ws_studio_test_button(
     button = next(
         (
             button
-            for page in _remote_pages(remote, binding)
+            for page in remote_pages(remote, binding)
             for button in page["buttons"]
             if button["button_id"] == msg["button_id"]
         ),

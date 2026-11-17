@@ -1,0 +1,109 @@
+"""Translate SwitchBot IR catalog tags into WoRWS V48 screen functions."""
+
+# The official app's get*fun_key_name tables translate catalog tags before writing
+# 0F 62 06. The DSP IR screen (0x2002fbf0 -> 0x2002f858 -> 0x20023ac0)
+# reads keyFun from a key record and selects the corresponding RES.bin image.
+_IR_TAG_FUNCTIONS = {
+    2: {  # TV
+        1: 16, 2: 221, 3: 17, 4: 222, 5: 13, 6: 224, 7: 18, 8: 106,
+        9: 15, 10: 101, 11: 105, 12: 102, 13: 19, 14: 103, 15: 41, 16: 104,
+        17: 42, 18: 220, 19: 43, 20: 109, 21: 44, 22: 211, 23: 45, 24: 212,
+        25: 46, 26: 213, 27: 47, 28: 214, 29: 48, 30: 203, 31: 49, 32: 25,
+        34: 21, 36: 26, 38: 27, 39: 12, 40: 22, 41: 11, 42: 28, 43: 9,
+        44: 24, 45: 7, 46: 23, 47: 8, 48: 111, 49: 10, 50: 223, 51: 200,
+        53: 201, 55: 202, 57: 114,
+    },
+    3: {  # IPTV
+        1: 105, 2: 5, 3: 19, 4: 6, 5: 15, 6: 800, 7: 16, 8: 802,
+        10: 801, 12: 118, 13: 9, 14: 116, 15: 7, 17: 11, 19: 8, 21: 10,
+        25: 41, 27: 42, 29: 43, 31: 44, 33: 45, 35: 46, 37: 47, 39: 48,
+        41: 49, 43: 40, 45: 12,
+    },
+    4: {  # TVBox
+        1: 105, 2: 5, 3: 41, 4: 6, 5: 42, 6: 800, 7: 43, 8: 802,
+        9: 44, 10: 801, 11: 45, 12: 118, 13: 46, 15: 47, 16: 116, 17: 48,
+        18: 109, 19: 49, 23: 40, 25: 12, 27: 9, 29: 7, 31: 11, 33: 8,
+        35: 10, 37: 15, 39: 16, 41: 17, 43: 18, 45: 19,
+    },
+    5: {  # DVD
+        1: 19, 2: 118, 4: 23, 6: 16, 8: 15, 10: 9, 11: 105, 12: 7,
+        14: 10, 15: 25, 16: 8, 17: 21, 18: 11, 19: 26, 20: 12, 21: 27,
+        24: 116, 25: 28, 26: 41, 28: 42, 29: 22, 30: 43, 32: 44, 33: 111,
+        34: 45, 36: 46, 38: 47, 40: 48, 42: 49, 44: 40,
+    },
+    6: {  # Fan
+        1: 105, 2: 5, 4: 6, 5: 89, 6: 113, 8: 19, 9: 90, 39: 72,
+        41: 73, 43: 74,
+    },
+    7: {  # Projector
+        1: 5, 2: 105, 3: 6, 4: 118, 6: 11, 8: 700, 10: 21, 12: 12,
+        14: 116, 15: 107, 17: 108, 23: 9, 25: 7, 27: 8, 29: 10, 33: 15,
+        35: 16, 37: 19, 41: 22,
+    },
+    8: {  # Camera
+        1: 153, 2: 116, 4: 90,
+    },
+    10: {  # Air
+        1: 105, 2: 5, 3: 117, 4: 6, 6: 72, 7: 92, 8: 73, 9: 56,
+        10: 74, 11: 113, 12: 57, 13: 58, 14: 112, 15: 19, 16: 90,
+    },
+    11: {  # Audio
+        1: 7, 3: 9, 5: 11, 6: 23, 7: 10, 8: 12, 9: 8, 11: 105,
+        12: 41, 13: 15, 14: 42, 15: 19, 16: 43, 17: 16, 18: 44, 19: 25,
+        20: 45, 21: 21, 22: 46, 23: 26, 24: 47, 25: 27, 26: 48, 27: 22,
+        28: 49, 29: 28, 30: 40,
+    },
+    12: {  # WHeater
+        1: 105, 2: 5, 4: 6, 5: 60, 6: 56, 7: 61, 8: 62, 11: 154,
+        13: 90, 15: 92,
+    },
+    13: {  # Robot
+        1: 5, 2: 11, 3: 6, 4: 56, 5: 9, 6: 904, 7: 10, 9: 7,
+        11: 8, 15: 900, 37: 92,
+    },
+    14: {  # Light
+        1: 5, 2: 105, 3: 6, 4: 90, 5: 300, 6: 91, 7: 301, 8: 311,
+        9: 56, 10: 312, 11: 110, 17: 302, 19: 303,
+    },
+}
+
+# A–D screen functions written by the stock IR profile builders. They sit
+# outside the flat catalog key map, including when a position is disabled.
+_IR_SOFTKEY_FUNCTIONS = {
+    2: (39, 20, 210, 100),  # TV
+    3: (39, 802, 116, 100),  # IPTV
+    4: (39, 802, 109, 100),  # Set-top box
+    5: (39, 20, 111, 100),  # DVD
+    6: (90, 89, 70, 100),  # Fan
+    7: (700, 21, 22, 100),  # Projector
+    8: (153, 116, 90, 100),  # Camera
+    10: (70, 56, 90, 100),  # Air purifier
+    11: (39, 27, 28, 100),  # Audio
+    12: (56, 154, 62, 100),  # Water heater
+    13: (900, 56, 92, 100),  # Robot vacuum
+    14: (91, 311, 312, 100),  # Light
+}
+
+
+def _profile(device_type: str) -> int | None:
+    if device_type == "IR_TV":
+        return 2
+    prefix, _, value = device_type.partition("_")
+    if prefix != "IR" or not value.isdecimal():
+        return None
+    number = int(value)
+    if 15 <= number <= 22:
+        return number - 14
+    if 23 <= number <= 27:
+        return number - 13
+    return number
+
+
+def catalog_glyphs(device_type: str) -> dict[int, int]:
+    """IR tag to firmware glyph table for a known stock profile."""
+    return _IR_TAG_FUNCTIONS.get(_profile(device_type), {})
+
+
+def stock_softkey_glyphs(device_type: str) -> tuple[int, ...]:
+    """Firmware glyphs that the stock profile writes at A–D."""
+    return _IR_SOFTKEY_FUNCTIONS.get(_profile(device_type), ())

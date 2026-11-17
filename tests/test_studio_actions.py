@@ -95,6 +95,35 @@ def studio():
 ACTIONS = [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]
 
 
+def test_ir_slot_zero_stays_visible_and_refresh_loads_its_profile(studio):
+    physical = studio.studio_physical
+    remote_id = "01-202610150103-68095715"
+    device_id = bytes.fromhex("01141a0a0f01034409390f")
+    table = [(0, 0x18, physical.c.CTRL_IR, device_id)]
+    remotes = []
+
+    assert asyncio.run(physical._adopt_ir_remotes(None, table, remotes, [])) == 1
+    (remote,) = remotes
+    assert remote["index"] == 0
+    assert remote["name"] == "IR remote (slot 0)"
+    assert remote["ir_profile_pending"]
+    assert physical._drop_absent_remotes(table, remotes) == 0
+    stable_id = remote["remote_id"]
+
+    async def query_ir(ids, _source):
+        assert ids == [remote_id]
+        return [{"code": "AQID", "keyMap": "1:0:3"}]
+
+    cloud = types.SimpleNamespace(get_ir_remotes=query_ir)
+    metadata = [{"remoteID": remote_id, "remoteName": "IR appliance"}]
+    assert asyncio.run(physical._adopt_ir_remotes(cloud, table, remotes, metadata)) == 0
+    assert remotes == [remote]
+    assert remote["remote_id"] == stable_id
+    assert remote["name"] == "IR appliance"
+    assert "ir_profile_pending" not in remote
+    assert bytes.fromhex(remote["physical_packets"][0])[7:9] == b"\x00\x18"
+
+
 def test_bridge_address_only_status_uses_cached_adapter(studio, monkeypatch):
     from switchbot_urc.client import UrcClient
 

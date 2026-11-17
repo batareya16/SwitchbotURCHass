@@ -149,7 +149,10 @@ TAG = {
     "DOWN": 9, "OK": 10, "BACK": 11, "HOME": 12, "KATA": 13, "SOUNDOFF": 14, "VOLADD": 15,
     "VOLDEL": 16, "CHUP": 17, "CHDOWN": 18,
 }
-NATIVE_MAIN_POSITIONS = set(TAG.values()) - {TAG["KATA"]}
+KATA_POSITION = TAG["KATA"]
+KATA_BUTTON_ID = f"p0_k{KATA_POSITION}"
+EDITABLE_MAIN_POSITIONS = tuple(index for index in TAG.values() if index != KATA_POSITION)
+NATIVE_MAIN_POSITIONS = set(EDITABLE_MAIN_POSITIONS)
 
 # URC device-type codes (HID remotes; all go direct-BLE, no hub).
 DEVTYPE = {"APPLE_TV": 0xF0, "FIRE_TV": 0xF1, "UNIVERSAL_BLE": 0xF2, "GOOGLE_TV": 0xF3}
@@ -950,6 +953,8 @@ def build_create(
     v += bytes([0x00, page_index & 0xFF, len(keys) & 0xFF])
     for k in keys:
         key_index = k["keyIndex"] & 0xFF
+        if page_index == 0 and key_index == KATA_POSITION:
+            raise ValueError("KATA is reserved for the Universal Remote")
         key_fun = k.get("keyFun", 0)
         cmd = k.get("cmd")
         if "field32" in k:
@@ -1225,7 +1230,7 @@ def studio_pages_from_packets(packets: tuple[bytes, ...]) -> list[dict]:
         for offset in range(83, len(body), 36):
             record = body[offset:offset + 36]
             # Type 4 records navigate between pages; they are not presses sent to a device.
-            if record[3] == 4:
+            if record[3] == 4 or (page == 0 and record[0] == KATA_POSITION):
                 continue
             index = record[0]
             function = int.from_bytes(record[1:3], "big")
@@ -1291,6 +1296,7 @@ def build_ir_pages(
     pages: list[bytes] = []
     for page_index, first in enumerate(range(0, len(key_map), 18)):
         page_keys = key_map[first:first + 18]
+        positions = EDITABLE_MAIN_POSITIONS if page_index == 0 else range(18)
         body = bytearray(
             bytes([
                 remote_index & 0xFF,
@@ -1303,7 +1309,7 @@ def build_ir_pages(
             + bytes(name_bytes)
             + bytes([0, page_index & 0xFF, len(page_keys) & 0xFF])
         )
-        for key_index, (key_fun, offset, length) in enumerate(page_keys):
+        for key_index, (key_fun, offset, length) in zip(positions, page_keys):
             if not 0 <= key_fun <= 0xFFFF:
                 raise ValueError("IR key function must fit in two bytes")
             if not 0 <= offset <= 0xFFFFFFFF or not 0 < length <= 0xFFFF:
@@ -1446,7 +1452,10 @@ def build_remote(
         )[0]
     if key in DEVTYPE:
         names = buttons or ["ON", "OFF", "UP", "DOWN", "OK"]
-        keys = [{"keyIndex": TAG[n], "keyFun": TAG[n]} for n in names if n in TAG]
+        keys = [
+            {"keyIndex": TAG[name], "keyFun": TAG[name]}
+            for name in names if name in TAG and name != "KATA"
+        ]
         return build_create(
             remote_index=remote_index, device_type=DEVTYPE[key],
             control_type=CTRL_HID, control_mode=control_mode, icon=icon,

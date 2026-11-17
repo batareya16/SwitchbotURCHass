@@ -1,5 +1,7 @@
 """Recreating an edited IR/HID tile must preserve its physical buttons and type."""
 
+import pytest
+
 from conftest import INTEGRATION, load
 
 
@@ -38,6 +40,36 @@ def test_default_hid_button_layout_writes_the_profile_commands():
             assert records[c.TAG["A"]] == bytes.fromhex("083706")
         if device_type == "GOOGLE_TV":
             assert all(c.TAG[key] not in records for key in "ABCD")
+
+
+def test_generic_ir_keeps_every_command_and_reserves_kata_only_on_main():
+    keys = [(index + 1, index, 1) for index in range(90)]
+    pages = c.build_ir_pages(
+        remote_index=0, device_type=2, remote_id=bytes(11), name="TV", key_map=keys,
+    )
+    assert len(pages) == 5
+    assert sum(packet[89] for packet in pages) == len(keys)
+    assert c.KATA_POSITION not in pages[0][90::36]
+    assert c.KATA_POSITION in pages[1][90::36]
+    assert [int.from_bytes(packet[pos + 4:pos + 8], "big")
+            for packet in pages for pos in range(90, len(packet), 36)] == list(range(90))
+
+
+@pytest.mark.parametrize("kind,device_type", [("hid", "UNIVERSAL_BLE"), ("ir", "IR_2")])
+def test_kata_is_hidden_from_saved_layouts_and_rejected_on_new_writes(kind, device_type):
+    regular_key = {"index": 4, "transport": "ir", "code_hex": "01"}
+    reserved_key = {**regular_key, "index": c.KATA_POSITION}
+    layout = {"kind": kind, "pages": [{"index": 0, "buttons": [regular_key, reserved_key]}]}
+    remote = {"device_type": device_type, "device_id": "001122334455", "physical_layout": layout}
+    if kind == "ir":
+        packets = c.build_ir_pages(
+            remote_index=0, device_type=2, remote_id=c.id_to_bytes(remote["device_id"]),
+            name="TV", key_map=[(5, 0, 1)],
+        )
+        remote["physical_packets"] = [packet.hex() for packet in packets]
+    assert physical.draft_for(remote)["pages"][0]["buttons"] == [regular_key]
+    with pytest.raises(ValueError, match="KATA is reserved"):
+        physical.validate(remote, layout)
 
 
 def test_ir_recreate_rewrites_saved_pages_and_uploads_custom_ir_code():

@@ -530,7 +530,8 @@ class UrcOptionsFlow(OptionsFlow):
         saved = binding.get("button_actions", {})
         if isinstance(saved, dict):
             for button_id in saved:
-                choices.setdefault(str(button_id), f"Saved button · {button_id}")
+                if button_id not in ("KATA", commands.KATA_BUTTON_ID):
+                    choices.setdefault(str(button_id), f"Saved button · {button_id}")
         return choices
 
     @staticmethod
@@ -1154,9 +1155,11 @@ class UrcOptionsFlow(OptionsFlow):
                             "device_id", item["device_id_bytes"][:6][::-1].hex()
                         )
                     )): str,
-                    vol.Required("buttons", default=(user_input or {}).get(
-                        "buttons", managed.get("buttons", DEFAULT_BUTTONS)
-                    )): cv.multi_select({name: name for name in buttons_for("UNIVERSAL_BLE")}),
+                    vol.Required("buttons", default=[
+                        name for name in (user_input or {}).get(
+                            "buttons", managed.get("buttons", DEFAULT_BUTTONS)
+                        ) if name != "KATA"
+                    ]): cv.multi_select({name: name for name in buttons_for("UNIVERSAL_BLE")}),
                     vol.Required("confirm", default=(user_input or {}).get(
                         "confirm", False
                     )): cv.boolean,

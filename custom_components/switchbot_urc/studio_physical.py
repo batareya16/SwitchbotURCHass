@@ -197,8 +197,7 @@ async def ws_physical_import(hass, connection, msg):
             remote["physical_layout"] = physical.validate(remote, physical.hid_draft_from_cloud(native_type, record["buttonList"]))
             remotes.append(remote)
             imported += 1
-        if cloud:
-            imported += await _adopt_ir_remotes(cloud, table, remotes)
+        imported += await _adopt_ir_remotes(cloud, table, remotes, metadata)
         imported += _adopt_native_remotes(table, remotes, metadata)
         appearance_error = await _refresh_native_appearances(client, table, remotes)
         dropped = _drop_absent_remotes(table, remotes)
@@ -258,38 +257,47 @@ async def _refresh_native_appearances(client, table, remotes):
         }
 
 
-async def _adopt_ir_remotes(cloud, table, remotes) -> int:
-    """Record IR remotes that already live on the device, without rewriting any of them.
-
-    An IR remote created in the SwitchBot app exists in the device table, but the integration
-    has no idea what its buttons do, so Remote Studio cannot show it. The account does know:
-    `queryIrRemote` returns the same code bank and key map the app installed. Rebuilding the
-    profile from that gives Studio a layout to display, and nothing is written to the remote.
-    """
-    known = {
-        c.id_to_bytes(item["device_id"]) for item in remotes if item.get("device_id")
-    }
-    pending = [
-        (slot, device_id) for slot, _type, control, device_id in table
-        if control == c.CTRL_IR and device_id not in known
-    ]
-    if not pending:
-        return 0
-    try:
-        catalogue = cloud_items(await cloud.get_bindable_devices())
-    except Exception as err:  # noqa: BLE001 - the physical import above already succeeded
-        _LOGGER.warning("could not list cloud remotes while importing IR layouts: %s", err)
-        return 0
-
-    adopted = 0
-    for slot, device_id in pending:
-        metadata = next(
-            (item for item in catalogue if cloud_item_id(item) == device_id), None
-        )
-        if not metadata or not metadata.get("remoteID"):
-            _LOGGER.info("IR remote in slot %s has no saved cloud record; skipping", slot)
+async def _adopt_ir_remotes(cloud, table, remotes, catalogue) -> int:
+    """List installed IR remotes and load editable profiles where the account has them."""
+    known = {}
+    for item in remotes:
+        if not str(item.get("device_type", "")).upper().startswith("IR_"):
             continue
-        remote_id = str(metadata["remoteID"])
+        try:
+            known[c.id_to_bytes(item["device_id"])] = item
+        except (KeyError, TypeError, ValueError):
+            continue
+    metadata_by_id = {cloud_item_id(item): item for item in catalogue}
+    adopted = 0
+    for slot, device_type, control, device_id in table:
+        if control != c.CTRL_IR:
+            continue
+        metadata = metadata_by_id.get(device_id, {})
+        remote_id = str(metadata.get("remoteID") or "")
+        record = known.get(device_id)
+        if record is None:
+            record = {
+                "name": str(metadata.get("remoteName") or f"IR remote (slot {slot})"),
+                "device_type": f"IR_{device_type}",
+                "icon": "tv" if device_type == 2 else "light",
+                "device_id": device_id.hex(),
+                "remote_id": remote_id or device_id.hex(),
+                "buttons": [],
+                "ir_profile_pending": True,
+            }
+            remotes.append(record)
+            known[device_id] = record
+            adopted += 1
+        elif record.get("ir_profile_pending") and (
+            record["name"] == f"IR remote (slot {record.get('index')})"
+        ):
+            record["name"] = str(metadata.get("remoteName") or f"IR remote (slot {slot})")
+        record["index"] = slot
+        if not record.get("ir_profile_pending"):
+            continue
+        if not cloud or not remote_id:
+            continue
+        name = str(metadata.get("remoteName") or record["name"])
         try:
             payload = await cloud.get_ir_remotes(
                 [remote_id], str(metadata.get("createFrom") or "hub")
@@ -298,36 +306,30 @@ async def _adopt_ir_remotes(cloud, table, remotes) -> int:
             if not records:
                 raise ValueError("queryIrRemote returned no record")
             profile = profile_from_cloud(
-                records[0], remote_id=remote_id,
-                name=str(metadata.get("remoteName") or remote_id), metadata=metadata,
+                records[0], remote_id=remote_id, name=name,
+                remote_type=device_type, metadata=metadata,
             )
+            pages = c.build_ir_pages(
+                remote_index=slot, device_type=profile.device_type,
+                remote_id=profile.remote_id, name=name,
+                key_map=list(profile.key_map), icon=profile.icon,
+            )
+            studio_pages = c.studio_pages_from_packets(tuple(pages))
         except Exception as err:  # noqa: BLE001 - one unreadable remote must not stop the rest
             _LOGGER.warning("could not rebuild IR remote in slot %s: %s", slot, err)
             continue
-        name = str(metadata.get("remoteName") or f"IR remote {slot}")
-        # Rebuild only the page packets. They describe the button layout and are what Studio
-        # renders; the surrounding transfer/sync stages of a real install are not run here, and
-        # nothing is sent to the remote.
-        pages = c.build_ir_pages(
-            remote_index=slot, device_type=profile.device_type,
-            remote_id=profile.remote_id, name=name,
-            key_map=list(profile.key_map), icon=profile.icon,
-        )
-        remotes.append({
-            "index": slot,
+        record.update({
             "name": name,
             "device_type": f"IR_{profile.device_type}",
             "icon": "tv" if profile.device_type == 2 else "light",
-            "device_id": profile.remote_id.hex(),
-            "remote_id": profile.remote_id_text or profile.remote_id.hex(),
-            "studio_pages": c.studio_pages_from_packets(tuple(pages)),
+            "studio_pages": studio_pages,
             "physical_packets": [packet.hex() for packet in pages],
             "ir_code_bank": profile.code_bank.hex(),
             "buttons": [],
             "profile": profile.key,
             "imported_from_cloud": True,
         })
-        adopted += 1
+        record.pop("ir_profile_pending")
     return adopted
 
 

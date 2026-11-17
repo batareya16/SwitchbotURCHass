@@ -1,5 +1,4 @@
 """Bridge reception, address persistence, and raw HCI management tests."""
-import inspect
 import os
 import json
 import sys
@@ -31,11 +30,6 @@ def test_startup_preserves_the_same_saved_pool_through_a_restart(bridge, tmp_pat
     path = tmp_path / "addresses.json"
     monkeypatch.setattr(bridge, "_ADDRESS_STORE", path)
     monkeypatch.setattr(bridge.signal, "signal", lambda *_: None)
-    # CI also runs against a pinned older checkout of the separate add-on repository.
-    legacy_args = ()
-    if "key" in inspect.signature(bridge.run_multi_address).parameters:
-        monkeypatch.setattr(bridge.NativeSessionHistory, "load", lambda *_: None)
-        legacy_args = (bytes(16),)
     radio = bridge.hci_multi
     own = "8A:88:1B:E0:1F:92"
     manual = "DA:71:16:E0:1F:93"
@@ -72,7 +66,7 @@ def test_startup_preserves_the_same_saved_pool_through_a_restart(bridge, tmp_pat
     def start(configured):
         broker = Broker()
         with pytest.raises(StartupComplete):
-            bridge.run_multi_address(adapter[0], configured, *legacy_args, broker, "")
+            bridge.run_multi_address(adapter[0], configured, broker, "")
         return broker.serving
 
     first = start([manual])
@@ -111,11 +105,7 @@ PRESS = bytes.fromhex("57f00306bb30e0eb030008012c")
 def test_open_press_is_acknowledged_before_mqtt_and_deduplicated(bridge, monkeypatch):
     events = []
     monkeypatch.setattr(bridge.time, "monotonic", lambda: 100.0)
-    # The CI pin still has the old constructor. The wire format is the same.
-    legacy_args = (bytes(16),) if "key" in inspect.signature(
-        bridge.SwitchBotDevice).parameters else ()
     device = bridge.SwitchBotDevice(
-        *legacy_args,
         lambda ack: events.append(ack),
         lambda label, raw, remote_id, slot: events.append((label, raw, remote_id, slot)),
     )

@@ -154,6 +154,26 @@ test('IR softkeys use the recorded glyph including a menu link, with empty keys 
   assert.doesNotMatch(softkeys, /keyfun-0000\.png/);
 });
 
+test('an imported TV shows the stock softkeys and translates catalog tags inside menus', () => {
+  const instance = panel();
+  instance._remote = () => ({
+    remote_id: 'tv', device_type: 'IR_2', pages: [],
+    ir_screen_preview: {softkeys: [39, 20, 210, 100], catalog_glyphs: {40: 22}},
+  });
+  instance._physical = {kind: 'ir', pages: [
+    {index: 0, buttons: [{index: 2, transport: 'stored', function: 40}]},
+    {index: 1, buttons: [{index: 0, transport: 'stored', function: 40}]},
+  ]};
+  const page = instance._page();
+  const softkeys = instance._renderFace(page)
+    .split('class="screen-softkeys"')[1].split('translate(0 -23)')[0];
+  const glyphs = [...softkeys.matchAll(/keyfun-([\da-f]+)\.png/g)].map((match) => match[1]);
+  assert.deepEqual(glyphs, ['0027', '0014', '00d2', '0064']);
+  const submenu = instance._renderScreen(page);
+  assert.match(submenu, /keyfun-0016\.png/);
+  assert.doesNotMatch(submenu, /keyfun-0028\.png/);
+});
+
 test('adding the first row selects its editor and gives it a new physical identity', () => {
   const instance = panel();
   instance._physical.pages[1].buttons = [];
@@ -238,6 +258,20 @@ test('a Native key outside the stock layout can get HA actions while KATA stays 
   assert.equal(instance._mode, 'actions');
   assert.doesNotMatch(instance._renderKeyEditor(instance._button()), /On the remote|This key sends/);
   assert.equal(instance._nativeProfileConflicts(instance._nativeProfile()).length, 0);
+});
+
+test('KATA cannot be selected on HID or IR remotes even with an old command', () => {
+  for (const kind of ['hid', 'ir']) {
+    const instance = panel();
+    instance._physical.kind = kind;
+    instance._physical.pages[0].buttons.push({index: 13, function: 5});
+    instance._pageIndex = 0;
+    instance._buttonId = 'p0_k13';
+    assert.equal(instance._button(), null);
+    const html = instance._key({KATA: {button_id: 'p0_k13'}}, 'KATA', '');
+    assert.match(html, /Reserved for the Universal Remote/);
+    assert.doesNotMatch(html, /data-button|role="button"/);
+  }
 });
 
 
@@ -379,7 +413,7 @@ test('capacity shows one available/total count for each remote type', () => {
     hid: {available: 2, total: 3},
   }};
   assert.match(instance._renderRemoteCapacity(), /IR remotes available <b>7\/10/);
-  assert.match(instance._renderRemoteCapacity(), /Native remotes available <b>1\/4/);
+  assert.match(instance._renderRemoteCapacity(), /Bridge remotes available <b>1\/4/);
   assert.match(instance._renderRemoteCapacity(), /HID remotes available <b>2\/3/);
   assert.doesNotMatch(instance._renderRemoteCapacity(), /Check availability/);
 
@@ -395,7 +429,7 @@ test('a full category blocks only that type and leaves IR replacement available'
     native: {available: 0, total: 4},
     hid: {available: 1, total: 3},
   }};
-  assert.match(instance._installCapacityError({kind: 'native'}), /No more Native remotes/);
+  assert.match(instance._installCapacityError({kind: 'native'}), /No more Bridge remotes/);
   assert.equal(instance._installCapacityError({kind: 'hid'}), '');
   assert.match(instance._installCapacityError({kind: 'cloud'}), /replace/);
   assert.equal(instance._installCapacityError({kind: 'cloud', replace: true}), '');

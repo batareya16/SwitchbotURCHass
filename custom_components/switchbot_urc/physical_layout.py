@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from . import commands as c
+from .ir_glyphs import catalog_glyphs, stock_softkey_glyphs
 
 
 def _validate_glyph(glyph):
@@ -18,6 +19,30 @@ def source_packets(remote: dict) -> list[bytes]:
     if remote.get("physical_packets"):
         return [bytes.fromhex(value) for value in remote["physical_packets"]]
     return []
+
+
+def ir_screen_preview(remote: dict) -> dict | None:
+    """Use stock glyphs for reconstructed cloud layouts and wire glyphs for saved layouts."""
+    device_type = str(remote.get("device_type", "")).upper()
+    if not device_type.startswith("IR_"):
+        return None
+    if remote.get("imported_from_cloud") and not remote.get("physical_layout"):
+        return {
+            "catalog_glyphs": catalog_glyphs(device_type),
+            "softkeys": stock_softkey_glyphs(device_type),
+        }
+    try:
+        for packet in source_packets(remote):
+            c.rewrite_ir_page(packet, remote_index=packet[7], name="")
+            if packet[88] == 0:
+                return {"disabled_softkeys": {
+                    packet[start]: int.from_bytes(packet[start + 1:start + 3], "big")
+                    for start in range(90, len(packet), 36)
+                    if packet[start] < 4 and packet[start + 3] == 0xFE
+                }}
+    except (IndexError, TypeError, ValueError):
+        pass
+    return None
 
 
 def _ir_menu_link_records(packets: list[bytes]) -> list[bytes]:
@@ -237,6 +262,8 @@ def hid_draft_from_cloud(device_type: str, items: list[dict]) -> dict:
         return {"index": index, "transport": "hid", "function": hid_usage(source_type, positions.get(index if usage_position is None else usage_position, ""))}
     for item in items:
         index = int(item["index"])
+        if index == c.KATA_POSITION:
+            continue
         if item.get("type") == "list":
             if not 0 <= index <= 3:
                 raise ValueError("Only A–D can open HID pages")
@@ -249,6 +276,11 @@ def hid_draft_from_cloud(device_type: str, items: list[dict]) -> dict:
 def draft_for(remote: dict) -> dict:
     if remote.get("physical_layout"):
         draft = deepcopy(remote["physical_layout"])
+        for page in draft["pages"]:
+            if page["index"] == 0:
+                page["buttons"] = [
+                    key for key in page["buttons"] if key["index"] != c.KATA_POSITION
+                ]
         if draft.get("kind") == "native":
             device_type = str(remote.get("device_type", "")).upper()
             stored_template = (remote.get("custom_layout") or {}).get("template")
@@ -266,11 +298,12 @@ def draft_for(remote: dict) -> dict:
     if device_type in c.DEVTYPE:
         return {"kind": "hid", "pages": [{"index": 0, "buttons": [
             {"index": c.TAG[name], "transport": "hid", "function": hid_usage(device_type, name)}
-            for name in remote.get("buttons", []) if name in c.TAG
+            for name in remote.get("buttons", []) if name in c.TAG and name != "KATA"
         ]}]}
     if device_type in c.NATIVE_DEVTYPE:
         layout = remote.get("custom_layout") or c.editable_layout_from_native_profile(device_type)
         main = c.normalize_main_buttons(layout.get("main_buttons", {}))
+        main.pop("KATA", None)
         template = str(layout.get("template") or c.NATIVE_PROFILE_ALIASES.get(device_type, "FAN"))
         template = c.NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
         draft = {"kind": "native", "template": template,
@@ -301,7 +334,7 @@ def draft_for(remote: dict) -> dict:
         buttons = []
         for offset in range(83, len(body), 36):
             record = body[offset:offset + 36]
-            if record[3] in (4, 254):
+            if record[3] in (4, 254) or (body[81] == 0 and record[0] == c.KATA_POSITION):
                 continue
             buttons.append({"index": record[0], "function": int.from_bytes(record[1:3], "big"),
                             "transport": "stored", "record": record.hex()})
@@ -395,7 +428,7 @@ def validate(remote: dict, draft: dict) -> dict:
             index = key.get("index")
             if type(index) is not int or not 0 <= index <= (18 if number == 0 else limit - 1) or index in seen:
                 raise ValueError("Button positions must be unique and within the page")
-            if expected == "native" and number == 0 and index not in c.NATIVE_MAIN_POSITIONS:
+            if number == 0 and index == c.KATA_POSITION:
                 raise ValueError("KATA is reserved for the Universal Remote")
             seen.add(index)
             if "title" in key:
