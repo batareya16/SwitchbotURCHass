@@ -83,6 +83,8 @@ class UrcClient:
         bridge_pause_cb: BridgeControlCallback | None = None,
         bridge_resume_cb: BridgeControlCallback | None = None,
         management_proxy_cb: ManagementProxyCallback | None = None,
+        *,
+        local_adapter_addresses: dict[str, str | None] | None = None,
     ) -> None:
         devices = list(device) if isinstance(device, list) else [device]
         if not devices:
@@ -97,6 +99,7 @@ class UrcClient:
         self._excluded_adapters: set[str] = set()
         self._excluded_addresses: set[str] = set()
         self._preferred_adapter: str | None = None
+        self._local_adapter_addresses = dict(local_adapter_addresses or {})
         # When set, every management connection is pinned to this controller regardless of the
         # route's own adapter. The WoRWS remote only completes its get-random handshake on the
         # controller it is bound to (the add-on's adapter), which the add-on frees during a pause.
@@ -145,10 +148,13 @@ class UrcClient:
         for device in self._devices:
             route_adapter = (self._bluez_adapter(device) or "").lower()
             # Match on the adapter name when it resolves; otherwise fall back to the controller
-            # address via sysfs. Either signal alone is enough to drop the bridge route.
+            # address. Either signal alone is enough to drop the bridge route.
             matches = bool(adapter and route_adapter == adapter)
             if not matches and len(compact_address) == 12:
-                matches = self.bluez_adapter_address(device) == compact_address
+                matches = (
+                    self.bluez_adapter_address(device, self._local_adapter_addresses)
+                    == compact_address
+                )
             if matches:
                 removed.append(device)
             else:
@@ -189,7 +195,11 @@ class UrcClient:
             [self._bluez_adapter(device) for device in self._devices],
         )
 
-    def prefer_adapter(self, adapter: str, address: str = "") -> None:
+    def set_local_adapter_addresses(self, addresses: dict[str, str | None]) -> None:
+        """Replace the controller snapshot with addresses read in the executor."""
+        self._local_adapter_addresses = dict(addresses)
+
+    def prefer_adapter(self, adapter: str, address: str = "") -> bool:
         """Pin management to the add-on's controller (where the remote is bound).
 
         This replaces exclusion for the fake-hub topology: the WoRWS remote only answers the
@@ -203,7 +213,7 @@ class UrcClient:
         if not adapter and len(compact_address) == 12:
             adapter = self._adapter_for_address(compact_address) or ""
         if not adapter:
-            return
+            return False
         # A pinned route is reachable, so clear any earlier exclusion state that would block it.
         self._excluded_adapters.clear()
         self._excluded_addresses.clear()
@@ -216,14 +226,15 @@ class UrcClient:
             adapter,
             address or "unknown",
         )
+        return True
 
-    @classmethod
-    def _adapter_for_address(cls, compact_address: str) -> str | None:
-        """Resolve a controller address to its ``hciX`` index via sysfs."""
-        for name in cls._list_local_adapters():
-            if cls._adapter_sysfs_address(name) == compact_address:
-                return name
-        return None
+    def _adapter_for_address(self, compact_address: str) -> str | None:
+        """Resolve a controller address using the current snapshot."""
+        return next(
+            (name for name, address in self._local_adapter_addresses.items()
+             if address == compact_address),
+            None,
+        )
 
     @asynccontextmanager
     async def _management_window(self):
@@ -276,17 +287,16 @@ class UrcClient:
         return adapter if adapter.startswith("hci") else None
 
     @classmethod
-    def bluez_adapter_address(cls, device: BLEDevice) -> str | None:
-        """Resolve an adapter-specific BLE route to the controller's public address.
+    def bluez_adapter_address(
+        cls, device: BLEDevice, adapter_addresses: dict[str, str | None],
+    ) -> str | None:
+        """Resolve a BlueZ route to a controller address from the setup snapshot."""
+        return adapter_addresses.get(cls._bluez_adapter(device) or "")
 
-        Home Assistant's local BlueZ scanner may expose ``source='hci1'`` instead of the
-        controller MAC.  The BLEDevice still carries ``/org/bluez/hci1``; Linux sysfs is the
-        authoritative link from that index to the controller address.
-        """
-        adapter = cls._bluez_adapter(device)
-        if adapter is None:
-            return None
-        return cls._adapter_sysfs_address(adapter)
+    @classmethod
+    def read_local_adapter_addresses(cls) -> dict[str, str | None]:
+        """Read the local controllers in index order. Run this in the executor."""
+        return {name: cls._adapter_sysfs_address(name) for name in cls._list_local_adapters()}
 
     @staticmethod
     def _adapter_sysfs_address(adapter: str) -> str | None:
@@ -318,10 +328,9 @@ class UrcClient:
         direct scan must then target this controller instead of the BlueZ default, which may be
         the excluded bridge adapter.
         """
-        for name in self._list_local_adapters():
+        for name, address in self._local_adapter_addresses.items():
             if name in self._excluded_adapters:
                 continue
-            address = self._adapter_sysfs_address(name)
             if address and address in self._excluded_addresses:
                 continue
             self._preferred_adapter = name
@@ -340,7 +349,7 @@ class UrcClient:
         adapter = (self._bluez_adapter(device) or "").lower()
         if not adapter or adapter in self._excluded_adapters:
             return False
-        address = self._adapter_sysfs_address(adapter)
+        address = self._local_adapter_addresses.get(adapter)
         return not (address and address in self._excluded_addresses)
 
     async def _fresh_direct_device(self) -> tuple[BLEDevice, str | None]:

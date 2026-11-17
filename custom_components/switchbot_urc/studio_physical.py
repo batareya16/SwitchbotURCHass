@@ -411,15 +411,18 @@ async def ws_physical_table(hass, connection, msg):
     ], vol.Optional("identity_removals", default=[]): [str]})
 @websocket_api.async_response
 async def ws_physical_apply(hass, connection, msg):
+    from .studio_remotes import remote_management_lock
+
     store = hass.data.setdefault(DOMAIN, {})
-    lock = store.setdefault("_physical_locks", {}).setdefault(msg["entry_id"], asyncio.Lock())
-    async with lock:
+    async with remote_management_lock(hass):
         stage = "validate"
         mutated = False
         try:
             entry, remote = resolve(hass, msg)
             identity = msg["remote_id"]
-            draft = physical.validate(remote, msg["layout"])
+            draft = await hass.async_add_executor_job(
+                physical.validate, remote, msg["layout"]
+            )
             previous_layout = physical.draft_for(remote)
             current_binding = next((item for item in entry.options.get("bindings", [])
                                     if isinstance(item, dict)
@@ -461,7 +464,9 @@ async def ws_physical_apply(hass, connection, msg):
             expected_control = {"hid": c.CTRL_HID, "ir": c.CTRL_IR, "native": c.CTRL_NATIVE}[draft["kind"]]
             if control_type != expected_control:
                 raise ValueError("The physical remote type differs from the cached profile")
-            uploads, pages = physical.compile_pages(remote, draft, slot)
+            uploads, pages = await hass.async_add_executor_job(
+                physical.compile_pages, remote, draft, slot
+            )
             stored_changes = {}
             verify_appearance = False
             if draft["kind"] == "native":
@@ -598,9 +603,9 @@ async def ws_physical_apply(hass, connection, msg):
 })
 @websocket_api.async_response
 async def ws_rename_menu_item(hass, connection, msg):
-    store = hass.data.setdefault(DOMAIN, {})
-    lock = store.setdefault("_physical_locks", {}).setdefault(msg["entry_id"], asyncio.Lock())
-    async with lock:
+    from .studio_remotes import remote_management_lock
+
+    async with remote_management_lock(hass):
         try:
             entry, remote = resolve(hass, msg)
             draft = physical.draft_for(remote)

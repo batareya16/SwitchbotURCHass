@@ -2,17 +2,19 @@
 
 Use your SwitchBot Universal Remote (WoRWS) to control lights, start a robot vacuum, run scripts, or launch scenes in Home Assistant. **Remote Studio** lets you set this up by clicking buttons on a preview of the remote. You can also manage infrared and Bluetooth remotes from the same screen.
 
-<img width="2800" height="3422" alt="Eingesetzt 16  11  2026, um 19 59 04" src="https://github.com/user-attachments/assets/b1b0f17c-04f7-4259-aac4-de6c5ecbd2ed" />
+![Remote Studio in Home Assistant](https://github.com/user-attachments/assets/b1b0f17c-04f7-4259-aac4-de6c5ecbd2ed)
 
 ## Which kind of remote do I need?
 
 | In Remote Studio | Use it for | What you need |
 | --- | --- | --- |
-| **Bridge remote** | Home Assistant lights, scenes, scripts and automations | The Bridge app, a dedicated Bluetooth dongle and MQTT |
+| **Bridge remote** | Home Assistant lights, scenes, scripts and automations | [SwitchBot URC Bridge](https://github.com/batareya16/switchbot-urc-addon) (add-on), a dedicated Bluetooth dongle and MQTT |
 | **IR from the catalog** or **IR saved in your account** | TVs, audio equipment and other infrared appliances | A SwitchBot account to download the codes |
 | **HID remote** | A TV, streaming box or computer that accepts a Bluetooth remote or keyboard | Bluetooth pairing with the TV, box or computer |
 
 One physical WoRWS can hold remotes of all three kinds. IR and HID send commands directly to the appliance. You can use both without a Bridge dongle or a SwitchBot Hub.
+
+**SwitchBot URC Bridge** is a Home Assistant add-on that runs in the background and passes button presses from the physical remote to Home Assistant. Install it once from **Settings → Apps** if you want to use Bridge remotes. You don't need a phone app for this step.
 
 ## Before you buy a dongle
 
@@ -20,7 +22,7 @@ For **Bridge remotes**, use **Home Assistant OS** and separate Bluetooth adapter
 
 **Buy a Linux-compatible Bluetooth 5.0 or newer dongle with BLE peripheral mode and connectable LE Extended Advertising.** Look for **LE Extended Advertising** in the adapter or chipset specs, or ask the seller to confirm it. The Bluetooth version on the box alone does not guarantee this feature. An adapter that can scan for Bluetooth devices can still lack the advertising support the Bridge needs. [Bluetooth LE features](https://www.bluetooth.com/bluetooth-le-primer/)
 
-If you want several Bridge remotes, look for a dongle that can run several **connectable advertising sets** at the same time. One compatible dongle can serve several remotes. After installation, **Native remotes available** in Studio shows how many more you can add with your setup.
+If you want several Bridge remotes, look for a dongle that can run several **connectable advertising sets** at the same time. One compatible dongle can serve several remotes. After installation, **Bridge remotes available** in Studio shows how many more you can add with your setup.
 
 ## Install
 
@@ -41,7 +43,7 @@ Download the repository, copy its `custom_components/switchbot_urc` folder into 
 
 </details>
 
-### 2. Install the Bridge for Home Assistant button actions
+### 2. Install SwitchBot URC Bridge
 
 1. Install and start the official **Mosquitto broker** app in Home Assistant. Open **Settings → Devices & services** and set up the discovered **MQTT** integration. [Home Assistant MQTT setup](https://www.home-assistant.io/integrations/mqtt/)
 2. Plug in the dedicated dongle. In **Settings → Connectivity → Bluetooth → Adapters**, find its Linux adapter name, such as `hci0` or `hci1`, and disable **Home Assistant's use of that adapter**. Leave your regular Bluetooth adapter enabled and the Bridge dongle plugged in. [Finding your Bluetooth adapters](https://www.home-assistant.io/connectivity/bluetooth/#viewing-your-bluetooth-adapters-and-proxies)
@@ -83,7 +85,7 @@ Choose **Refresh** in Studio while the Universal Remote is awake and nearby. Stu
 | --- | --- |
 | **Remote Studio** is missing | Restart Home Assistant after installing the integration, then open it with an administrator account. |
 | The Bridge reports **no extended advertising support** | Confirm `adapter` points to the spare dongle. If it does, that controller cannot run the Bridge. |
-| **Bridge remote** is unavailable | Check that Mosquitto, the MQTT integration and the Bridge app are running. Reopen **Add a remote** to refresh availability. |
+| **Bridge remote** is unavailable | Check that Mosquitto is running, the MQTT integration is set up and **SwitchBot URC Bridge** is running under **Settings → Apps**. Reopen **Add a remote** to refresh availability. |
 | **Test saved mapping** works, but the physical button does nothing | Open the matching remote on the WoRWS, move closer to the Bridge and check that Home Assistant has released the dedicated dongle for the Bridge. |
 | Studio can't read or write the Universal Remote | Wake it, bring it closer and close the SwitchBot app if it is connected to the remote. If Studio reports an invalid communication key, open **SwitchBot account → Fetch a fresh key**. |
 | The IR catalog or saved remotes are missing | Sign in under the integration's **Configure → SwitchBot cloud account**. The saved list only appears if the account has saved IR remotes. |

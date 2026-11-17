@@ -27,6 +27,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from . import commands
 from . import targets
+from .addressing import is_valid as is_bluetooth_address
 from .bindings import (
     ACTION_BRIGHTER,
     ACTION_COOLER,
@@ -136,6 +137,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     key = bytes.fromhex(entry.data[CONF_KEY])
     key_id = int(entry.data[CONF_KEY_ID], 16)
 
+    local_adapter_addresses = await hass.async_add_executor_job(
+        UrcClient.read_local_adapter_addresses
+    )
     scanner_devices = bluetooth.async_scanner_devices_by_address(
         hass, address.upper(), connectable=True
     )
@@ -169,8 +173,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 char for char in scanner_identity.lower()
                 if char in "0123456789abcdef"
             )
-            adapter_address = await hass.async_add_executor_job(
-                UrcClient.bluez_adapter_address, candidate.ble_device
+            adapter_address = UrcClient.bluez_adapter_address(
+                candidate.ble_device, local_adapter_addresses
             )
             if compact_bridge in compact_identity or adapter_address == compact_bridge:
                 _LOGGER.warning(
@@ -261,13 +265,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         management_proxy_cb=lambda addr, k, kid, steps: _run_addon_management(
             hass, addr, k, kid, steps
         ),
+        local_adapter_addresses=local_adapter_addresses,
     )
-    if bridge_identity := hass.data.setdefault(DOMAIN, {}).get("_bridge_identity"):
-        client.prefer_adapter(
-            str(bridge_identity.get("adapter", "")),
-            str(bridge_identity.get("adapter_address", "")),
-        )
-
     def _on_notify(source_uuid: str, raw: bytes, plaintext: bytes) -> None:
         if source_uuid.lower() == CHAR_NOTIFY:
             hass.bus.async_fire(
@@ -290,7 +289,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # is starting. A mandatory startup handshake made the entire integration unavailable in those
     # normal states and left its options flow without a client. Register the lazy client now;
     # query/mutation methods establish and release their own fresh connection when actually used.
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"client": client, "address": address}
+    store = hass.data.setdefault(DOMAIN, {})
+    store[entry.entry_id] = {"client": client, "address": address}
+    _prefer_bridge_adapter(hass, store)
     await async_register_studio(hass)
     _register_services(hass)
     await _subscribe_bridge_mqtt(hass)
@@ -611,10 +612,51 @@ async def _run_addon_management(
         waiters.pop(request_id, None)
 
 
+def _bridge_clients(store):
+    for record in store.values():
+        if isinstance(record, dict) and isinstance(client := record.get("client"), UrcClient):
+            yield client
+
+
+async def _refresh_bridge_adapter_addresses(hass: HomeAssistant, store) -> None:
+    addresses = await hass.async_add_executor_job(UrcClient.read_local_adapter_addresses)
+    identity = store.get("_bridge_identity", {})
+    for client in _bridge_clients(store):
+        client.set_local_adapter_addresses(addresses)
+        if not identity.get("adapter"):
+            client.prefer_adapter("", identity.get("adapter_address", ""))
+
+
+def _prefer_bridge_adapter(hass: HomeAssistant, store) -> None:
+    identity = store.get("_bridge_identity")
+    if not identity:
+        return
+    adapter = identity["adapter"]
+    address = identity["adapter_address"]
+    unresolved = False
+    for client in _bridge_clients(store):
+        if not client.prefer_adapter(adapter, address):
+            unresolved = True
+    if not unresolved or adapter.strip() or not is_bluetooth_address(address):
+        return
+    task = store.get("_bridge_adapter_refresh")
+    if task is not None and not task.done():
+        return
+    # Coalesce bursts for a missing controller while allowing a later report to retry.
+    now = asyncio.get_running_loop().time()
+    last_address, last_attempt = store.get("_bridge_adapter_refresh_attempt", ("", 0.0))
+    if last_address == address and now - last_attempt < 5:
+        return
+    store["_bridge_adapter_refresh_attempt"] = (address, now)
+    store["_bridge_adapter_refresh"] = hass.async_create_task(
+        _refresh_bridge_adapter_addresses(hass, store)
+    )
+
+
 def _apply_bridge_identity(hass: HomeAssistant, data: dict[str, object]) -> None:
-    """Persist add-on controller identity and remove it from every live BLE client."""
-    adapter = str(data.get("adapter", ""))
-    address = str(data.get("adapter_address", ""))
+    """Save the add-on controller identity and pass it to every live BLE client."""
+    adapter = str(data.get("adapter") or "").strip()
+    address = str(data.get("adapter_address") or "").strip().upper()
     if not adapter and not address:
         return
     store = hass.data[DOMAIN]
@@ -644,14 +686,7 @@ def _apply_bridge_identity(hass: HomeAssistant, data: dict[str, object]) -> None
                         if multi_address else [address.upper()]),
         }
         store["_bridge_capabilities"] = bridges
-    for value in store.values():
-        if not isinstance(value, dict):
-            continue
-        client = value.get("client")
-        if isinstance(client, UrcClient):
-            # Pin management onto the add-on's controller (the remote only handshakes on the
-            # controller it is bound to); the add-on frees it during the pause window.
-            client.prefer_adapter(adapter, address)
+    _prefer_bridge_adapter(hass, store)
 
 
 async def _subscribe_bridge_mqtt(hass: HomeAssistant) -> None:

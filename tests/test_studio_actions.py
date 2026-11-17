@@ -95,6 +95,116 @@ def studio():
 ACTIONS = [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]
 
 
+def test_bridge_address_only_status_uses_cached_adapter(studio, monkeypatch):
+    from switchbot_urc.client import UrcClient
+
+    def unexpected_sysfs_read(*_args):
+        pytest.fail("bridge identity lookup must not read sysfs")
+
+    monkeypatch.setattr(UrcClient, "_list_local_adapters", unexpected_sysfs_read)
+    monkeypatch.setattr(UrcClient, "_adapter_sysfs_address", unexpected_sysfs_read)
+    client = UrcClient(
+        types.SimpleNamespace(address="B0:E9:FE:53:11:45"),
+        types.SimpleNamespace(),
+        local_adapter_addresses={"hci0": "dca6320f2d8a", "hci1": "8a881be01f92"},
+    )
+
+    client.prefer_adapter("", "8A:88:1B:E0:1F:92")
+
+    assert client._preferred_adapter == "hci1"
+    assert client._force_preferred_adapter
+
+
+def test_bridge_refreshes_unknown_adapter_once_for_repeated_status(studio, monkeypatch):
+    import importlib.util
+
+    core = sys.modules["homeassistant.core"]
+    for name in ("ServiceCall", "ServiceResponse", "SupportsResponse"):
+        monkeypatch.setattr(core, name, object, raising=False)
+    config_validation = types.ModuleType("homeassistant.helpers.config_validation")
+    config_validation.boolean = bool
+    config_validation.ensure_list = list
+    config_validation.string = str
+    monkeypatch.setitem(sys.modules, config_validation.__name__, config_validation)
+    const = types.ModuleType("homeassistant.const")
+    const.Platform = str
+    monkeypatch.setitem(sys.modules, const.__name__, const)
+    exceptions = types.ModuleType("homeassistant.exceptions")
+    exceptions.ConfigEntryNotReady = RuntimeError
+    exceptions.HomeAssistantError = RuntimeError
+    monkeypatch.setitem(sys.modules, exceptions.__name__, exceptions)
+    spec = importlib.util.spec_from_file_location(
+        "switchbot_urc.integration_test", INTEGRATION / "__init__.py"
+    )
+    spec.submodule_search_locations = None
+    integration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(integration)
+    client = integration.UrcClient(
+        types.SimpleNamespace(address="B0:E9:FE:53:11:45"), types.SimpleNamespace()
+    )
+    store = {"entry": {"client": client}}
+    reads = []
+
+    def read_adapters():
+        reads.append(1)
+        return {"hci2": "8a881be01f92"}
+
+    monkeypatch.setattr(integration.UrcClient, "read_local_adapter_addresses", read_adapters)
+
+    async def check():
+        hass = types.SimpleNamespace(
+            data={studio.DOMAIN: store},
+            async_create_task=asyncio.create_task,
+            async_add_executor_job=asyncio.to_thread,
+        )
+        status = {"adapter_address": "8A:88:1B:E0:1F:92"}
+        integration._apply_bridge_identity(hass, status)
+        integration._apply_bridge_identity(hass, status)
+        await store["_bridge_adapter_refresh"]
+        integration._apply_bridge_identity(hass, status)
+
+    asyncio.run(check())
+    assert reads == [1]
+    assert client._preferred_adapter == "hci2"
+
+
+def test_layout_apply_waits_for_other_studio_mutations(studio, monkeypatch):
+    def resolve(*_args):
+        resolved.append(True)
+        raise ValueError("Stop before writing")
+
+    resolved = []
+    monkeypatch.setattr(studio.studio_physical, "resolve", resolve)
+    hass = types.SimpleNamespace(data={})
+    connection = types.SimpleNamespace(send_error=lambda *_: None)
+
+    async def check():
+        async with studio.studio_remotes.remote_management_lock(hass):
+            task = asyncio.create_task(studio.studio_physical.ws_physical_apply(
+                hass, connection, {"id": 1, "entry_id": "entry"}
+            ))
+            await asyncio.sleep(0)
+            assert not resolved
+        await task
+        assert resolved == [True]
+
+    asyncio.run(check())
+
+
+def test_studio_logs_a_failed_identity_repair(studio, monkeypatch, caplog):
+    def repair_failed(*_args):
+        raise ValueError("invalid stored identity")
+
+    monkeypatch.setattr(studio.studio_remotes, "ensure_distinct_identities", repair_failed)
+    hass = types.SimpleNamespace(data={})
+    entry = types.SimpleNamespace(entry_id="entry")
+
+    studio._repair_identities(hass, entry)
+
+    assert "could not give every remote its own identity" in caplog.text
+    assert "invalid stored identity" in caplog.text
+
+
 def test_studio_creates_bridge_remote_without_saved_credentials(studio, monkeypatch):
     from switchbot_urc import studio_remotes
 

@@ -1505,7 +1505,7 @@ class UrcOptionsFlow(OptionsFlow):
         """Choose the source of the IR profile; slots remain fully automatic."""
         # The bundled catalog is optional; saved cloud remotes remain available without it.
         options = ["ir_saved_cloud"]
-        if catalog_available():
+        if await self.hass.async_add_executor_job(catalog_available):
             options.insert(1, "ir_catalog_type")
         return self.async_show_menu(step_id="add_ir_remote", menu_options=options)
 

@@ -1503,7 +1503,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _renderRemoteCapacity() {
     const sources = this._sources;
-    const counters = [["ir", "IR"], ["native", "Native"], ["hid", "HID"]];
+    const counters = [["ir", "IR"], ["native", "Bridge"], ["hid", "HID"]];
     const checking = this._sourcesRequest?.refreshCapacity;
     const unknown = counters.some(([kind]) => sources?.remote_capacity?.[kind]?.available == null);
     return `<div class="remote-capacity" role="status">
@@ -1522,7 +1522,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const kind = ir ? "ir" : add.kind;
     if (sources?.remote_capacity?.[kind]?.available !== 0 || (ir && add.replace)) return "";
     if (ir) return "No more IR remotes can be added. You can replace an installed IR remote.";
-    if (kind === "native") return "No more Native remotes can be added.";
+    if (kind === "native") return "No more Bridge remotes can be added.";
     return "No more HID remotes can be added.";
   }
 

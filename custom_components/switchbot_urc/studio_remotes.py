@@ -311,7 +311,7 @@ async def _create_native_remote(hass, connection, msg):
         table = await read_device_table(hass, entry, client)
         c.require_remote_slot(len(table))
         if not c.remaining_remote_kind_slots(table, c.CTRL_NATIVE):
-            raise ValueError("No more Native remotes can be added.")
+            raise ValueError("No more Bridge remotes can be added.")
         used = _native_table_addresses(table)
         free = list(addressing.free_advertised_addresses(bridges, used))
         if wanted:

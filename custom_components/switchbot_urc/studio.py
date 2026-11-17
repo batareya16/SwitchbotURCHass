@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +32,11 @@ from . import studio_physical
 from .physical_layout import native_appearance, remote_artwork_id
 from . import studio_remotes
 
+_LOGGER = logging.getLogger(__name__)
+
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.50.71"
+FRONTEND_VERSION = "0.50.72"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -307,8 +310,7 @@ def _reachability(remote: dict[str, Any]) -> dict[str, str]:
         }
     return {
         "level": "full",
-        "text": "Native. Presses are delivered to the bridge add-on and arrive as Home Assistant "
-                "events.",
+        "text": "Home Assistant button mappings use the SwitchBot URC Bridge add-on.",
     }
 
 
