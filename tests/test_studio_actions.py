@@ -29,6 +29,7 @@ def _stub_homeassistant():
     module("homeassistant")
     module("homeassistant.core", HomeAssistant=object, callback=lambda f: f, Event=object)
     module("homeassistant.config_entries", ConfigEntry=object)
+    module("homeassistant.exceptions", HomeAssistantError=Exception)
     websocket = types.SimpleNamespace(
         require_admin=lambda f: f,
         websocket_command=lambda schema: (lambda f: f),
@@ -93,6 +94,53 @@ def studio():
 
 
 ACTIONS = [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_scene_save_updates_ha_only_after_physical_readback(studio, verified):
+    scenes = studio.studio_scenes
+    existing = {"index": 4, "name": "Sleep", "icon": 21, "color": 6}
+    new = {"index": 0, "name": "Movie", "icon": 18, "color": 6}
+    entry = types.SimpleNamespace(domain="switchbot_urc", options={"remotes": ["other"]})
+
+    def frame(*rows):
+        packet = scenes.build_scene_list([scenes.Scene(**row) for row in rows])
+        return b"\x01\0\0\0" + packet[3:7] + packet[7:]
+
+    async def query(subcommand):
+        assert subcommand == 4
+        return frame(existing)
+
+    async def sequence(commands, *, readback_subcommand):
+        assert readback_subcommand == 4
+        assert commands == [scenes.build_scene_list([scenes.Scene(**new), scenes.Scene(**existing)])]
+        return [b"\x01", frame(new, existing) if verified else frame(existing)]
+
+    runtime = {"client": types.SimpleNamespace(query=query, send_command_sequence=sequence)}
+    hass = types.SimpleNamespace(
+        data={"switchbot_urc": {"entry": runtime}},
+        config_entries=types.SimpleNamespace(
+            async_get_entry=lambda _: entry,
+            async_update_entry=lambda item, *, options: setattr(item, "options", options),
+        ),
+        states={"scene.movie": object()},
+    )
+    results, errors = [], []
+    connection = types.SimpleNamespace(
+        send_result=lambda _, payload: results.append(payload),
+        send_error=lambda _, code, message: errors.append((code, message)),
+    )
+    asyncio.run(scenes.ws_save_scene(hass, connection, {
+        "id": 1, "entry_id": "entry", "expected": [existing], "delete": False,
+        "name": "Movie", "icon": 18, "color": 6, "entity_id": "scene.movie",
+    }))
+    assert entry.options["remotes"] == ["other"]
+    assert bool(results) == verified
+    assert bool(errors) != verified
+    if verified:
+        assert entry.options["scene_bindings"]["0"]["entity_id"] == "scene.movie"
+    else:
+        assert "scene_bindings" not in entry.options
 
 
 def test_ir_slot_zero_stays_visible_and_refresh_loads_its_profile(studio):

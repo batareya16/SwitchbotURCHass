@@ -1,4 +1,11 @@
 const DOMAIN = "switchbot_urc";
+const SCENE_ICONS = [
+  "Default", "Morning", "Night", "Lights on", "Lights off", "Arrive home",
+  "Leave home", "Dance", "Treadmill", "Strength training", "Music", "Shield",
+  "Airplane", "Gaming", "Dumbbell", "Leaf", "Growing plants", "Leisure",
+  "Movie", "Book", "Home", "Sleep", "Sofa", "Walk the dog", "Shower",
+];
+const SCENE_COLORS = ["Pink", "Orange", "Yellow", "Green", "Turquoise", "Blue", "Purple", "Gray"];
 // Pause has no default Quick bind action. Home Assistant identifies a press
 // by its page and position, so new Native buttons can share this function.
 const NATIVE_CUSTOM_FUNCTION = 22;
@@ -280,6 +287,7 @@ class SwitchBotUrcPanel extends HTMLElement {
                       models: [], hxd: "", buttons: [], busy: "", error: "" };
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
+    this._scenePanel = null;
     this._sources = null;
     // Which remote's appearance editor is open.
     this._iconPickerFor = null;
@@ -319,6 +327,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   async _refresh() {
+    if (this._scenePanel) return this._openScenes(false);
     // One button: adopt whatever is installed on the remote, then reload. The import is
     // read-only towards the device, so it is safe to run on every refresh; a failure there
     // must still leave the reload to happen.
@@ -724,7 +733,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _handleLiveEvent(event) {
-    if (this._physical || this._saving) return;
+    if (this._scenePanel || this._physical || this._saving) return;
     if (!event?.remote_id || !event?.button_id) return;
     const sourceAddress = String(event.worws_address || event.address || "")
       .replaceAll(":", "")
@@ -1246,7 +1255,7 @@ class SwitchBotUrcPanel extends HTMLElement {
               </span><span>${escapeHtml(battery)}%</span>
             </div>` : ""}
             <div class="live"><i></i> Live</div>
-            <button class="secondary" id="refresh" title="Re-read the remote and pick up anything created in the SwitchBot app">${this._physicalBusy ? "Refreshing…" : "Refresh"}</button>
+            <button class="secondary" id="refresh" ${this._scenePanel?.busy ? "disabled" : ""} title="Re-read the remote and pick up anything created in the SwitchBot app">${this._physicalBusy || this._scenePanel?.busy === "read" ? "Refreshing…" : "Refresh"}</button>
           </div>
         </header>
         ${this._error && !remote ? `<div class="error" role="alert">${escapeHtml(this._error)}</div>` : ""}
@@ -1255,23 +1264,27 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${entries.length ? `
           <section class="selectors">
             <label>Universal Remote
-              <select id="entrySelect">${entries.map((item) => `<option value="${escapeHtml(item.entry_id)}" ${item.entry_id === this._entryId ? "selected" : ""}>${escapeHtml(item.title)} · ${escapeHtml(item.address)}</option>`).join("")}</select>
+              <select id="entrySelect" ${this._scenePanel?.busy ? "disabled" : ""}>${entries.map((item) => `<option value="${escapeHtml(item.entry_id)}" ${item.entry_id === this._entryId ? "selected" : ""}>${escapeHtml(item.title)} · ${escapeHtml(item.address)}</option>`).join("")}</select>
             </label>
-            <label>Logical remote
+            ${this._scenePanel ? "" : `<label>Logical remote
               <select id="remoteSelect">${(entry?.remotes || []).map((item) => `<option value="${escapeHtml(item.remote_id)}" ${item.remote_id === this._remoteId ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}</option>`).join("")}</select>
             </label>
-            <div class="identity"><span>Stable ID</span><code>${escapeHtml(remote?.remote_id || "—")}</code><small>Slot ${escapeHtml(remote?.remote_slot ?? "unknown")}</small></div>
+            <div class="identity"><span>Stable ID</span><code>${escapeHtml(remote?.remote_id || "—")}</code><small>Slot ${escapeHtml(remote?.remote_slot ?? "unknown")}</small></div>`}
           </section>
           <div class="toolbar">
+            ${this._scenePanel ? this._action("manageScenes", "‹", "Back to remotes", "Close scene management") : `
             ${this._action("addRemote", "＋", "Add a remote",
               "Install a new remote on the Universal Remote", "accent")}
+            ${this._action("manageScenes", "▸", "Scenes", "Manage the scene list on the Universal Remote")}
             ${remote?.layout_editable ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
               "Bind this remote to a different Bluetooth address") : ""}
             ${remote ? this._action("deleteRemote", "🗑", "Delete",
               `Remove "${remote.name}" from the Universal Remote for good`, "danger") : ""}
+            `}
           </div>
+          ${this._scenePanel ? this._renderScenes() : `
           ${this._renderRemoteCapacity()}
           ${this._renderAddRemote()}
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
@@ -1307,11 +1320,14 @@ class SwitchBotUrcPanel extends HTMLElement {
               </aside>
             </div>
           ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
+          `}
         ` : ""}
       </main>`;
     const screen = this.shadowRoot.querySelector(".scr-scroll");
     if (screen) screen.scrollTop = previousScroll;
     this._wireEvents();
+    this._wireScenes();
+    if (this._scenePanel) return;
     this._wireAddRemote();
     this._wireDiagnostics();
     this._wireCloud();
@@ -1588,6 +1604,162 @@ class SwitchBotUrcPanel extends HTMLElement {
       <span class="g">${glyph}</span><span>${escapeHtml(label)}</span></button>`;
   }
 
+  async _openScenes(addNew = false) {
+    const entryId = this._entryId;
+    if (!entryId || this._scenePanel?.busy) return;
+    const previous = this._scenePanel?.entryId === entryId ? this._scenePanel : null;
+    clearTimeout(this._activeTimer);
+    this._add = null;
+    const panel = { entryId, busy: "read", rows: [], limit: 10, loaded: false, draft: null, error: "" };
+    this._scenePanel = panel;
+    this._render();
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/list`, entry_id: entryId });
+      panel.rows = result.scenes;
+      panel.limit = result.limit;
+      panel.loaded = true;
+      if (addNew && panel.rows.length < panel.limit) {
+        panel.draft = { name: "", icon: 0, color: 5, entity_id: "" };
+      } else if (previous?.draft) {
+        const index = previous.draft.index;
+        const before = previous.rows.find((row) => row.index === index);
+        const after = panel.rows.find((row) => row.index === index);
+        if ((index == null && panel.rows.length < panel.limit)
+            || (after && JSON.stringify(before) === JSON.stringify(after))) {
+          panel.draft = previous.draft;
+        } else {
+          panel.status = "The scene list changed. Choose a scene to continue editing.";
+        }
+      }
+    } catch (error) {
+      if (previous) Object.assign(panel, { rows: previous.rows, limit: previous.limit,
+        loaded: previous.loaded, draft: previous.draft });
+      panel.error = error?.message || String(error);
+    } finally {
+      panel.busy = "";
+      if (this._scenePanel === panel) this._render();
+    }
+  }
+
+  _renderScenes() {
+    const { busy, rows, limit, loaded, draft, error, status } = this._scenePanel;
+    const option = (value, label, current) => `<option value="${escapeHtml(String(value))}"
+      ${value === current ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    const choices = (labels, current) => labels.map((label, index) => option(index, label, current)).join("")
+      + (current >= labels.length ? option(current, `Current (${current})`, current) : "");
+    const entities = Object.values(this._hass?.states || {})
+      .filter(({ entity_id }) => entity_id.startsWith("scene.") || entity_id.startsWith("script."))
+      .sort((a, b) => (a.attributes.friendly_name || a.entity_id)
+        .localeCompare(b.attributes.friendly_name || b.entity_id));
+    return `<section class="add-remote" aria-labelledby="sceneHeading">
+      <div class="action-title"><b id="sceneHeading">Scenes</b>
+        ${loaded ? `<span>${rows.length} / ${limit} on this remote</span>` : ""}</div>
+      ${busy === "read" ? '<p class="small" role="status">Reading scenes from the remote…</p>' : ""}
+      ${loaded && rows.length ? `<div class="scene-list">${rows.map((row) => `
+        <button type="button" class="secondary scene-row" ${busy ? "disabled" : ""}
+          data-edit-scene="${row.index}" aria-pressed="${row.index === draft?.index}">
+          <span>${escapeHtml(row.name)}</span>
+          <small>${escapeHtml(this._hass?.states?.[row.entity_id]?.attributes.friendly_name || row.entity_id || "No Home Assistant action")}</small>
+        </button>`).join("")}</div>` : ""}
+      ${loaded && !rows.length && !draft ? '<p class="small">No scenes on this remote yet.</p>' : ""}
+      ${loaded && !draft ? `<div class="key-actions"><button class="primary" id="newScene"
+        ${busy || rows.length >= limit ? "disabled" : ""}>Add scene</button></div>` : ""}
+      ${draft ? `<form id="sceneForm" class="scene-form">
+        <b>${draft.index == null ? "New scene" : "Edit scene"}</b>
+        <label>Home Assistant scene or script<select name="entity_id"
+          ${draft.index == null ? "required" : ""} ${busy ? "disabled" : ""}>
+          ${option("", "Choose a scene or script…", draft.entity_id)}
+          ${draft.entity_id && !this._hass?.states?.[draft.entity_id]
+            ? option(draft.entity_id, draft.entity_id, draft.entity_id) : ""}
+          ${entities.map(({ entity_id, attributes }) => option(entity_id,
+            `${attributes.friendly_name || entity_id} · ${entity_id.split(".")[0]}`, draft.entity_id)).join("")}
+        </select></label>
+        <label>Name on the remote<input name="name" type="text" required
+          value="${escapeHtml(draft.name)}" ${busy ? "disabled" : ""}></label>
+        <div class="scene-appearance">
+          <label>Icon<select name="icon" ${busy ? "disabled" : ""}>${choices(SCENE_ICONS, draft.icon)}</select></label>
+          <label>Background<select name="color" ${busy ? "disabled" : ""}>${choices(SCENE_COLORS, draft.color)}</select></label>
+        </div>
+        <div class="key-actions">
+          <button class="primary" type="submit" ${busy ? "disabled" : ""}>${busy ? "Saving…" : "Save scene"}</button>
+          <button type="button" class="secondary" id="cancelScene" ${busy ? "disabled" : ""}>Cancel</button>
+          ${draft.index != null ? `<button type="button" class="action danger" id="deleteScene"
+            ${busy ? "disabled" : ""}>Delete scene</button>` : ""}
+        </div>
+      </form>` : ""}
+      ${error ? `<div class="error" role="alert">${escapeHtml(error)}</div>` : ""}
+      ${status ? `<p class="small" role="status">${escapeHtml(status)}</p>` : ""}
+    </section>`;
+  }
+
+  _wireScenes() {
+    const root = this.shadowRoot;
+    root.getElementById("manageScenes")?.addEventListener("click", () => {
+      if (!this._scenePanel) {
+        this._openScenes();
+      } else if (!this._scenePanel.busy) {
+        this._scenePanel = null;
+        this._render();
+      }
+    });
+    const panel = this._scenePanel;
+    if (!panel) return;
+    const setDraft = (draft) => {
+      Object.assign(panel, { draft, error: "", status: "" });
+      this._render();
+    };
+    root.getElementById("newScene")?.addEventListener("click", () => {
+      setDraft({ name: "", icon: 0, color: 5, entity_id: "" });
+      root.querySelector('#sceneForm [name="entity_id"]')?.focus();
+    });
+    root.querySelectorAll("[data-edit-scene]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = panel.rows.find(({ index }) => index === Number(button.dataset.editScene));
+        if (row) setDraft({ ...row });
+      });
+    });
+    root.getElementById("cancelScene")?.addEventListener("click", () => setDraft(null));
+    root.getElementById("deleteScene")?.addEventListener("click", () => {
+      const row = panel.rows.find(({ index }) => index === panel.draft.index);
+      if (row && window.confirm(`Delete "${row.name}" from the remote?`)) this._saveScene(true);
+    });
+    const form = root.getElementById("sceneForm");
+    form?.addEventListener("input", (event) => {
+      const { name, value } = event.target;
+      panel.draft[name] = name === "icon" || name === "color" ? Number(value) : value;
+      if (name === "entity_id" && !panel.draft.name && value) {
+        panel.draft.name = this._hass.states[value]?.attributes.friendly_name || value;
+        form.elements.name.value = panel.draft.name;
+      }
+    });
+    form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this._saveScene(false);
+    });
+  }
+
+  async _saveScene(remove) {
+    const panel = this._scenePanel;
+    if (!panel?.draft || panel.busy) return;
+    const { index, name, icon, color, entity_id } = panel.draft;
+    const fields = remove ? { index, delete: true } : { name, icon, color, entity_id,
+      ...(index == null ? {} : { index }) };
+    const expected = panel.rows.map(({ index, name, icon, color }) => ({ index, name, icon, color }));
+    Object.assign(panel, { busy: "save", error: "", status: "" });
+    this._render();
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/save`,
+        entry_id: panel.entryId, expected, ...fields });
+      Object.assign(panel, { rows: result.scenes, draft: null,
+        status: remove ? "Scene deleted from the remote." : "Scene saved to the remote." });
+    } catch (error) {
+      panel.error = error?.message || String(error);
+    } finally {
+      panel.busy = "";
+      if (this._scenePanel === panel) this._render();
+    }
+  }
+
   _renderAddRemote() {
     const add = this._add;
     if (!add) return "";
@@ -1599,6 +1771,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           : `<p class="error" role="alert">Could not load remote options. ${escapeHtml(add.loadError)}</p>`}
         <div class="key-actions">
           ${add.loadError ? '<button class="primary" id="retryAddRemote">Retry</button>' : ""}
+          <button class="secondary" id="addSceneFromPicker">Scene</button>
           <button class="secondary compact" id="addRemoteCancel">Cancel</button>
         </div>
       </section>`;
@@ -1616,6 +1789,7 @@ class SwitchBotUrcPanel extends HTMLElement {
        "Reinstall a remote you already made in the SwitchBot app."],
       ["hid", "HID remote", !!sources.hid,
        "Presses go out as Bluetooth keys to one paired host — a TV, a box, a computer."],
+      ["scene", "Scene", true, "Launch a Home Assistant scene or script from the Scenes menu."],
     ];
     const option = (value, label, selected) =>
       `<option value="${escapeHtml(String(value))}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
@@ -1746,6 +1920,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const add = this._add;
     if (!add) return;
     root.getElementById("retryAddRemote")?.addEventListener("click", () => this._openAddRemote());
+    root.getElementById("addSceneFromPicker")?.addEventListener("click", () => this._openScenes(true));
     if (add.loading || add.loadError) {
       root.getElementById("addRemoteCancel")?.addEventListener("click", () => {
         this._add = null;
@@ -1756,6 +1931,10 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelectorAll("[data-add-kind]").forEach((button) => {
       button.addEventListener("click", () => {
+        if (button.dataset.addKind === "scene") {
+          this._openScenes(true);
+          return;
+        }
         add.kind = button.dataset.addKind;
         add.nativeType = "";
         add.error = "";
@@ -2759,7 +2938,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._remoteId = null;
       this._buttonId = null;
       this._normalizeSelection();
-      this._render();
+      if (this._scenePanel) this._openScenes();
+      else this._render();
     });
     root.getElementById("remoteSelect")?.addEventListener("change", (event) => {
       if (this._saving) return;
@@ -3083,6 +3263,12 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _styles() {
     return `
+      .scene-list,.scene-form{display:grid;gap:8px}
+      .scene-form{padding-top:16px;border-top:1px solid var(--divider-color,#e2e5e8);gap:14px}
+      .scene-appearance{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+      .scene-row{height:auto;min-height:44px;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;text-align:left;white-space:normal;overflow-wrap:anywhere}
+      .scene-row[aria-pressed="true"]{border-color:var(--primary-color,#03a9f4)}
+      .scene-row small{color:var(--secondary-text-color,#68727d);text-align:right}
       .appearance{display:grid;gap:18px}.appearance-head{display:flex;align-items:flex-start;justify-content:space-between}.appearance-head>div{display:grid;gap:3px}.appearance-head b{font-size:22px;letter-spacing:-.03em}.appearance-head span,.appearance-part-body p,.appearance-note{font-size:12px;line-height:1.45;color:var(--secondary-text-color,#68727d)}
       .add-native-artwork{display:flex;align-items:center;gap:14px;padding:12px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--secondary-background-color,#f5f6f8)}.add-native-artwork p{line-height:1.5}.add-native-artwork .artwork-preview{width:86px;height:86px}.add-native-artwork .artwork-preview img{max-width:82px;max-height:82px}.ic-fallback{display:grid;place-items:center;flex:none;width:18px;height:18px;color:var(--secondary-text-color,#68727d)}
       .appearance-grid{display:grid;gap:12px}.appearance-part{display:flex;align-items:center;gap:16px;min-width:0;padding:14px;border:1px solid var(--divider-color,#e2e5e8);border-radius:16px;background:var(--secondary-background-color,#f5f6f8)}.appearance-part-body{flex:1;min-width:0}.appearance-part-body label{display:grid;gap:3px;font-size:12px;font-weight:700}.appearance-part-body select{margin-top:3px}.appearance-part-body p{margin:6px 0 0}.artwork-preview,.app-icon-preview{display:grid;place-items:center;flex:none;width:100px;height:100px;border-radius:14px;background:#171d24;color:#fff}.artwork-preview img{display:block;max-width:96px;max-height:96px;object-fit:contain}.app-icon-preview .ic-img{width:74px;height:74px;object-fit:contain}.appearance-profile-save{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.appearance-draft{font-size:11px;font-weight:700;color:var(--primary-color,#03a9f4)}

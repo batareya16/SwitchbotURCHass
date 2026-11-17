@@ -55,22 +55,23 @@ def test_inventory_discovers_handles_and_accepts_notification_before_write_respo
     assert peer.sent[-1][3:] == bytes.fromhex("570000000f6307")
 
 
-def test_device_details_collects_continuation_notifications():
+@pytest.mark.parametrize(("subcommand", "record_size", "count"), [(4, 67, 10), (5, 80, 7)])
+def test_long_read_collects_continuation_notifications(subcommand, record_size, count):
     client = hci.AttManagementClient(PEER, None)
-    body = b"\x07" + bytes(7 * 80)
+    body = bytes([count]) + bytes(count * record_size)
     frame = b"\x01\x00\x00\x00" + len(body).to_bytes(2, "big") + bytes(2) + body
 
-    class DetailsPeer(Peer):
+    class LongReadPeer(Peer):
         def send(self, pdu):
-            if pdu[3:] == bytes.fromhex("570000000f6305"):
+            if pdu[3:] == bytes.fromhex("570000000f63") + bytes([subcommand]):
                 self.deliver(b"\x1b\x13\x00" + frame[:509])
                 self.deliver(b"\x1b\x13\x00" + frame[509:])
                 self.deliver(b"\x13")
             else:
                 super().send(pdu)
 
-    client.send = DetailsPeer(client.handle_pdu).send
-    assert client.query([(5, 1)]) == [frame.hex()]
+    client.send = LongReadPeer(client.handle_pdu).send
+    assert client.query([(subcommand, 1)]) == [frame.hex()]
 
 
 def test_concurrent_peer_mtu_request_is_answered_separately():

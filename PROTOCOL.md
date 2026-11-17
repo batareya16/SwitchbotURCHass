@@ -92,6 +92,7 @@ and had to be withdrawn.
 | `0F 62 06 …` | create / write one page of a remote |
 | `0F 62 04 02 <idx> <devType> <ctrl> <id11>` | delete a remote |
 | `0F 62 07 …` | rename a remote |
+| `0F 62 09 …` | replace the scene list |
 | `0F 62 0A …` | full order table — **not** registration, see below |
 | `0F 62 0E 01 <hostMac11>` | HID-pair the remote to a host |
 | `0F 63 07` | list installed devices |
@@ -102,6 +103,69 @@ and had to be withdrawn.
 `0F 62 0A` sends a complete order table `[count] + count × [remoteIndex][devType][idKind][id11]`.
 It may answer `01` while changing the ordering or visibility of existing remotes, and it plays no
 part in a normal create. Do not send a one-entry table.
+
+## Scenes on WoRWS V48
+
+The firmware trace for persistent title updates and incoming Native replies is in
+[live-display-state.md](../firmware-worws/evidence/mixed-v48/live-display-state.md).
+
+The remote stores a separate scene list with up to ten entries. Each entry holds its index,
+display name, icon and color. Home Assistant can keep the mapping from a physical remote and
+scene index to a Home Assistant action.
+
+### Reading and writing the list
+
+```
+Read plaintext:  0F 63 04
+Read response:   01 <length16 BE> <crc16 BE> <count> <records...>
+Write plaintext: 0F 62 09 <length16 BE> <crc16-MODBUS BE> <count> <records...>
+Record:          <index> <name: 64 bytes, NUL-padded> <icon> <color>
+```
+
+- The record is 67 bytes. Use unique indices from 0 to 9 and terminate names within the 64-byte
+  field. The body length is `1 + 67 × count`. The write CRC covers the full body, including count.
+- A write replaces the whole list. Unspecified indices are cleared, and count zero clears the
+  list. Read the current list before merging changes and read it back after writing.
+- V48's read path calls CRC16-MODBUS with the same length but starts at the first record, one byte
+  after count. This includes a byte beyond the transmitted records. The SwitchBot app checks the
+  count against the received length. Capture real replies before enforcing a read CRC.
+- ARM references in V48 are `0x2e7e` for read, `0x3868` for write dispatch, and `0x4dec` for
+  storing the list. The write path forwards it to the DSP over IPC type `0x0a`.
+
+### Receiving a scene activation
+
+The DSP scene path calls `0x200345ec`, then `0x20004b70`. It sends ARM IPC type `0x0e`,
+subtype `0x03`, with the scene index at byte 1. The ARM receiver at `0x1c8f8` sends this
+index to `0xd4fc`, which sets BLE advertisement event type `0x02`. The manufacturer data
+builder at `0x211e0` serializes it as follows, with offsets relative to the manufacturer
+payload after company ID `0x0969`.
+
+| Offset | Size | Field |
+| --- | ---: | --- |
+| 0 | 6 | Physical WoRWS address bytes |
+| 6 | 1 | Nonzero rolling event sequence |
+| 7 | 1 | Status bits |
+| 8 | 1 | Scene index, 0–9 |
+| 9 | 1 | Zero in the V48 builder |
+| 10 | 1 | Event type, `0x02` for scene |
+| 11–12 | 2 | Key state (high 3 bits) and counter (low 5 bits), one pair per byte |
+| 13–16 | 4 | Other packed event state and counters |
+
+ARM `0xd288` forwards qualifying key events to `0xd86c`, which increments the sequence,
+skips zero on wraparound, and refreshes the advertisement through `0x20994`. On this path
+only masks `0x10` and `0x200` trigger a counter increment and refresh, updating byte 11 or 12
+respectively. Other ARM paths also call `0xd86c`, so a change to byte 6 alone cannot establish
+that the scene was pressed again.
+
+One DSP call site, `0x2002f401`, passes a fixed key code from `0x2000d370`. The key table
+maps this code (`0x100000`) to bit 14, which only latches the scene index on this ARM path.
+The other site, `0x2002f4d4`, passes the incoming key code and can take the immediate refresh
+path. Capture each way of activating a scene to establish when its advertisement is emitted.
+
+The DSP and ARM paths above are static firmware evidence. Capture activation of two different
+indices, repeated presses of the same scene, and unrelated key presses after a scene. Use those
+captures to confirm which counter identifies a fresh activation and how it behaves on restart.
+The battery sensor already uses passive Bluetooth callbacks for the physical remote's address.
 
 ## Creating a remote (`0F 62 06`)
 

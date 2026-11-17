@@ -64,6 +64,7 @@ from .const import (
 from .crypto import UrcCrypto
 from .hid import decode_report, is_press
 from .studio import async_register_studio
+from .studio_scenes import listen_for_scenes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -299,6 +300,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(
         entry, [Platform(platform) for platform in PLATFORMS]
     )
+    entry.async_on_unload(listen_for_scenes(hass, entry, store[entry.entry_id]))
     return True
 
 

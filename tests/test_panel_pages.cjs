@@ -43,6 +43,29 @@ function panel() {
   return instance;
 }
 
+test('scene editor saves a named HA scene with the current physical inventory', async () => {
+  const instance = panel();
+  const existing = {index: 4, name: 'Sleep', icon: 21, color: 6, entity_id: 'scene.sleep'};
+  const newScene = {name: 'Movie', icon: 18, color: 6, entity_id: 'script.movie'};
+  instance._scenePanel = {entryId: 'entry', rows: [existing], limit: 10,
+    loaded: true, draft: newScene};
+  let request;
+  instance._hass = {states: {}, async callWS(message) {
+    request = message;
+    return {scenes: [{...newScene, index: 0}, existing]};
+  }};
+  assert.match(instance._renderScenes(), /name="entity_id"/);
+  assert.match(instance._renderScenes(), /value="18"\s+selected>Movie/);
+  await instance._saveScene(false);
+  assert.equal(request.type, 'switchbot_urc/studio/scenes/save');
+  assert.equal(request.expected[0].index, 4);
+  assert.equal(request.expected[0].entity_id, undefined);
+  assert.equal(request.entity_id, 'script.movie');
+  assert.equal(request.index, undefined);
+  assert.equal(instance._scenePanel.rows.length, 2);
+  assert.equal(instance._scenePanel.draft, null);
+});
+
 test('one-row page is written before its HA action, preserving action editor values', async () => {
   const instance = panel();
   instance._rememberMapping();

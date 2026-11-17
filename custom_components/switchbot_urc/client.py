@@ -116,7 +116,7 @@ class UrcClient:
         self._handshake_fut: asyncio.Future[bytes] | None = None
         self._response_fut: asyncio.Future[bytes] | None = None
         self._query_fut: asyncio.Future[bytes] | None = None
-        self._device_details: bytearray | None = None
+        self._long_query_response: bytearray | None = None
         self._expected_response_codes: frozenset[int] | None = None
         self._expect_status_reply = False
         self._unexpected_response: tuple[bytes, bytes] | None = None
@@ -656,13 +656,13 @@ class UrcClient:
         # The 0F 63 read commands use the legacy unencrypted response envelope even when the
         # WoRWS command channel itself is encrypted. Consume it before attempting AES-CTR.
         if self._query_fut is not None and not self._query_fut.done():
-            if (self._device_details or (len(raw) >= 8 and raw[:4] == b"\x01\x00\x00\x00")):
-                if self._device_details is not None:
-                    self._device_details.extend(raw)
-                    expected = 8 + int.from_bytes(self._device_details[4:6], "big")
-                    if len(self._device_details) < expected:
+            if (self._long_query_response or (len(raw) >= 8 and raw[:4] == b"\x01\x00\x00\x00")):
+                if self._long_query_response is not None:
+                    self._long_query_response.extend(raw)
+                    expected = 8 + int.from_bytes(self._long_query_response[4:6], "big")
+                    if len(self._long_query_response) < expected:
                         return
-                    raw = bytes(self._device_details)
+                    raw = bytes(self._long_query_response)
                 self._query_fut.set_result(raw)
                 if self._notify_cb:
                     self._notify_cb(CHAR_NOTIFY, raw, raw)
@@ -910,7 +910,7 @@ class UrcClient:
         """Run an unencrypted 0F63 query on the already connected BLE session."""
         assert self._client is not None
         self._query_fut = asyncio.get_running_loop().create_future()
-        self._device_details = bytearray() if subcommand == 5 else None
+        self._long_query_response = bytearray() if subcommand in (4, 5) else None
         request = bytes([0x57, 0x00, 0x00, 0x00, 0x0F, 0x63, subcommand])
         _LOGGER.debug("WoRWS read-only query without handshake: %s", request.hex())
         try:
@@ -920,7 +920,7 @@ class UrcClient:
             return b""
         finally:
             self._query_fut = None
-            self._device_details = None
+            self._long_query_response = None
 
     async def send_command_with_preflight_query(
         self,
