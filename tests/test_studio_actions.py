@@ -99,6 +99,64 @@ def studio():
 ACTIONS = [{"action": "light.turn_on", "target": {"entity_id": "light.hall"}}]
 
 
+def test_shared_inventory_loads_scene_zero_and_refreshes_cached_scenes(studio, monkeypatch):
+    scenes = studio.studio_scenes
+    entry = types.SimpleNamespace(
+        entry_id="entry", domain="switchbot_urc", title="Remote",
+        data={"address": "AA:BB:CC:DD:EE:FF"}, options={"remotes": []},
+    )
+    row = scenes.Scene(0, "Movie", 18, 5)
+    calls = []
+    fail = False
+
+    async def query(subcommand):
+        calls.append(subcommand)
+        if fail:
+            raise TimeoutError("Remote asleep")
+        packet = scenes.build_scene_list([row])
+        return b"\x01\0\0\0" + packet[3:]
+
+    runtime = {"client": types.SimpleNamespace(query=query)}
+    hass = types.SimpleNamespace(
+        data={"switchbot_urc": {"entry": runtime}}, states={},
+        config_entries=types.SimpleNamespace(
+            async_entries=lambda _: [entry],
+            async_update_entry=lambda item, *, options: setattr(item, "options", options),
+        ),
+    )
+    monkeypatch.setattr(studio, "_repair_identities", lambda *_: None)
+    monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
+        async_get_entity_id=lambda *_: None))
+    results = []
+    connection = types.SimpleNamespace(send_result=lambda _, payload: results.append(payload))
+
+    async def run():
+        nonlocal row, fail
+        await studio.ws_studio_get(hass, connection, {"id": 1})
+        assert calls == [4]
+        remote = results[-1]["entries"][0]["remotes"][0]
+        assert remote["remote_id"] == "scene:0"
+        assert remote["scene_index"] == 0
+        assert remote["kind"] == "scene"
+        assert remote["name"] == "Movie"
+        await studio.ws_studio_get(hass, connection, {"id": 2})
+        assert calls == [4]
+        row = scenes.Scene(0, "Morning", 1, 2)
+        await studio.ws_studio_get(hass, connection, {"id": 3, "refresh": True})
+        assert calls == [4, 4]
+        assert results[-1]["entries"][0]["remotes"][0]["name"] == "Morning"
+        fail = True
+        await studio.ws_studio_get(hass, connection, {"id": 4, "refresh": True})
+        cached = results[-1]["entries"][0]
+        assert cached["remotes"][0]["name"] == "Morning"
+        assert "Could not read scene remotes" in cached["scene_error"]
+        fail = False
+        await studio.ws_studio_get(hass, connection, {"id": 5, "refresh": True})
+        assert results[-1]["entries"][0]["scene_error"] == ""
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("verified", [True, False])
 def test_scene_save_updates_ha_only_after_physical_readback(studio, verified):
     scenes = studio.studio_scenes

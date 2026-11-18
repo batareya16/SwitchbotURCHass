@@ -82,26 +82,28 @@ async def _read(client):
     return parse_scene_list(await client.query(SCENE_LIST_QUERY))
 
 
-@websocket_api.require_admin
-@websocket_api.websocket_command({
-    vol.Required("type"): f"{DOMAIN}/studio/scenes/list",
-    vol.Required("entry_id"): str,
-})
-@websocket_api.async_response
-async def ws_list_scenes(hass, connection, msg):
-    entry, runtime = _entry_and_runtime(hass, connection, msg)
-    if entry is None:
+async def refresh_scenes(hass, entry):
+    """Read scenes as part of Studio's shared remote inventory."""
+    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    if "client" not in runtime:
         return
-    try:
-        async with remote_management_lock(hass):
-            scenes = await _read(runtime["client"])
-            bindings = _reconcile_bindings(entry, scenes)
-            _store_bindings(hass, entry, bindings)
-            runtime["scene_write_unverified"] = False
-    except Exception as err:
-        connection.send_error(msg["id"], "scene_read_failed", str(err))
-        return
-    connection.send_result(msg["id"], _result(scenes, bindings))
+    async with remote_management_lock(hass):
+        scenes = await _read(runtime["client"])
+        bindings = _reconcile_bindings(entry, scenes)
+        _store_bindings(hass, entry, bindings)
+        runtime["studio_scenes"] = _result(scenes, bindings)
+        runtime.pop("studio_scenes_error", None)
+        runtime["scene_write_unverified"] = False
+
+
+def serialized_remotes(hass, entry):
+    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    cached = runtime.get("studio_scenes", {})
+    return [{
+        **row, "remote_id": f"scene:{row['index']}", "kind": "scene",
+        "device_type": "Scene", "scene_index": row["index"], "layout_editable": True,
+        "can_move": False, "can_test_native_icon": False, "pages": [],
+    } for row in cached.get("scenes", [])]
 
 
 @websocket_api.require_admin
@@ -188,6 +190,8 @@ async def ws_save_scene(hass, connection, msg):
                     raise ValueError(f"The remote did not save the requested scene list{detail}")
             _store_bindings(hass, entry, bindings)
             runtime["scene_write_unverified"] = False
+            runtime["studio_scenes"] = _result(target, bindings)
+            runtime.pop("studio_scenes_error", None)
     except Exception as err:
         _LOGGER.debug("Remote Studio scene save failed", exc_info=True)
         connection.send_error(msg["id"], "scene_save_failed", str(err))
@@ -264,6 +268,5 @@ def listen_for_scenes(hass, entry, runtime):
 
 
 def register(hass):
-    websocket_api.async_register_command(hass, ws_list_scenes)
     websocket_api.async_register_command(hass, ws_save_scene)
     websocket_api.async_register_command(hass, ws_test_scene)

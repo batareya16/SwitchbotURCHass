@@ -38,7 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.51.3"
+FRONTEND_VERSION = "0.51.4"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -375,29 +375,43 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "pages": remote_pages(remote, binding),
             }
         )
+    remotes.extend(studio_scenes.serialized_remotes(hass, entry))
+    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
     return {
         "entry_id": entry.entry_id,
         "title": entry.title,
         "address": entry.data[CONF_ADDRESS],
         "battery": battery_state.state if battery_state else None,
         "remotes": remotes,
+        "scene_limit": studio_scenes.SCENE_LIMIT,
+        "scene_error": runtime.get("studio_scenes_error", ""),
         # Drawn on the remote's own screen, so the panel can show the device as it looks.
         "icons": list(ICONS),
     }
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/studio/get"})
-@callback
-def ws_studio_get(
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/studio/get",
+                                vol.Optional("refresh", default=False): bool})
+@websocket_api.async_response
+async def ws_studio_get(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Return every locally managed remote and its current mappings."""
+    """Return device and scene remotes together, loading scenes on first open or Refresh."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    for entry in entries:
+        runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        if msg.get("refresh") or "studio_scenes" not in runtime:
+            try:
+                await studio_scenes.refresh_scenes(hass, entry)
+            except Exception as err:
+                _LOGGER.warning("Could not refresh scene remotes: %s", err)
+                runtime["studio_scenes_error"] = "Could not read scene remotes. Wake the Universal Remote and press Refresh."
     connection.send_result(
         msg["id"],
-        {"entries": [_serialize_entry(hass, entry) for entry in hass.config_entries.async_entries(DOMAIN)]},
+        {"entries": [_serialize_entry(hass, entry) for entry in entries]},
     )
 
 

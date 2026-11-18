@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.51.4
+
+- Show scenes alongside all other remotes in Remote Studio and load them through the shared inventory.
+- Keep scene action drafts when switching remotes and update the shared list after saving or deleting a scene.
+- Show Scenes available after the HID remote counter.
+- Keep operation results and errors in consistent Studio feedback areas.
+
 ## 0.51.3
 
 - Edit scenes on the remote preview and assign Home Assistant action sequences.

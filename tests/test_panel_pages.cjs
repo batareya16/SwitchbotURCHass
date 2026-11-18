@@ -47,8 +47,10 @@ test('scene editor uses the remote face, firmware icon choices and custom action
   const instance = panel();
   instance._pages = () => [];
   instance._nativeProfiles = [];
-  instance._entry = () => ({remotes: []});
+  const entry = {entry_id: 'entry', remotes: []};
+  instance._entry = () => entry;
   const existing = {index: 4, name: 'Sleep', icon: 21, color: 6, actions: []};
+  entry.remotes = [{...existing, kind: 'scene', remote_id: 'scene:4', scene_index: 4}];
   const newScene = {name: 'Movie', icon: 18, color: 6, actions: instance._draftActions};
   instance._scenePanel = {entryId: 'entry', rows: [existing], limit: 10,
     loaded: true, draft: newScene};
@@ -59,7 +61,7 @@ test('scene editor uses the remote face, firmware icon choices and custom action
   }};
   const markup = instance._renderScenes();
   assert.match(markup, /viewBox="0 0 300 657"/);
-  assert.match(markup, /data-edit-scene="4"/);
+  assert.match(markup, /data-remote="scene:4"/);
   assert.match(markup, /scene-18.png/);
   assert.match(markup, /id="visualActionEditor"/);
   instance._scenePanel.appearance = true;
@@ -76,6 +78,7 @@ test('scene editor uses the remote face, firmware icon choices and custom action
   assert.equal(request.index, undefined);
   assert.equal(instance._scenePanel.rows.length, 2);
   assert.equal(instance._scenePanel.draft.index, 0);
+  assert.equal(entry.remotes[0].remote_id, 'scene:0');
 });
 
 test('scene workspace renders through the normal Studio entry point', () => {
@@ -84,7 +87,10 @@ test('scene workspace renders through the normal Studio entry point', () => {
   instance._button = () => null;
   instance._page = () => ({index: 0, buttons: []});
   instance._nativeProfiles = [];
-  instance._entry = () => ({entry_id: 'entry', remotes: []});
+  instance._entry = () => ({entry_id: 'entry', remotes: [
+    {remote_id: 'tv', name: 'TV', kind: 'ir', pages: []},
+    {remote_id: 'scene:0', scene_index: 0, name: 'Movie', kind: 'scene', icon: 18, color: 5, pages: []},
+  ]});
   instance._entries = () => [instance._entry()];
   instance._hass = {states: {}};
   instance._scenePanel = {entryId: 'entry', rows: [
@@ -95,10 +101,49 @@ test('scene workspace renders through the normal Studio entry point', () => {
   instance._mountActionSelector = () => {};
   instance.shadowRoot = {innerHTML: '', querySelector() {return null;}, getElementById() {return null;}};
   instance._renderUnsafe();
-  assert.match(instance.shadowRoot.innerHTML, /id="sceneRemoteSelect"/);
-  assert.match(instance.shadowRoot.innerHTML, /data-edit-scene="0"/);
+  assert.match(instance.shadowRoot.innerHTML, /id="remoteSelect"/);
+  assert.match(instance.shadowRoot.innerHTML, /data-remote="scene:0"/);
   assert.match(instance.shadowRoot.innerHTML, /viewBox="0 0 300 657"/);
-  assert.doesNotMatch(instance.shadowRoot.innerHTML, /Back to remotes|sceneForm/);
+  assert.doesNotMatch(instance.shadowRoot.innerHTML, /Back to remotes|sceneForm|sceneRemoteSelect|remote-screen-tabs/);
+});
+
+test('shared remote selection preserves scene actions without fetching a separate list', () => {
+  const instance = panel();
+  const scene = {remote_id: 'scene:0', scene_index: 0, kind: 'scene', name: 'Movie', icon: 18, color: 5, actions: []};
+  const entry = {entry_id: 'entry', remotes: [{remote_id: 'vacuum', kind: 'native'}, scene]};
+  instance._entry = () => entry;
+  instance._remote = () => entry.remotes.find(row => row.remote_id === instance._remoteId);
+  instance._button = () => null;
+  instance._stashLayout = () => {};
+  instance._hass = {callWS() {throw new Error('Selection must use the shared inventory');}};
+  instance._pickRemote('scene:0');
+  assert.equal(instance._scenePanel.draft.index, 0);
+  assert.equal(instance._physical, null);
+  instance._draftActions = [{action: 'script.movie'}];
+  instance._pickRemote('vacuum');
+  assert.equal(instance._scenePanel, null);
+  instance._pickRemote('scene:0');
+  assert.equal(instance._draftActions[0].action, 'script.movie');
+});
+
+test('scene deletion removes it from the common list and keeps ordinary remotes', async () => {
+  const instance = panel();
+  const scene = {index: 0, name: 'Movie', icon: 18, color: 5, actions: []};
+  const entry = {entry_id: 'entry', remotes: [
+    {remote_id: 'tv', kind: 'ir'}, {...scene, remote_id: 'scene:0', scene_index: 0, kind: 'scene'},
+  ]};
+  instance._entry = () => entry;
+  instance._scenePanel = {entryId: 'entry', rows: [scene], draft: scene};
+  instance._remoteId = 'scene:0';
+  instance._hass = {async callWS(request) {
+    assert.equal(request.delete, true);
+    assert.equal(request.index, 0);
+    return {scenes: []};
+  }};
+  await instance._saveScene(true);
+  assert.equal(entry.remotes.length, 1);
+  assert.equal(entry.remotes[0].remote_id, 'tv');
+  assert.equal(instance._scenePanel, null);
 });
 
 test('remote settings reads the selected physical remote and saves only edited fields', async () => {
@@ -218,20 +263,25 @@ test('scene refresh preserves other drafts and invalidates externally changed sc
   instance._button = () => null;
   const first = {index: 0, name: 'Movie', icon: 18, color: 5, actions: []};
   const second = {index: 1, name: 'Morning', icon: 1, color: 2, actions: []};
-  instance._scenePanel = {entryId: 'entry', rows: [first, second], draft: null};
+  instance._scenePanel = {entryId: 'entry', rows: [first, second], drafts: new Map(), draft: null};
+  instance._scenePanels = new Map([['entry', instance._scenePanel]]);
+  const entry = {entry_id: 'entry', remotes: []};
+  instance._entry = () => entry;
+  const updateRows = rows => {entry.remotes = rows.map(row => ({...row, kind: 'scene', scene_index: row.index}));};
+  updateRows([first, second]);
   instance._selectSceneDraft(structuredClone(first));
   instance._scenePanel.draft.name = 'Movie night';
   instance._draftActions = [{action: 'light.turn_off', target: {entity_id: 'light.hall'}}];
   instance._rememberMapping();
   instance._selectSceneDraft(structuredClone(second));
-  instance._hass = {async callWS() {return {scenes: [first, second], limit: 10};}};
+  instance._hass = {async callWS() {throw new Error('Selecting a scene must use the common inventory');}};
   await instance._openScenes();
   instance._selectSceneDraft(structuredClone(first));
   assert.equal(instance._scenePanel.draft.name, 'Movie night');
   assert.equal(instance._draftActions[0].action, 'light.turn_off');
   instance._selectSceneDraft(structuredClone(second));
   const changed = {...first, name: 'Changed on the remote'};
-  instance._hass.callWS = async () => ({scenes: [changed, second], limit: 10});
+  updateRows([changed, second]);
   await instance._openScenes();
   instance._selectSceneDraft(structuredClone(changed));
   assert.equal(instance._scenePanel.draft.name, changed.name);
@@ -616,6 +666,10 @@ test('automatic Bridge installation needs no device key', async () => {
 
 test('capacity shows one available/total count for each remote type', () => {
   const instance = panel();
+  const entry = {scene_limit: 10, remotes: [
+    {kind: 'native'}, {kind: 'scene', scene_index: 0}, {kind: 'scene', scene_index: 4},
+  ]};
+  instance._entry = () => entry;
   instance._sources = {remote_capacity: {
     ir: {available: 7, total: 10},
     native: {available: 1, total: 4},
@@ -624,7 +678,13 @@ test('capacity shows one available/total count for each remote type', () => {
   assert.match(instance._renderRemoteCapacity(), /IR remotes available <b>7\/10/);
   assert.match(instance._renderRemoteCapacity(), /Bridge remotes available <b>1\/4/);
   assert.match(instance._renderRemoteCapacity(), /HID remotes available <b>2\/3/);
+  assert.match(instance._renderRemoteCapacity(), /HID remotes available[\s\S]*Scenes available <b>8\/10/);
   assert.doesNotMatch(instance._renderRemoteCapacity(), /Check availability/);
+  entry.remotes = Array.from({length: 10}, (_, scene_index) => ({kind: 'scene', scene_index}));
+  assert.match(instance._renderRemoteCapacity(), /Scenes available <b>0\/10/);
+  entry.scene_error = 'Remote asleep';
+  assert.match(instance._renderRemoteCapacity(), /Scenes available <b>—\/10/);
+
 
   instance._sources.remote_capacity.hid.available = null;
   assert.match(instance._renderRemoteCapacity(), /HID remotes available <b>—\/3/);
