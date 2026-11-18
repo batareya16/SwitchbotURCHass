@@ -338,19 +338,19 @@ async def install_ir_profile(
         duplicates = [entry for entry in entries if entry[3] == profile.remote_id]
         if duplicates and not replace_existing:
             return {"replace_existing": "ir_duplicate_requires_replace"}, None, None
-        for index, dev_type, control_type, _entry_id in sorted(
+        for index, dev_type, control_type, entry_id in sorted(
             duplicates, key=lambda entry: entry[0], reverse=True
         ):
             delete_command = commands.build_delete(
                 remote_index=index,
                 device_type=dev_type,
                 control_type=control_type,
-                device_id=profile.remote_id.hex(),
+                device_id=entry_id.hex(),
             )
             error = await delete_and_verify(
                 client, delete_command,
                 device_type=int(dev_type), control_type=int(control_type),
-                device_id=profile.remote_id.hex(),
+                device_id=entry_id.hex(),
             )
             _status(f"delete duplicate slot {index}: {'verified' if error is None else error}")
             if error:

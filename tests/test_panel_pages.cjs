@@ -693,7 +693,7 @@ test('capacity shows one available/total count for each remote type', () => {
   assert.match(instance._renderRemoteCapacity(), /Check availability/);
 });
 
-test('a full category blocks only that type and leaves IR replacement available', () => {
+test('a full category blocks only that type', () => {
   const instance = panel();
   instance._sources = {remote_capacity: {
     ir: {available: 0, total: 10},
@@ -702,8 +702,7 @@ test('a full category blocks only that type and leaves IR replacement available'
   }};
   assert.match(instance._installCapacityError({kind: 'native'}), /No more Bridge remotes/);
   assert.equal(instance._installCapacityError({kind: 'hid'}), '');
-  assert.match(instance._installCapacityError({kind: 'cloud'}), /replace/);
-  assert.equal(instance._installCapacityError({kind: 'cloud', replace: true}), '');
+  assert.match(instance._installCapacityError({kind: 'cloud'}), /No more IR remotes.*Delete one first/);
 });
 
 test('HID creation opens its settings without requesting a MAC or manual button list', async () => {
@@ -1036,4 +1035,22 @@ test('capacity row counts the single text remote', () => {
   instance._entry = () => ({remotes: [], scene_limit: 10});
   instance._sources = {matter: {installed: true}};
   assert.match(instance._renderRemoteCapacity(), /Text remotes available <b>0\/1<\/b>/);
+});
+
+test('the catalog brand search keeps its text and filter while a brand or model is chosen', () => {
+  const instance = panel();
+  instance._entry = () => ({icons: []});
+  instance._sources = {catalog: true, cloud: true, cloud_remotes: [], native_options: {screen_profiles: []}, remote_capacity: {}};
+  instance._catalog = {available: true, types: [{value: 2, label: 'TV'}], remoteType: 2,
+    brands: ['Samsung', 'Sony', 'LG', 'Sanyo'], brand: 'Sony', search: 'so', models: [{hxd_index: 'a', label: 'Bravia'}],
+    hxd: '', buttons: [], busy: '', error: ''};
+  instance._add = {kind: 'catalog', icon: 'device', name: ''};
+  const html = instance._renderAddRemote();
+  assert.match(html, /data-catalog="search"[^>]*value="so"/);
+  const list = html.slice(html.indexOf('data-catalog="brand"'), html.indexOf('data-catalog="model"'));
+  assert.match(list, /Sony/);
+  assert.doesNotMatch(list, /Samsung|Sanyo|LG/);
+  assert.deepEqual(instance._catalogBrands(), ['Sony']);
+  instance._catalog.search = '';
+  assert.equal(instance._catalogBrands().length, 4);
 });

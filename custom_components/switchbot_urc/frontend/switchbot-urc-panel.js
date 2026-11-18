@@ -287,7 +287,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._physicalSources = [];
     // Catalog picker state. `available` stays null until the first lookup answers, so the
     // picker can say "loading" once instead of asking on every render.
-    this._catalog = { available: null, types: [], remoteType: 2, brands: [], brand: "",
+    this._catalog = { available: null, types: [], remoteType: 2, brands: [], brand: "", search: "",
                       models: [], hxd: "", buttons: [], busy: "", error: "" };
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
@@ -1864,8 +1864,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const ir = add.kind === "catalog" || add.kind === "cloud";
     const kind = ir ? "ir" : add.kind;
-    if (sources?.remote_capacity?.[kind]?.available !== 0 || (ir && add.replace)) return "";
-    if (ir) return "No more IR remotes can be added. You can replace an installed IR remote.";
+    if (sources?.remote_capacity?.[kind]?.available !== 0) return "";
+    if (ir) return "No more IR remotes can be added. Delete one first.";
     if (kind === "native") return "No more Bridge remotes can be added.";
     return "No more HID remotes can be added.";
   }
@@ -2293,6 +2293,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       <small>Every refresh briefly pauses the bridge, so a longer time is gentler. 0 = as often as possible.</small></label>`;
   }
 
+  // Brands matching what is typed in the catalog search box; the text lives in the catalog state
+  // so that choosing a brand or a model, which re-renders, does not wipe it.
+  _catalogBrands() {
+    const cat = this._catalog;
+    const needle = (cat.search || "").trim().toLowerCase();
+    return needle ? cat.brands.filter((name) => name.toLowerCase().includes(needle)) : cat.brands;
+  }
+
   _renderAddRemote() {
     const add = this._add;
     if (!add) return "";
@@ -2339,9 +2347,10 @@ class SwitchBotUrcPanel extends HTMLElement {
           cat.types.map((item) => option(item.value, item.label, item.value === cat.remoteType)).join("")
         }</select></label>
         <label>Brand<input type="search" data-catalog="search" autocomplete="off"
+          value="${escapeHtml(cat.search || "")}"
           placeholder="Search ${cat.brands.length} brand${cat.brands.length === 1 ? "" : "s"}…"></label>
         <select data-catalog="brand" size="6">${
-          cat.brands.slice(0, 300).map((name) => option(name, name, name === cat.brand)).join("")
+          this._catalogBrands().slice(0, 300).map((name) => option(name, name, name === cat.brand)).join("")
         }</select>
         ${cat.models.length ? `<label>Model<select data-catalog="model">
           <option value="">Choose a model…</option>${
@@ -2379,8 +2388,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${add.kind === "scene" ? "" : this._renderAddIconPicker(add)}
       <label>Name<input type="text" data-add-field="name" value="${escapeHtml(add.name || "")}"
         placeholder="What it is called on the remote's screen"></label>
-      ${add.kind === "native" || add.kind === "matter" || add.kind === "scene" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
-        ${add.replace ? "checked" : ""}>Replace an existing copy of the same remote</label>`}
       ${this._feedback(add.error || capacityError, add.error ? "error" : "warning", "Add a remote")}
       <div class="key-actions">
         <button class="primary" id="addRemoteConfirm" ${add.busy || capacityError ? "disabled" : ""}>${
@@ -2560,7 +2567,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       field.addEventListener("input", () => {
         const name = field.dataset.addField;
         if (name === "name") add.name = field.value;
-        else if (name === "replace") add.replace = field.checked;
         else if (name === "remote_id") add.remoteId = field.value;
         else if (name === "device_type") add.deviceType = field.value;
         else if (name === "icon") add.icon = field.value;
@@ -2568,10 +2574,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       field.addEventListener("change", () => {
         const name = field.dataset.addField;
         if (name === "remote_id") add.remoteId = field.value;
-        if (name === "replace") {
-          add.replace = field.checked;
-          this._render();
-        }
         if (name === "device_type") {
           add.deviceType = field.value;
           if (add.kind === "native" || add.kind === "hid") this._render();
@@ -2593,14 +2595,11 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelector('.add-remote [data-catalog="search"]')?.addEventListener("input", (event) => {
       // Filter in place: re-rendering here would steal focus mid-word.
-      const needle = event.target.value.trim().toLowerCase();
+      this._catalog.search = event.target.value;
       const list = root.querySelector('.add-remote [data-catalog="brand"]');
       if (!list) return;
-      const matches = needle
-        ? this._catalog.brands.filter((name) => name.toLowerCase().includes(needle))
-        : this._catalog.brands;
-      list.innerHTML = matches.slice(0, 300).map(
-        (name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+      list.innerHTML = this._catalogBrands().slice(0, 300).map(
+        (name) => `<option value="${escapeHtml(name)}"${name === this._catalog.brand ? " selected" : ""}>${escapeHtml(name)}</option>`).join("");
     });
 
     root.querySelector('.add-remote [data-catalog="brand"]')?.addEventListener("change", async (event) => {
@@ -2719,7 +2718,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           entry_id: this._entryId,
           source: add.kind,
           name,
-          replace_existing: !!add.replace,
+          replace_existing: false,
           icon: add.icon || "device",
           ...(add.kind === "catalog"
             ? { hxd_index: this._catalog.hxd, remote_type: this._catalog.remoteType }
@@ -3007,14 +3006,11 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelector('.key-editor [data-catalog="search"]')?.addEventListener("input", (event) => {
       // Filter the brand list in place: re-rendering here would steal focus mid-word.
-      const needle = event.target.value.trim().toLowerCase();
+      this._catalog.search = event.target.value;
       const list = root.querySelector('.key-editor [data-catalog="brand"]');
       if (!list) return;
-      const matches = needle
-        ? this._catalog.brands.filter((name) => name.toLowerCase().includes(needle))
-        : this._catalog.brands;
-      list.innerHTML = matches.slice(0, 300).map(
-        (name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+      list.innerHTML = this._catalogBrands().slice(0, 300).map(
+        (name) => `<option value="${escapeHtml(name)}"${name === this._catalog.brand ? " selected" : ""}>${escapeHtml(name)}</option>`).join("");
     });
 
     root.querySelector('.key-editor [data-catalog="brand"]')?.addEventListener("change", async (event) => {
@@ -3258,9 +3254,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         cat.types.map((item) => option(item.value, item.label, item.value === cat.remoteType)).join("")
       }</select></label>
       <label>Brand<input type="search" data-catalog="search" autocomplete="off"
+        value="${escapeHtml(cat.search || "")}"
         placeholder="Search ${cat.brands.length} brand${cat.brands.length === 1 ? "" : "s"}…"></label>
       <select data-catalog="brand" size="6">${
-        cat.brands.slice(0, 300).map((name) => option(name, name, name === cat.brand)).join("")
+        this._catalogBrands().slice(0, 300).map((name) => option(name, name, name === cat.brand)).join("")
       }</select>
       ${cat.models.length ? `<label>Model<select data-catalog="model">
         <option value="">Choose a model…</option>${
@@ -3292,7 +3289,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   async _loadCatalogBrands(remoteType) {
     const cat = this._catalog;
-    Object.assign(cat, { remoteType, brand: "", models: [], hxd: "", buttons: [], error: "" });
+    Object.assign(cat, { remoteType, brand: "", search: "", models: [], hxd: "", buttons: [], error: "" });
     const result = await this._hass.callWS({
       type: `${DOMAIN}/studio/catalog/brands`, remote_type: remoteType });
     cat.brands = result.brands || [];

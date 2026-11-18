@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.2
+
+- IR remotes from the SwitchBot account are now installed as new remotes under a new ID, the same way catalog remotes always were. Installing one used to write it under its account ID, where what an interrupted earlier upload left behind could keep the new copy from working. The **Replace an existing copy of the same remote** option is gone from the Add dialog; delete a remote you no longer want from its row. When the IR slots are full, Studio now says to delete one first.
+- The **Type default** tile in the Add dialog shows the picture of the chosen IR remote type for catalog and account remotes too, instead of an arrow.
+- The brand search in the IR catalog keeps its text and its filtered list when you choose a brand or a model.
+- Bridge add-on 0.53.2: a refused connection attempt to the remote is routine, so it is logged at info level and retried up to six times before a failure is reported; large uploads are no longer paused 50 ms after every chunk, and the log shows how long they took and the ATT MTU.
+
 ## 0.53.1
 
 - Reorder the tiles in the Universal Remote's own list: under **Installed on the remote**, move rows with ▲ and ▼ and choose **Apply order**. Studio sends the remote's `sortDevice` command (`0F 62 0A`) with the whole table, checks first that the remote still holds exactly the table you saw, refuses a list that is not a clean permutation or whose rows share one Bluetooth address, reads the table back afterwards and moves its saved records to the new slots. The rows now also show the name Studio knows them by. Rows can also be dragged by their handle (⠿), with a mouse or by touch.

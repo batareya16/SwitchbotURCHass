@@ -596,8 +596,11 @@ async def _install_ir_remote(hass, connection, msg):
                 remote_id, str(record.get("createFrom") or "hub")))
             if not downloaded:
                 raise ValueError("The account holds no IR record for that remote")
+            # An account remote is always installed as a new remote under a fresh id, like a
+            # catalog one: the remote then holds nothing under that id (a half-written earlier
+            # upload, a copy that is already installed), and no existing remote is overwritten.
             profile = profile_from_cloud(
-                downloaded[0], remote_id=remote_id, name=name, metadata=record)
+                downloaded[0], remote_id=generate_remote_id(), name=name, metadata=record)
 
         client = _client(hass, entry)
         status: list[str] = []

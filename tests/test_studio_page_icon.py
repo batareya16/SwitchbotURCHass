@@ -164,3 +164,4 @@ def test_serialised_remotes_say_which_picture_type_default_or_original_gives_bac
     assert rows["hid1"]["icon"] == "washer" and rows["hid1"]["default_artwork_id"] == 0x24
     # the text remote's "Type default" is the firmware's own text-remote picture
     assert rows["mt1"]["default_artwork_id"] == 0x1B
+
