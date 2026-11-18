@@ -64,6 +64,7 @@ from .const import (
 from .crypto import UrcCrypto
 from .hid import decode_report, is_press
 from .studio import async_register_studio
+from .matter_live import MatterLiveCaptions
 from .studio_matter import listen_for_matter
 from .studio_scenes import listen_for_scenes
 
@@ -310,6 +311,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(listen_for_scenes(hass, entry, store[entry.entry_id]))
     entry.async_on_unload(listen_for_matter(hass, entry, store[entry.entry_id]))
+    live_captions = MatterLiveCaptions(hass, entry)
+    store[entry.entry_id]["matter_live"] = live_captions
+    live_captions.reconfigure()
+    entry.async_on_unload(live_captions.stop)
     return True
 
 

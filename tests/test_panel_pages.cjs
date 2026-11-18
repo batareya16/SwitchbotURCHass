@@ -870,6 +870,40 @@ test('every row of the installed table can be deleted, whether or not Studio kno
   assert.equal(sent.length, 0);
 });
 
+test('a templated caption has no byte limit, shows what is on the remote and saves with its interval', async () => {
+  const instance = panel();
+  const remote = {remote_id: 'mt', name: 'Hall', icon: 'device', matter: {
+    captions: ['A', 'Battery 80%', 'C', 'D'], fields: ['A', "Battery {{ states('x') }}%", 'C', 'D'],
+    max_bytes: 31, min_interval: 60, interval_range: [0, 3600]}};
+  // The editor shows the template, the counter shows the text now on the remote.
+  assert.match(instance._renderMatterCaptionFields(remote.matter.fields, 31, remote.matter.captions),
+    /template · now on the remote: Battery 80%/);
+  assert.equal(instance._captionsChanged(remote, {captions: remote.matter.fields}), false);
+  const long = "Battery {{ states('sensor.a_very_long_entity_name_that_does_not_matter') }} percent";
+  assert.equal(instance._captionsProblem(remote, {captions: ['A', long, 'C', 'D']}), '');
+  assert.match(instance._captionsProblem(remote, {captions: ['A', 'x'.repeat(40), 'C', 'D']}), /longer than 31/);
+  assert.match(instance._captionsProblem(remote, {interval: '-1'}), /between 0 and 3600/);
+  assert.match(instance._captionsProblem(remote, {interval: '4000'}), /between 0 and 3600/);
+  assert.equal(instance._captionsProblem(remote, {interval: '0'}), '');
+  assert.equal(instance._captionsProblem(remote, {interval: '90'}), '');
+  assert.match(instance._renderMatterInterval(90, [0, 3600]), /data-matter-interval="1" min="0" max="3600"[^>]*value="90"/);
+
+  const sent = [];
+  instance._remote = () => remote;
+  instance._draftScope = () => 'mt';
+  instance._entry = () => ({icon_artwork: {}});
+  instance._appearanceDraftsByRemote = new Map([['mt', {name: 'Hall', icon: 'device',
+    captions: remote.matter.fields, interval: '120'}]]);
+  instance._hass = {callWS: async (msg) => { sent.push(msg); return {}; }};
+  assert.equal(instance._hasAppearanceChanges(), true);  // only the interval changed
+  await instance._saveAppearance();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].min_interval, 120);
+  assert.deepEqual(sent[0].captions, remote.matter.fields);  // the template travels, not its text
+  assert.equal(remote.matter.min_interval, 120);
+  assert.equal(remote.matter.captions[1], 'Battery 80%');  // unchanged until it is rendered again
+});
+
 test('adding a scene is checked against the scene limit like any other install', () => {
   const instance = panel();
   const scenes = Array.from({length: 10}, (_, index) => ({kind: 'scene', scene_index: index}));

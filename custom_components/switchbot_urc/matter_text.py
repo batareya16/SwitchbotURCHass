@@ -53,6 +53,86 @@ def normalize_captions(captions) -> tuple[str, ...]:
     return tuple(result)
 
 
+# Live captions: a caption written as a Home Assistant template is re-rendered when its entities
+# change and written to the remote, at most once per interval.
+MIN_INTERVAL_DEFAULT = 60
+# No floor: how often to write is the user's call. Zero means "as soon as the previous write is
+# done", and the next write cannot start before that anyway.
+MIN_INTERVAL_FLOOR = 0
+MIN_INTERVAL_CEILING = 3600
+# After a failed write the retry always waits at least this long, whatever the interval, so an
+# unreachable remote is never hammered in a loop.
+RETRY_BASE_SECONDS = 5
+
+
+def is_template(text) -> bool:
+    return isinstance(text, str) and ("{{" in text or "{%" in text)
+
+
+def normalize_interval(value) -> int:
+    """The shortest time between two writes, in seconds; the default when it is not a number."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return MIN_INTERVAL_DEFAULT
+    return max(MIN_INTERVAL_FLOOR, min(MIN_INTERVAL_CEILING, seconds))
+
+
+def fit_caption(text) -> str:
+    """A rendered caption cut to what the field holds, never inside a UTF-8 character.
+
+    A template can produce anything (empty, long, with control characters), so unlike a typed
+    caption it is made to fit instead of being rejected: empty becomes a dash.
+    """
+    cleaned = "".join(ch for ch in str(text) if ch >= " " and ch != "\x7f").strip()
+    raw = cleaned.encode("utf-8")
+    if len(raw) > CAPTION_MAX_BYTES:
+        cleaned = raw[:CAPTION_MAX_BYTES].decode("utf-8", errors="ignore").rstrip()
+    return cleaned or "-"
+
+
+class CaptionScheduler:
+    """Decides when a freshly rendered set of captions is written.
+
+    It never writes a set the remote already shows, never writes sooner than ``interval``
+    seconds after the previous write, and when values change meanwhile it keeps only the latest.
+    Time is passed in, so the rule can be tested without a clock.
+    """
+
+    def __init__(self, interval: int, shown: tuple[str, ...] | None = None) -> None:
+        self.interval = normalize_interval(interval)
+        self.shown = tuple(shown) if shown else None
+        self.pending: tuple[str, ...] | None = None
+        self.last_write: float | None = None
+        self.failures = 0
+
+    def offer(self, captions: tuple[str, ...], now: float) -> float | None:
+        """Seconds to wait before writing ``captions``, or None when there is nothing to write."""
+        captions = tuple(captions)
+        if captions == self.shown:
+            self.pending = None
+            return None
+        self.pending = captions
+        return self.delay(now)
+
+    def delay(self, now: float) -> float:
+        wait = 0.0 if self.last_write is None else self.last_write + self.interval - now
+        if self.failures:
+            base = max(self.interval, RETRY_BASE_SECONDS)
+            wait = max(wait, min(600.0, base * 2 ** (self.failures - 1)))
+        return max(0.0, wait)
+
+    def written(self, captions: tuple[str, ...], now: float) -> None:
+        self.shown = tuple(captions)
+        self.last_write = now
+        self.failures = 0
+        if self.pending == self.shown:
+            self.pending = None
+
+    def failed(self) -> None:
+        self.failures += 1
+
+
 def caption_field(caption: str) -> bytes:
     raw = caption.encode("utf-8")
     if len(raw) > CAPTION_MAX_BYTES:

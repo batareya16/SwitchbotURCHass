@@ -89,6 +89,12 @@ There can be only one text remote per Universal Remote, because the firmware dra
 
 After writing, Studio reads the remote's device table back. If the remote does not list the new text remote, Studio reports an error instead of success.
 
+#### Captions that follow Home Assistant
+
+A caption can be a Home Assistant template, for example `Battery {{ states('sensor.vacuum_battery') }}%`. Studio renders it before saving (a template that does not render is refused), and from then on the caption is rewritten whenever the text changes, also while that screen is open on the remote. The caption field shows the text that is on the remote right now.
+
+Every write pauses the Bridge for a few seconds and rewrites a file in the remote's flash, so changes are written at most once per interval. Set it under the captions (default 60 seconds, from 0 to 3600; 0 means as soon as the previous write is done, so how often is up to you). When values change meanwhile, only the latest is written. A text longer than 31 bytes is cut to fit, and an unreachable remote is retried with growing pauses.
+
 ### Control an infrared appliance
 
 Choose **Add a remote → IR from the catalog** and select the device type, brand and model. Or choose **IR saved in your account** to install a remote you set up in the SwitchBot app. After installation, select it on the WoRWS and point the remote at the appliance.

@@ -23,11 +23,15 @@ from .matter_text import (
     CONTROL_TYPE,
     LETTERS,
     STUDIO_DEVICE_TYPE,
+    MIN_INTERVAL_DEFAULT,
     MatterPressTracker,
     build_matter_create,
+    fit_caption,
     is_matter_row,
+    is_template,
     new_device_id,
     normalize_captions,
+    normalize_interval,
 )
 from .studio_physical import read_device_table, store_device_table
 from .studio_remotes import new_remote_id, remote_management_lock
@@ -72,6 +76,7 @@ async def _send(client, packet: bytes) -> None:
     vol.Optional("name"): str,
     vol.Optional("remote_id"): str,
     vol.Optional("icon"): vol.In(ICON_CHOICES),
+    vol.Optional("min_interval"): int,
 })
 @websocket_api.async_response
 async def ws_save_matter(hass, connection, msg):
@@ -86,12 +91,91 @@ async def ws_save_matter(hass, connection, msg):
     connection.send_result(msg["id"], result)
 
 
+def render_caption(hass, text: str) -> str:
+    """Render one caption template now, cut to what the field holds."""
+    from homeassistant.helpers.template import Template  # noqa: PLC0415
+
+    try:
+        return fit_caption(Template(text, hass).async_render(parse_result=False))
+    except Exception as err:  # noqa: BLE001 - the editor shows the template's own message
+        raise ValueError(f"The template {text!r} does not render: {err}") from err
+
+
+def prepare_captions(hass, fields) -> tuple[list[str], tuple[str, ...]]:
+    """Split what the editor sent into template sources and the captions to write now.
+
+    A field holding a template is rendered here, so a broken one is refused before anything is
+    written; a plain field is checked exactly as before.
+    """
+    if not isinstance(fields, (list, tuple)) or len(fields) != 4:
+        raise ValueError("A text remote has four captions, A to D")
+    templates = [str(item).strip() if is_template(item) else "" for item in fields]
+    texts = [render_caption(hass, template) if template else item
+             for template, item in zip(templates, fields)]
+    return templates, normalize_captions(texts)
+
+
+def _find_row(existing: dict[str, Any], table) -> tuple | None:
+    # Slots shift when an earlier remote is deleted, so the stored index can be stale. The
+    # id is what the device keeps, so find the row by it and fall back to the slot only.
+    on_device = [row for row in table if is_matter_row(row)]
+    identity = c.id_to_bytes(existing["device_id"])
+    return (next((item for item in on_device if item[3] == identity), None)
+            or next((item for item in on_device if item[0] == existing.get("index")), None))
+
+
+async def _rewrite_existing(
+    hass, entry, client, existing, row, captions, icon_code: int, updates: dict[str, Any],
+) -> bytes:
+    """Resend the whole text remote with new captions and save what was written."""
+    packet = build_matter_create(
+        remote_index=row[0], device_id=existing["device_id"],
+        name=str(existing.get("name") or "Accessory"), captions=captions, icon=icon_code,
+    )
+    await _send(client, packet)
+    after = await read_device_table(hass, entry, client)
+    if not any(is_matter_row(item) and item[0] == row[0] and item[3] == row[3] for item in after):
+        raise ValueError("The remote no longer lists the text remote after the update")
+    remotes = deepcopy(list(entry.options.get("remotes", [])))
+    for remote in remotes:
+        if remote.get("remote_id") == existing["remote_id"]:
+            remote.update({
+                "index": row[0], "matter_captions": list(captions),
+                "physical_packets": [packet.hex()], "icon_code": icon_code, **updates,
+            })
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "remotes": remotes})
+    return packet
+
+
+async def write_live_captions(hass, entry, captions: tuple[str, ...]) -> None:
+    """Write already rendered captions to the existing text remote (the live-caption path).
+
+    Name, icon and slot stay as they are. Callers hold the remote-management lock.
+    """
+    client = _client(hass, entry)
+    existing = matter_remote(entry)
+    if existing is None:
+        raise ValueError("There is no text remote to write to")
+    row = _find_row(existing, await read_device_table(hass, entry, client))
+    if row is None:
+        raise ValueError("The text remote is no longer on the device")
+    await _rewrite_existing(
+        hass, entry, client, existing, row, normalize_captions(captions),
+        int(existing.get("icon_code") or 0), {})
+
+
+def _reconfigure_live(hass, entry) -> None:
+    live = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("matter_live")
+    if live is not None:
+        live.reconfigure(wrote=True)
+
+
 async def _save(hass, msg) -> dict[str, Any]:
     entry = hass.config_entries.async_get_entry(msg["entry_id"])
     if entry is None or entry.domain != DOMAIN:
         raise ValueError("Integration not found")
     client = _client(hass, entry)
-    captions = normalize_captions(msg["captions"])
+    templates, captions = prepare_captions(hass, msg["captions"])
     existing = matter_remote(entry)
     table = await read_device_table(hass, entry, client)
     on_device = [row for row in table if is_matter_row(row)]
@@ -99,35 +183,21 @@ async def _save(hass, msg) -> dict[str, Any]:
     if msg.get("remote_id"):
         if existing is None or existing.get("remote_id") != msg["remote_id"]:
             raise ValueError("That is not the text remote")
-        # Slots shift when an earlier remote is deleted, so the stored index can be stale. The
-        # id is what the device keeps, so find the row by it and fall back to the slot only.
-        identity = c.id_to_bytes(existing["device_id"])
-        row = (next((item for item in on_device if item[3] == identity), None)
-               or next((item for item in on_device if item[0] == existing.get("index")), None))
+        row = _find_row(existing, table)
         if row is None:
             raise ValueError("The text remote is no longer on the device. Refresh, then add it again.")
         # A caption rewrite resends the whole create packet, so keep the tile's icon byte.
         icon_code = (c.ICON[msg["icon"]] if msg.get("icon")
                      else int(existing.get("icon_code") or 0))
-        packet = build_matter_create(
-            remote_index=row[0], device_id=existing["device_id"],
-            name=str(existing.get("name") or "Accessory"), captions=captions,
-            icon=icon_code,
-        )
-        await _send(client, packet)
-        after = await read_device_table(hass, entry, client)
-        if not any(is_matter_row(item) and item[0] == row[0] and item[3] == row[3] for item in after):
-            raise ValueError("The remote no longer lists the text remote after the update")
-        remotes = deepcopy(list(entry.options.get("remotes", [])))
-        for remote in remotes:
-            if remote.get("remote_id") == existing["remote_id"]:
-                remote["index"] = row[0]
-                remote["matter_captions"] = list(captions)
-                remote["physical_packets"] = [packet.hex()]
-                remote["icon_code"] = icon_code
-                if msg.get("icon"):
-                    remote["icon"] = msg["icon"]
-        hass.config_entries.async_update_entry(entry, options={**entry.options, "remotes": remotes})
+        updates: dict[str, Any] = {
+            "matter_templates": templates,
+            "matter_min_interval": normalize_interval(
+                msg.get("min_interval", existing.get("matter_min_interval", MIN_INTERVAL_DEFAULT))),
+        }
+        if msg.get("icon"):
+            updates["icon"] = msg["icon"]
+        await _rewrite_existing(hass, entry, client, existing, row, captions, icon_code, updates)
+        _reconfigure_live(hass, entry)
         return {"remote_id": existing["remote_id"], "slot": row[0], "captions": list(captions)}
 
     if existing is not None or on_device:
@@ -162,8 +232,11 @@ async def _save(hass, msg) -> dict[str, Any]:
         "icon": msg.get("icon") or "light", "icon_code": icon_code,
         "device_id": device_id, "remote_id": remote_id, "buttons": [],
         "matter_captions": list(captions), "physical_packets": [packet.hex()],
+        "matter_templates": templates,
+        "matter_min_interval": normalize_interval(msg.get("min_interval", MIN_INTERVAL_DEFAULT)),
     })
     hass.config_entries.async_update_entry(entry, options={**entry.options, "remotes": remotes})
+    _reconfigure_live(hass, entry)
     return {"remote_id": remote_id, "slot": slot, "captions": list(captions)}
 
 

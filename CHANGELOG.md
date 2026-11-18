@@ -4,11 +4,12 @@
 
 - Choose an icon for every kind of remote in Remote Studio: native, text, HID and IR remotes now offer the firmware's own pictures (washing machine, bathtub, fridge and the rest) and **Type default** to give the picture back to the device type. A nonzero icon replaces the type's picture on the remote's list. Confirmed on a real Universal Remote for native, text, HID and IR remotes.
 - Two more firmware icons, **Roller blind** and **Garage** (bytes `13` and `14`): the app has no names for them, the remote draws them.
+- Live captions on the text remote: write a Home Assistant template in a button's caption, such as `Battery {{ states('sensor.vacuum_battery') }}%`, and the remote's screen follows it, also while that screen is open. A caption is written only when its text really changed and never sooner than the interval you set (default 60 seconds, 0 to 3600; there is no lower limit, how often is up to you), because each write pauses the bridge for a few seconds and rewrites the remote's flash. A text that is too long is cut to fit, a broken template is refused when you save it, and an unreachable remote is retried with growing pauses.
 - Writing an icon to an HID or IR remote resends its saved pages with only that byte changed, after checking that the slot, type and id still match.
 - Pick the icon while adding a remote too: Bridge, IR (catalog and account), HID and text remotes. New HID remotes now start with **Type default** instead of the lamp icon.
 - Delete any row of **Installed on the remote**, also one Studio has no record of (a remote made by another tool, an unsupported type, a leftover from a test). Studio checks that the remote still holds exactly that row before it sends the delete.
 - The text remote keeps its icon when its captions are edited.
-- `create_remote` and `bind_native` list all 18 icons.
+- `create_remote` and `bind_native` list all 20 icons.
 - The Bridge add-on is unchanged in this release.
 
 ## 0.52.2

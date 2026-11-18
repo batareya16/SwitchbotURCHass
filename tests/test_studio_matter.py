@@ -155,7 +155,8 @@ def test_serialised_remote_exposes_captions_and_a_to_d_buttons(studio, monkeypat
     monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
         async_get_entity_id=lambda *_: None))
     row = studio._serialize_entry(hass, entry)["remotes"][0]
-    assert row["matter"] == {"captions": CAPTIONS, "max_bytes": 31}
+    assert row["matter"] == {"captions": CAPTIONS, "max_bytes": 31, "fields": CAPTIONS,
+                             "min_interval": 60, "interval_range": [0, 3600]}
     buttons = row["pages"][0]["buttons"]
     assert [b["position"] for b in buttons] == list("ABCD")
     assert [b["button_id"] for b in buttons] == ["p0_k0", "p0_k1", "p0_k2", "p0_k3"]

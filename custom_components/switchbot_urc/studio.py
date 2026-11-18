@@ -34,7 +34,14 @@ from .physical_layout import (
 from . import studio_remotes
 from . import studio_matter
 from . import studio_scenes
-from .matter_text import CAPTION_MAX_BYTES, STUDIO_DEVICE_TYPE as STUDIO_MATTER_TYPE
+from .matter_text import (
+    CAPTION_MAX_BYTES,
+    MIN_INTERVAL_CEILING,
+    MIN_INTERVAL_DEFAULT,
+    MIN_INTERVAL_FLOOR,
+    STUDIO_DEVICE_TYPE as STUDIO_MATTER_TYPE,
+    normalize_interval,
+)
 from . import studio_settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -355,6 +362,21 @@ def _repair_identities(hass, entry) -> None:
         _LOGGER.exception("could not give every remote its own identity")
 
 
+def _matter_payload(remote: dict[str, Any]) -> dict[str, Any]:
+    """What the text-remote editor needs: what is on the remote, and what each caption is made of."""
+    captions = list(studio_matter.captions_of(remote))
+    templates = [str(item or "") for item in (remote.get("matter_templates") or [])][:4]
+    templates += [""] * (4 - len(templates))
+    return {
+        "captions": captions,
+        "max_bytes": CAPTION_MAX_BYTES,
+        # A templated caption is edited as its template; the text on the remote is in `captions`.
+        "fields": [template or caption for template, caption in zip(templates, captions)],
+        "min_interval": normalize_interval(remote.get("matter_min_interval", MIN_INTERVAL_DEFAULT)),
+        "interval_range": [MIN_INTERVAL_FLOOR, MIN_INTERVAL_CEILING],
+    }
+
+
 def _icon_name(code: int) -> str:
     """The catalog name of a wire icon byte; bytes the app has no name for keep a hex label."""
     return next((name for name, value in commands.ICON.items() if value == code),
@@ -397,8 +419,7 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                     in commands.NATIVE_DEVTYPE,
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
-                **({"matter": {"captions": list(studio_matter.captions_of(remote)),
-                               "max_bytes": CAPTION_MAX_BYTES}}
+                **({"matter": _matter_payload(remote)}
                    if remote.get("device_type") == STUDIO_MATTER_TYPE else {}),
             }
         )

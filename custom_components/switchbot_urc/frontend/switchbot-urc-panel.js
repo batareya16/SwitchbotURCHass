@@ -25,6 +25,8 @@ const APP_ICON_LABELS = {
   washer: "Washing machine", fridge: "Fridge", cookware: "Cooker",
   pool: "Pool", ventilator: "Fan", blinds: "Roller blind", garage: "Garage",
 };
+// A caption written as a Home Assistant template is rendered by Home Assistant and kept up to date.
+const isTemplate = (text) => /\{\{|\{%/.test(text || "");
 // Firmware default artwork for device type 0x27 (docs/native-default-artwork-map.csv).
 const MATTER_ARTWORK = "/switchbot_urc_static/artwork/profile-1b.png";
 const HID_PROFILE_ARTWORK = {
@@ -972,21 +974,38 @@ class SwitchBotUrcPanel extends HTMLElement {
     const remote = this._remote();
     const draft = this._appearanceDraftsByRemote?.get(this._draftScope());
     return Boolean(remote && draft && (draft.name.trim() !== remote.name || draft.icon !== remote.icon
-      || this._captionsChanged(remote, draft)));
+      || this._captionsChanged(remote, draft) || this._intervalChanged(remote, draft)));
+  }
+
+  _intervalChanged(remote, draft) {
+    return Boolean(remote?.matter && draft?.interval != null && draft.interval !== ""
+      && Number(draft.interval) !== remote.matter.min_interval);
   }
 
   _captionsChanged(remote, draft) {
     return Boolean(remote?.matter && draft?.captions
-      && draft.captions.some((text, index) => text.trim() !== remote.matter.captions[index]));
+      && draft.captions.some((text, index) =>
+        text.trim() !== (remote.matter.fields || remote.matter.captions)[index]));
   }
 
   _captionsProblem(remote, draft) {
-    if (!remote?.matter || !draft?.captions) return "";
+    if (!remote?.matter) return "";
+    const [low, high] = remote.matter.interval_range || [0, 3600];
+    if (draft?.interval != null && draft.interval !== "") {
+      const seconds = Number(draft.interval);
+      if (!Number.isInteger(seconds) || seconds < low || seconds > high) {
+        return `The update interval is between ${low} and ${high} seconds.`;
+      }
+    }
+    if (!draft?.captions) return "";
     const encoder = new TextEncoder();
     for (const [index, text] of draft.captions.entries()) {
       const bytes = encoder.encode(text.trim()).length;
       if (!bytes) return `Give button ${"ABCD"[index]} a caption.`;
-      if (bytes > remote.matter.max_bytes) return `Caption ${"ABCD"[index]} is longer than ${remote.matter.max_bytes} bytes.`;
+      // A template is cut to fit when it is rendered, so only a plain caption has a limit here.
+      if (!isTemplate(text) && bytes > remote.matter.max_bytes) {
+        return `Caption ${"ABCD"[index]} is longer than ${remote.matter.max_bytes} bytes.`;
+      }
     }
     return "";
   }
@@ -1005,11 +1024,19 @@ class SwitchBotUrcPanel extends HTMLElement {
       // byte as every other tile, and a caption rewrite resends the whole record, so both
       // travel in one save.
       const iconChanged = icon !== remote.icon;
-      if (this._captionsChanged(remote, draft) || iconChanged) {
-        const captions = (draft.captions || remote.matter.captions).map((text) => text.trim());
+      const intervalChanged = this._intervalChanged(remote, draft);
+      if (this._captionsChanged(remote, draft) || iconChanged || intervalChanged) {
+        const captions = (draft.captions || remote.matter.fields || remote.matter.captions)
+          .map((text) => text.trim());
         await this._hass.callWS({
-          ...request, type: `${DOMAIN}/studio/matter/save`, captions, ...(iconChanged ? { icon } : {}) });
-        remote.matter.captions = captions;
+          ...request, type: `${DOMAIN}/studio/matter/save`, captions,
+          ...(iconChanged ? { icon } : {}),
+          ...(draft.interval != null && draft.interval !== "" ? { min_interval: Number(draft.interval) } : {}) });
+        // What is on the remote now is known for a plain caption; a template shows after a reload.
+        remote.matter.captions = captions.map((text, index) =>
+          isTemplate(text) ? remote.matter.captions[index] : text);
+        remote.matter.fields = captions;
+        if (draft.interval != null && draft.interval !== "") remote.matter.min_interval = Number(draft.interval);
         if (iconChanged) {
           remote.icon = icon;
           remote.artwork_id = (this._entry()?.icon_artwork || {})[icon] ?? null;
@@ -1139,7 +1166,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         : `<span class="ic-art ic-art-default" aria-hidden="true">↺</span>`;
     };
     const matterArt = this._firmwareIconSrc(pickedIcon) || MATTER_ARTWORK;
-    const matterCaptions = draft?.captions ?? remote.matter?.captions ?? [];
+    const matterCaptions = draft?.captions ?? remote.matter?.fields ?? remote.matter?.captions ?? [];
     const hidPairing = isHid ? this._hidPairingByRemote?.get(this._draftScope()) : null;
     return `<section class="appearance">
       <div class="appearance-head"><div><b>Appearance</b><span>How this remote is shown and arranged</span></div></div>
@@ -1171,7 +1198,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${editing ? `<div class="appearance-editor">
         <label>Name on the remote<input data-rename-input="1" maxlength="30" spellcheck="false"
           value="${escapeHtml(draft?.name ?? remote.name)}"></label>
-        ${isMatter ? this._renderMatterCaptionFields(matterCaptions, remote.matter.max_bytes) : ""}
+        ${isMatter ? this._renderMatterCaptionFields(matterCaptions, remote.matter.max_bytes, remote.matter.captions) : ""}
+        ${isMatter ? this._renderMatterInterval(draft?.interval ?? remote.matter.min_interval, remote.matter.interval_range) : ""}
         ${canChooseIcon ? `<span class="appearance-field-label">${firmwareIcons ? "Illustration" : "Device icon"}</span>
         ${firmwareIcons ? `<p class="appearance-note">${isMatter
           ? "The remote list shows the picture this icon selects."
@@ -2115,16 +2143,32 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
   }
 
-  _renderMatterCaptionFields(captions, maxBytes) {
-    const bytes = (text) => new TextEncoder().encode(text || "").length;
+  _captionCounter(value, maxBytes, shown) {
+    const bytes = new TextEncoder().encode((value || "").trim()).length;
+    if (isTemplate(value)) {
+      return shown ? `template · now on the remote: ${shown}` : "template · cut to fit when it is rendered";
+    }
+    return `${bytes}/${maxBytes} bytes`;
+  }
+
+  _renderMatterCaptionFields(captions, maxBytes, shown = []) {
     return `<div class="matter-captions">${Array.from("ABCD", (letter, index) => {
       const value = captions[index] ?? "";
       return `<label>Button ${letter}<input type="text" data-matter-caption="${index}"
         value="${escapeHtml(value)}" spellcheck="false"
-        placeholder="Caption for ${letter}"><small>${bytes(value)}/${maxBytes} bytes</small></label>`;
+        placeholder="Caption for ${letter}"><small>${escapeHtml(this._captionCounter(value, maxBytes, shown[index]))}</small></label>`;
     }).join("")}
       <p class="small">Captions are written to the remote's screen. Each fits ${maxBytes} bytes;
-      Cyrillic letters take two bytes each.</p></div>`;
+      Cyrillic letters take two bytes each. A caption with a Home Assistant template, such as
+      <code>Battery {{ states('sensor.vacuum_battery') }}%</code>, is kept up to date.</p></div>`;
+  }
+
+  _renderMatterInterval(value, range = [0, 3600]) {
+    return `<label class="matter-interval">Update a templated caption at most every
+      <input type="number" data-matter-interval="1" min="${range[0]}" max="${range[1]}" step="1"
+        value="${escapeHtml(String(value ?? 60))}"> seconds
+      <small>Each update pauses the bridge for a few seconds and rewrites the remote's flash. 0 means
+        as soon as the previous update is done; how often is up to you.</small></label>`;
   }
 
   _renderAddRemote() {
@@ -3457,7 +3501,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       const remote = this._remote();
       const scope = this._draftScope();
       const draft = this._appearanceDraftsByRemote.get(scope)
-        || { name: remote.name, icon: remote.icon, ...(remote.matter ? { captions: [...remote.matter.captions] } : {}) };
+        || { name: remote.name, icon: remote.icon, ...(remote.matter
+          ? { captions: [...(remote.matter.fields || remote.matter.captions)] } : {}) };
       this._appearanceDraftsByRemote.set(scope, { ...draft, ...change });
       this._updateSaveButton();
     };
@@ -3470,13 +3515,19 @@ class SwitchBotUrcPanel extends HTMLElement {
         const remote = this._remote();
         if (!remote?.matter) return;
         const scope = this._draftScope();
-        const base = this._appearanceDraftsByRemote.get(scope)?.captions || remote.matter.captions;
+        const base = this._appearanceDraftsByRemote.get(scope)?.captions
+          || remote.matter.fields || remote.matter.captions;
         const captions = [...base];
         captions[Number(field.dataset.matterCaption)] = field.value;
         editAppearance({ captions });
         const counter = field.parentElement?.querySelector("small");
-        if (counter) counter.textContent = `${new TextEncoder().encode(field.value.trim()).length}/${remote.matter.max_bytes} bytes`;
+        const index = Number(field.dataset.matterCaption);
+        if (counter) counter.textContent = this._captionCounter(
+          field.value, remote.matter.max_bytes, remote.matter.captions[index]);
       });
+    });
+    root.querySelector(".appearance-editor [data-matter-interval]")?.addEventListener("input", (event) => {
+      editAppearance({ interval: event.target.value });
     });
 
     root.querySelector("[data-rename-input]")?.addEventListener("input", (event) => {
@@ -3848,6 +3899,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       .matter-captions label small{font-weight:500;font-size:11px;font-variant-numeric:tabular-nums}
       .matter-captions>.small{grid-column:1/-1;margin:0}
       .appearance-editor .matter-captions{margin:0}
+      .matter-interval{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;font-weight:700}
+      .matter-interval input{width:84px;height:36px;padding:0 10px;border:1px solid var(--divider-color,#dfe3e8);border-radius:10px;background:var(--card-background-color,#fff);color:inherit;font:inherit}
+      .matter-interval small{flex-basis:100%;font-weight:500;font-size:11px;color:var(--secondary-text-color,#68727d)}
       /* The three read-only panels are a group of cards, not stray rows of text. */
       details.device-table{margin:8px 0;padding:12px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;background:var(--card-background-color,#fff)}
       details.device-table>summary{font-size:13px;font-weight:600;color:var(--primary-text-color,#17202a)}
