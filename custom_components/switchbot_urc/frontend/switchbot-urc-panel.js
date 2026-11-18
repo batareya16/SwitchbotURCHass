@@ -25,6 +25,8 @@ const APP_ICON_LABELS = {
   washer: "Washing machine", fridge: "Fridge", cookware: "Cooker",
   pool: "Pool", ventilator: "Fan",
 };
+// Firmware default artwork for device type 0x27 (docs/native-default-artwork-map.csv).
+const MATTER_ARTWORK = "/switchbot_urc_static/artwork/profile-1b.png";
 const HID_PROFILE_ARTWORK = {
   APPLE_TV: "1d", FIRE_TV: "1e", UNIVERSAL_BLE: "20", GOOGLE_TV: "1f",
 };
@@ -288,7 +290,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
     this._scenePanel = null;
-    this._matterDraft = null;
     this._scenePanels = new Map();
     this._deviceSettings = null;
     this._sources = null;
@@ -964,7 +965,24 @@ class SwitchBotUrcPanel extends HTMLElement {
   _hasAppearanceChanges() {
     const remote = this._remote();
     const draft = this._appearanceDraftsByRemote?.get(this._draftScope());
-    return Boolean(remote && draft && (draft.name.trim() !== remote.name || draft.icon !== remote.icon));
+    return Boolean(remote && draft && (draft.name.trim() !== remote.name || draft.icon !== remote.icon
+      || this._captionsChanged(remote, draft)));
+  }
+
+  _captionsChanged(remote, draft) {
+    return Boolean(remote?.matter && draft?.captions
+      && draft.captions.some((text, index) => text.trim() !== remote.matter.captions[index]));
+  }
+
+  _captionsProblem(remote, draft) {
+    if (!remote?.matter || !draft?.captions) return "";
+    const encoder = new TextEncoder();
+    for (const [index, text] of draft.captions.entries()) {
+      const bytes = encoder.encode(text.trim()).length;
+      if (!bytes) return `Give button ${"ABCD"[index]} a caption.`;
+      if (bytes > remote.matter.max_bytes) return `Caption ${"ABCD"[index]} is longer than ${remote.matter.max_bytes} bytes.`;
+    }
+    return "";
   }
 
   async _saveAppearance() {
@@ -976,6 +994,21 @@ class SwitchBotUrcPanel extends HTMLElement {
     const icon = draft.icon;
     const request = { entry_id: this._entryId, remote_id: this._remoteId };
     let result;
+    if (remote.matter) {
+      // A text remote has no icon to rewrite: its list artwork is fixed by the firmware.
+      if (this._captionsChanged(remote, draft)) {
+        const captions = draft.captions.map((text) => text.trim());
+        await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/matter/save`, captions });
+        remote.matter.captions = captions;
+      }
+      if (name !== remote.name) {
+        const renamed = await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/remote/rename`, name });
+        if (renamed?.warning) result = renamed;
+        remote.name = name;
+      }
+      this._appearanceDraftsByRemote.delete(scope);
+      return result?.warning;
+    }
     if (icon !== remote.icon) {
       if (!remote.can_test_native_icon) {
         result = await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/remote/recreate`, icon, name });
@@ -1032,7 +1065,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         ? this._nativeProfile(item.native_type || item.device_type) : null;
       const artwork = item.can_test_native_icon
         ? this._nativeArtworkSrc(nativeProfile, item.artwork_id)
-        : this._hidArtworkSrc(item.device_type, item.artwork_id) || this._irArtworkSrc(item);
+        : item.matter ? MATTER_ARTWORK
+          : this._hidArtworkSrc(item.device_type, item.artwork_id) || this._irArtworkSrc(item);
       return `<div class="scr-row${current ? " on" : ""}">
         <button class="k pick-remote" type="button"
           data-remote="${escapeHtml(item.remote_id)}"
@@ -1064,7 +1098,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     const installedArtwork = this._physical?.native_type === remote.native_type ? remote.artwork_id : undefined;
     const artwork = native ? this._nativeArtworkSrc(profile, installedArtwork)
       : this._hidArtworkSrc(remote.device_type, remote.artwork_id) || this._irArtworkSrc(remote);
-    const canChooseIcon = !firmwareArtwork;
+    const isMatter = !!remote.matter;
+    const canChooseIcon = !firmwareArtwork && !isMatter;
+    const matterCaptions = draft?.captions ?? remote.matter?.captions ?? [];
     const hidPairing = isHid ? this._hidPairingByRemote?.get(this._draftScope()) : null;
     return `<section class="appearance">
       <div class="appearance-head"><div><b>Appearance</b><span>How this remote is shown and arranged</span></div></div>
@@ -1072,7 +1108,12 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${native ? `<section class="native-type-panel"><div class="native-type-heading"><b>Type</b>
           <span>Choose the built-in screen and button layout.</span></div>
           ${this._nativeTypeChoices(this._nativeProfiles, this._physical.native_type || this._physical.template, "native-profile")}
-        </section>` : isHid || isIr ? `<div class="appearance-part">
+        </section>` : isMatter ? `<div class="appearance-part">
+          <div class="artwork-preview"><img src="${MATTER_ARTWORK}" alt="Firmware illustration for a text remote"></div>
+          <div class="appearance-part-body"><b>Text remote</b>
+            <p>Four buttons A–D with the captions below. The list picture is built into the firmware and cannot be changed.</p>
+          </div>
+        </div>` : isHid || isIr ? `<div class="appearance-part">
           <div class="artwork-preview">${artwork ? `<img src="${artwork}" alt="Firmware illustration for ${escapeHtml(native ? profile?.title : remote.device_type)}">` : "—"}</div>
           <div class="appearance-part-body">
             ${isHid ? `<b>HID screen</b><p>This illustration is built into the selected HID type. Changing the catalog icon code does not change it.</p>`
@@ -1091,6 +1132,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${editing ? `<div class="appearance-editor">
         <label>Name on the remote<input data-rename-input="1" maxlength="30" spellcheck="false"
           value="${escapeHtml(draft?.name ?? remote.name)}"></label>
+        ${isMatter ? this._renderMatterCaptionFields(matterCaptions, remote.matter.max_bytes) : ""}
         ${canChooseIcon ? `<span class="appearance-field-label">Device icon</span>
         <div class="appearance-icon-grid">${choices.map((name) => `<button
           class="appearance-icon-choice${name === pickedIcon ? " selected" : ""}"
@@ -1316,7 +1358,6 @@ class SwitchBotUrcPanel extends HTMLElement {
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
           ${this._renderApplyBar()}
           ${this._iconPickerFor ? "" : this._renderNativeProfileWarnings()}
-          ${this._renderMatterEditor(remote)}
           ${remote ? `
             ${remote.matter ? "" : `<section class="quick-bind" ${this._saving ? "inert" : ""}>
               <div><b>Quick bind</b><span>Apply a complete light preset; individual buttons can override it.</span></div>
@@ -1704,6 +1745,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     const sceneTotal = entry?.scene_limit ?? 10;
     const sceneAvailable = entry && !entry.scene_error
       ? Math.max(0, sceneTotal - entry.remotes.filter(remote => remote.kind === "scene").length) : "—";
+    // The firmware draws one Matter text remote per Universal Remote.
+    const textTotal = 1;
+    const textUsed = entry?.remotes?.some(remote => remote.matter) || sources?.matter?.installed;
+    const textAvailable = entry ? (textUsed ? 0 : textTotal) : "—";
     const checking = this._sourcesRequest?.refreshCapacity;
     const unknown = counters.some(([kind]) => sources?.remote_capacity?.[kind]?.available == null);
     return `<div class="remote-capacity" role="status">
@@ -1712,6 +1757,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         return `<span>${label} remotes available <b>${available ?? "—"}/${total ?? "—"}</b></span>`;
       }).join("")}
       <span>Scenes available <b>${sceneAvailable}/${sceneTotal}</b></span>
+      <span>Text remotes available <b>${textAvailable}/${textTotal}</b></span>
       ${sources?.capacity_read_failed ? '<span>Could not check availability.</span>' : ""}
       ${unknown ? `<button id="checkRemoteCapacity" class="secondary compact" ${checking ? "disabled" : ""}>${
         checking ? "Checking…" : "Check availability"}</button>` : ""}
@@ -1719,6 +1765,11 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _installCapacityError(add, sources = this._sources) {
+    if (add.kind === "scene") {
+      const entry = this._entry();
+      const used = (entry?.remotes || []).filter((item) => item.kind === "scene").length;
+      return used >= (entry?.scene_limit || 10) ? "The remote already has ten scenes." : "";
+    }
     const ir = add.kind === "catalog" || add.kind === "cloud";
     const kind = ir ? "ir" : add.kind;
     if (sources?.remote_capacity?.[kind]?.available !== 0 || (ir && add.replace)) return "";
@@ -1868,6 +1919,19 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `<img class="scene-icon" src="/switchbot_urc_static/artwork/scene-${String(icon).padStart(2, "0")}.png" alt="">`;
   }
 
+  _sceneIconGrid(selected, attr) {
+    return `<div class="scene-icon-grid">${SCENE_ICONS.map((label, icon) =>
+      `<button type="button" ${attr}="${icon}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"
+        aria-pressed="${selected === icon}" class="${selected === icon ? "selected" : ""}">
+        ${this._sceneIcon(icon)}</button>`).join("")}</div>`;
+  }
+
+  _sceneColorGrid(selected, attr) {
+    return `<div class="scene-colors">${SCENE_COLORS.map((color, index) =>
+      `<button type="button" ${attr}="${index}" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${index}.png)" title="${color}"
+        aria-label="${color}" aria-pressed="${selected === index}" class="${selected === index ? "selected" : ""}"></button>`).join("")}</div>`;
+  }
+
   _renderScenes() {
     const { busy, draft, error, status } = this._scenePanel;
 
@@ -1875,13 +1939,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const appearance = draft ? `<div class="editor-head"><h2>${draft.index == null ? "New scene" : "Appearance"}</h2></div>
       <div class="form-stack">
       <label class="field">Name on the remote<input id="sceneName" maxlength="63" value="${escapeHtml(draft.name)}" autocomplete="off"></label>
-      <div class="field" role="group" aria-label="Icon"><span class="field-label">Icon</span><div class="scene-icon-grid">${SCENE_ICONS.map((label, icon) =>
-        `<button type="button" data-scene-icon="${icon}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"
-          aria-pressed="${draft.icon === icon}" class="${draft.icon === icon ? "selected" : ""}">
-          ${this._sceneIcon(icon)}</button>`).join("")}</div></div>
-      <div class="field" role="group" aria-label="Background"><span class="field-label">Background</span><div class="scene-colors">${SCENE_COLORS.map((color, index) =>
-        `<button type="button" data-scene-color="${index}" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${index}.png)" title="${SCENE_COLORS[index]}"
-          aria-label="${SCENE_COLORS[index]}" aria-pressed="${draft.color === index}" class="${draft.color === index ? "selected" : ""}"></button>`).join("")}</div></div></div>` : "";
+      <div class="field" role="group" aria-label="Icon"><span class="field-label">Icon</span>${this._sceneIconGrid(draft.icon, "data-scene-icon")}</div>
+      <div class="field" role="group" aria-label="Background"><span class="field-label">Background</span>${this._sceneColorGrid(draft.color, "data-scene-color")}</div></div>` : "";
     const actions = draft ? `<div class="editor-head"><h2>${escapeHtml(draft.name || "New scene")}</h2>
       ${draft.index != null ? '<button class="secondary compact" id="testScene">Test saved actions</button>' : ""}</div>
       <div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div>
@@ -1997,42 +2056,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       Cyrillic letters take two bytes each.</p></div>`;
   }
 
-  _renderMatterEditor(remote) {
-    const matter = remote?.matter;
-    if (!matter) return "";
-    const draft = this._matterDraft?.remoteId === remote.remote_id ? this._matterDraft : null;
-    const captions = draft?.captions || matter.captions;
-    return `<section class="matter-editor" ${this._saving ? "inert" : ""}>
-      <div class="action-title"><b>Captions</b><span>experimental, not yet confirmed on hardware</span></div>
-      ${this._renderMatterCaptionFields(captions, matter.max_bytes)}
-      ${this._feedback(draft?.error, "error", "Captions")}
-      ${draft?.status ? `<p class="small" role="status">${escapeHtml(draft.status)}</p>` : ""}
-      <div class="key-actions"><button class="primary" id="saveMatterCaptions"
-        ${draft?.busy || this._physicalBusy ? "disabled" : ""}>${draft?.busy ? "Writing…" : "Write captions"}</button></div>
-    </section>`;
-  }
-
-  async _saveMatterCaptions(remote) {
-    const draft = this._matterDraft?.remoteId === remote.remote_id
-      ? this._matterDraft : { remoteId: remote.remote_id, captions: [...remote.matter.captions] };
-    this._matterDraft = draft;
-    Object.assign(draft, { busy: true, error: "", status: "" });
-    this._physicalBusy = true;
-    this._render();
-    try {
-      await this._hass.callWS({ type: `${DOMAIN}/studio/matter/save`,
-        entry_id: this._entryId, remote_id: remote.remote_id, captions: draft.captions });
-      this._matterDraft = null;
-      this._notify("Captions written to the remote.", "success");
-    } catch (error) {
-      draft.error = error?.message || String(error);
-    } finally {
-      draft.busy = false;
-      this._physicalBusy = false;
-      await this._load();
-    }
-  }
-
   _renderAddRemote() {
     const add = this._add;
     if (!add) return "";
@@ -2044,7 +2067,6 @@ class SwitchBotUrcPanel extends HTMLElement {
           : this._feedback(`Could not load remote options. ${add.loadError}`, "error", "Add a remote")}
         <div class="key-actions">
           ${add.loadError ? '<button class="primary" id="retryAddRemote">Retry</button>' : ""}
-          <button class="secondary" id="addSceneFromPicker">Scene</button>
           <button class="secondary compact" id="addRemoteCancel">Cancel</button>
         </div>
       </section>`;
@@ -2102,6 +2124,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         </details>` : ""}` : ""}
       ${add.kind === "matter" ? this._renderMatterCaptionFields(
         add.captions || sources.matter?.default_captions || [], sources.matter?.max_bytes || 31) : ""}
+      ${add.kind === "scene" ? `<div class="field" role="group" aria-label="Icon"><span class="field-label">Icon</span>${
+        this._sceneIconGrid(add.scene?.icon ?? 0, "data-add-scene-icon")}</div>
+        <div class="field" role="group" aria-label="Background"><span class="field-label">Background</span>${
+        this._sceneColorGrid(add.scene?.color ?? 0, "data-add-scene-color")}</div>` : ""}
       ${add.kind === "cloud" ? `<label>Remote<select data-add-field="remote_id">${
         (sources.cloud_remotes || []).map((item) => option(item.remote_id, item.name, item.remote_id === add.remoteId)).join("")
       }</select></label>` : ""}
@@ -2115,7 +2141,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <p class="small">After adding the remote, pair it from its settings.</p>` : ""}
       <label>Name<input type="text" data-add-field="name" value="${escapeHtml(add.name || "")}"
         placeholder="What it is called on the remote's screen"></label>
-      ${add.kind === "native" || add.kind === "matter" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
+      ${add.kind === "native" || add.kind === "matter" || add.kind === "scene" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
         ${add.replace ? "checked" : ""}>Replace an existing copy of the same remote</label>`}
       ${this._feedback(add.error || capacityError, add.error ? "error" : "warning", "Add a remote")}
       <div class="key-actions">
@@ -2199,7 +2225,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     const add = this._add;
     if (!add) return;
     root.getElementById("retryAddRemote")?.addEventListener("click", () => this._openAddRemote());
-    root.getElementById("addSceneFromPicker")?.addEventListener("click", () => this._openScenes(true));
     if (add.loading || add.loadError) {
       root.getElementById("addRemoteCancel")?.addEventListener("click", () => {
         this._add = null;
@@ -2210,11 +2235,8 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelectorAll("[data-add-kind]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (button.dataset.addKind === "scene") {
-          this._openScenes(true);
-          return;
-        }
         add.kind = button.dataset.addKind;
+        if (add.kind === "scene") add.scene ??= { icon: 0, color: 0 };
         add.nativeType = "";
         add.error = "";
         const kinds = this._sources || {};
@@ -2226,6 +2248,15 @@ class SwitchBotUrcPanel extends HTMLElement {
         add.icon = (add.kind === "native"
           ? "light"
           : (kinds.hid?.icons || [])[0]) || "";
+        this._render();
+      });
+    });
+
+    root.querySelectorAll("[data-add-scene-icon],[data-add-scene-color]").forEach((button) => {
+      button.addEventListener("click", () => {
+        add.scene = { icon: 0, color: 0, ...add.scene };
+        if (button.dataset.addSceneIcon != null) add.scene.icon = Number(button.dataset.addSceneIcon);
+        else add.scene.color = Number(button.dataset.addSceneColor);
         this._render();
       });
     });
@@ -2329,6 +2360,26 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("addRemoteConfirm")?.addEventListener("click", () => this._installRemote());
   }
 
+  async _installScene(add, name) {
+    const entry = this._entry();
+    const rows = (entry.remotes || []).filter((item) => item.kind === "scene").map(
+      ({ scene_index, name, icon, color }) => ({ index: scene_index, name, icon, color }));
+    const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/save`,
+      entry_id: this._entryId, expected: rows, name, icon: add.scene?.icon ?? 0,
+      color: add.scene?.color ?? 0, actions: [] });
+    const known = new Set(rows.map((row) => row.index));
+    const saved = result.scenes.find((row) => !known.has(row.index));
+    entry.remotes = [
+      ...(entry.remotes || []).filter((remote) => remote.kind !== "scene"),
+      ...result.scenes.map((row) => ({ ...row, kind: "scene", remote_id: `scene:${row.index}`,
+        scene_index: row.index, device_type: "Scene", layout_editable: true, pages: [] })),
+    ];
+    this._scenePanels?.delete(this._entryId);
+    this._notify("Scene installed. Add its Home Assistant actions on the right.", "success");
+    if (saved) this._pickRemote(`scene:${saved.index}`);
+    return result;
+  }
+
   async _installRemote() {
     const add = this._add;
     if (this._installCapacityError(add)) return;
@@ -2339,6 +2390,23 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     if (add.kind === "cloud" && !add.remoteId) {
       add.error = "Choose one of your saved remotes."; this._render(); return;
+    }
+    if (add.kind === "scene") {
+      // Scenes live in the shared inventory already, so there is nothing to reload afterwards.
+      add.busy = true;
+      add.error = "";
+      this._render();
+      try {
+        await this._installScene(add, name);
+        this._add = null;
+        this._error = null;
+      } catch (error) {
+        add.error = error?.message || String(error);
+      } finally {
+        add.busy = false;
+        this._render();
+      }
+      return;
     }
     add.busy = true;
     add.error = "";
@@ -2357,6 +2425,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           captions: add.captions || this._sources?.matter?.default_captions || [] });
         if (result?.remote_id) {
           this._remoteId = result.remote_id;
+          this._iconPickerFor = result.remote_id;
           this._pageIndex = 0;
           this._buttonId = null;
         }
@@ -3042,6 +3111,11 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (this._hasAppearanceChanges() && !this._appearanceDraftsByRemote.get(this._draftScope()).name.trim()) {
       return "Give the remote a name before saving.";
     }
+    if (this._remote()?.matter) {
+      const captionProblem = this._captionsProblem(
+        this._remote(), this._appearanceDraftsByRemote?.get(this._draftScope()));
+      if (captionProblem) return captionProblem;
+    }
     return "";
   }
 
@@ -3281,7 +3355,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const editAppearance = (change) => {
       const remote = this._remote();
       const scope = this._draftScope();
-      const draft = this._appearanceDraftsByRemote.get(scope) || { name: remote.name, icon: remote.icon };
+      const draft = this._appearanceDraftsByRemote.get(scope)
+        || { name: remote.name, icon: remote.icon, ...(remote.matter ? { captions: [...remote.matter.captions] } : {}) };
       this._appearanceDraftsByRemote.set(scope, { ...draft, ...change });
       this._updateSaveButton();
     };
@@ -3289,21 +3364,18 @@ class SwitchBotUrcPanel extends HTMLElement {
       editAppearance({ icon: element.dataset.pickIcon });
       this._render();
     }));
-    root.querySelectorAll(".matter-editor [data-matter-caption]").forEach((field) => {
+    root.querySelectorAll(".appearance-editor [data-matter-caption]").forEach((field) => {
       field.addEventListener("input", () => {
         const remote = this._remote();
         if (!remote?.matter) return;
-        if (this._matterDraft?.remoteId !== remote.remote_id) {
-          this._matterDraft = { remoteId: remote.remote_id, captions: [...remote.matter.captions] };
-        }
-        this._matterDraft.captions[Number(field.dataset.matterCaption)] = field.value;
+        const scope = this._draftScope();
+        const base = this._appearanceDraftsByRemote.get(scope)?.captions || remote.matter.captions;
+        const captions = [...base];
+        captions[Number(field.dataset.matterCaption)] = field.value;
+        editAppearance({ captions });
         const counter = field.parentElement?.querySelector("small");
-        if (counter) counter.textContent = `${new TextEncoder().encode(field.value).length}/${remote.matter.max_bytes} bytes`;
+        if (counter) counter.textContent = `${new TextEncoder().encode(field.value.trim()).length}/${remote.matter.max_bytes} bytes`;
       });
-    });
-    root.getElementById("saveMatterCaptions")?.addEventListener("click", () => {
-      const remote = this._remote();
-      if (remote?.matter) this._saveMatterCaptions(remote);
     });
 
     root.querySelector("[data-rename-input]")?.addEventListener("input", (event) => {
@@ -3667,11 +3739,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .matter-captions label{display:grid;gap:6px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}
       .matter-captions label small{font-weight:500;font-size:11px;font-variant-numeric:tabular-nums}
       .matter-captions>.small{grid-column:1/-1;margin:0}
-      .matter-editor{display:grid;gap:12px;margin:14px 0;padding:18px 20px;border:1px solid var(--divider-color,#e2e5e8);border-radius:16px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a}
-      .matter-editor .action-title{align-items:baseline;gap:12px;flex-wrap:wrap}
-      .matter-editor .action-title b{font-size:15px}
-      .matter-editor .matter-captions{margin:0}
-      .matter-editor .key-actions{margin-top:0}
+      .appearance-editor .matter-captions{margin:0}
       /* The three read-only panels are a group of cards, not stray rows of text. */
       details.device-table{margin:8px 0;padding:12px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;background:var(--card-background-color,#fff)}
       details.device-table>summary{font-size:13px;font-weight:600;color:var(--primary-text-color,#17202a)}

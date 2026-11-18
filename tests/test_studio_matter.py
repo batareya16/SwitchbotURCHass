@@ -203,3 +203,22 @@ def test_press_fires_the_standard_button_event_for_the_text_remote(studio, monke
     other[:6] = bytes.fromhex("112233445566")
     receive(types.SimpleNamespace(manufacturer_data={0x0969: bytes(other)}), None)
     assert len(fired) == 1
+
+
+def test_text_remote_is_renamed_with_the_matter_rename_command(studio):
+    client = FakeRemote([NATIVE_ROW])
+    hass, entry, connection, out = make(studio, client)
+    run(studio.studio_matter.ws_save_matter(hass, connection, {
+        "id": 1, "entry_id": "entry", "name": "Accessory", "captions": CAPTIONS}))
+    remote = entry.options["remotes"][0]
+    hass.config_entries.async_get_entry = lambda _: entry
+    client.sent.clear()
+    run(studio.studio_manage.ws_remote_rename(hass, connection, {
+        "id": 2, "entry_id": "entry", "remote_id": remote["remote_id"], "name": "Hall panel"}))
+    assert out["errors"] == []
+    frame = client.sent[0]
+    assert frame[:4] == bytes.fromhex("0f6207") + bytes([remote["index"]])
+    assert frame[4:6] == bytes([0x27, 3])
+    assert frame[6:17] == commands.id_to_bytes(remote["device_id"])
+    assert frame[17:].rstrip(b"\0") == b"Hall panel"
+    assert entry.options["remotes"][0]["name"] == "Hall panel"

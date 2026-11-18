@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 let Panel;
 const context = {
-  HTMLElement: class {}, structuredClone, console, clearTimeout,
+  HTMLElement: class {}, structuredClone, console, clearTimeout, TextEncoder,
   customElements: {get() {}, define(_name, implementation) {Panel = implementation;}},
 };
 vm.createContext(context);
@@ -741,4 +741,44 @@ test('HID settings report pairing only after the device confirms it', async () =
   await pairing;
   assert.equal(state.busy, false);
   assert.equal(state.message, 'Pairing complete.');
+});
+
+test('text remote captions are validated in bytes and saved with the appearance draft', async () => {
+  const instance = panel();
+  const remote = {remote_id: 'mt', name: 'Hall', matter: {captions: ['A', 'B', 'C', 'D'], max_bytes: 31}};
+  assert.equal(instance._captionsChanged(remote, {captions: ['A', 'B', 'C', 'D']}), false);
+  assert.equal(instance._captionsChanged(remote, {captions: ['A', 'B ', 'C', 'X']}), true);
+  assert.match(instance._captionsProblem(remote, {captions: ['A', '', 'C', 'D']}), /button B/);
+  assert.match(instance._captionsProblem(remote, {captions: ['A', 'B', 'C', 'я'.repeat(16)]}), /longer than 31/);
+  assert.equal(instance._captionsProblem(remote, {captions: ['A', 'B', 'C', 'я'.repeat(15)]}), '');
+
+  const calls = [];
+  instance._remote = () => remote;
+  instance._draftScope = () => 'mt';
+  instance._appearanceDraftsByRemote = new Map([['mt', {name: 'Hall panel', icon: undefined, captions: ['Lamp', 'B', 'C', 'D']}]]);
+  instance._hass = {callWS: async (msg) => { calls.push(msg.type.split('/').slice(-2).join('/')); return {}; }};
+  await instance._saveAppearance();
+  assert.deepEqual(calls, ['matter/save', 'remote/rename']);
+  assert.deepEqual(remote.matter.captions, ['Lamp', 'B', 'C', 'D']);
+});
+
+test('adding a scene is checked against the scene limit like any other install', () => {
+  const instance = panel();
+  const scenes = Array.from({length: 10}, (_, index) => ({kind: 'scene', scene_index: index}));
+  instance._entry = () => ({remotes: scenes, scene_limit: 10});
+  assert.match(instance._installCapacityError({kind: 'scene'}), /ten scenes/);
+  instance._entry = () => ({remotes: scenes.slice(1), scene_limit: 10});
+  assert.equal(instance._installCapacityError({kind: 'scene'}), '');
+});
+
+test('capacity row counts the single text remote', () => {
+  const instance = panel();
+  instance._sources = null;
+  instance._entry = () => ({remotes: [{kind: 'native'}], scene_limit: 10});
+  assert.match(instance._renderRemoteCapacity(), /Text remotes available <b>1\/1<\/b>/);
+  instance._entry = () => ({remotes: [{kind: 'native', matter: {captions: []}}], scene_limit: 10});
+  assert.match(instance._renderRemoteCapacity(), /Text remotes available <b>0\/1<\/b>/);
+  instance._entry = () => ({remotes: [], scene_limit: 10});
+  instance._sources = {matter: {installed: true}};
+  assert.match(instance._renderRemoteCapacity(), /Text remotes available <b>0\/1<\/b>/);
 });

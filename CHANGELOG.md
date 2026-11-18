@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.52.1
+
+- Edit a text remote's name and four captions in the appearance editor (pencil on its row). It shows the firmware's own list picture instead of a lamp, and no longer offers an icon that cannot be written.
+- Add a scene from **Add a remote → Scene** like any other remote: choose its name, icon and background, then press Install. The extra Scenes button under the loading state is gone.
+- Show **Text remotes available** next to Scenes available (one per Universal Remote).
+- Align integration, Studio frontend, and Bridge add-on versions at 0.52.1.
+
 ## 0.52.0
 
 - Add an experimental **Text remote** (Matter) in Remote Studio: four captioned buttons A–D written to the Universal Remote, with Home Assistant actions for each button. Presses arrive from the remote's Bluetooth advertisements, so a Bluetooth adapter or proxy must be in range. One text remote per Universal Remote. Not yet confirmed on hardware.
