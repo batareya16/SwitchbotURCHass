@@ -222,3 +222,22 @@ def test_text_remote_is_renamed_with_the_matter_rename_command(studio):
     assert frame[6:17] == commands.id_to_bytes(remote["device_id"])
     assert frame[17:].rstrip(b"\0") == b"Hall panel"
     assert entry.options["remotes"][0]["name"] == "Hall panel"
+
+
+def test_caption_edit_finds_the_text_remote_after_its_slot_moved(studio):
+    client = FakeRemote([NATIVE_ROW])
+    hass, entry, connection, out = make(studio, client)
+    run(studio.studio_matter.ws_save_matter(hass, connection, {
+        "id": 1, "entry_id": "entry", "name": "Accessory", "captions": CAPTIONS}))
+    remote = entry.options["remotes"][0]
+    assert remote["index"] == 1
+    # An earlier remote is deleted: the device compacts the table and the text remote moves to 0.
+    client.rows = [(0, 0x27, 3, commands.id_to_bytes(remote["device_id"]))]
+    client.sent.clear()
+    run(studio.studio_matter.ws_save_matter(hass, connection, {
+        "id": 2, "entry_id": "entry", "remote_id": remote["remote_id"],
+        "captions": ["Lamp", "Fan", "Radio", "Scene D"]}))
+    assert out["errors"] == []
+    assert client.sent[0][7] == 0  # written to the slot it occupies now
+    assert entry.options["remotes"][0]["index"] == 0
+    assert entry.options["remotes"][0]["matter_captions"][2] == "Radio"

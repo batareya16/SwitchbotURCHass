@@ -3653,9 +3653,16 @@ class SwitchBotUrcPanel extends HTMLElement {
   _styles() {
     return `
       #studioFeedback{position:sticky;top:12px;z-index:30}
-      .studio-feedback{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:14px 0;padding:14px 16px;border:1px solid var(--divider-color,#ddd);border-left:4px solid var(--primary-color,#03a9f4);border-radius:12px;background:var(--card-background-color,#fff);font-size:13px;line-height:1.5}
+      .studio-feedback{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:14px 0;padding:14px 16px;border:1px solid var(--divider-color,#ddd);border-left:4px solid var(--primary-color,#03a9f4);border-radius:12px;font-size:13px;line-height:1.5;color:var(--primary-text-color,#17202a);
+        /* Opaque even when the theme's card colour is translucent: the notice floats over content. */
+        background:linear-gradient(var(--card-background-color,#fff),var(--card-background-color,#fff)),var(--primary-background-color,#fff);
+        box-shadow:0 10px 30px #0000002e;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
       .studio-feedback>div{display:grid;gap:3px;min-width:0}.studio-feedback span{white-space:pre-wrap;overflow-wrap:anywhere}.studio-feedback b{font-size:13px}.studio-feedback .link-button{flex:none;margin-top:2px}
-      .studio-feedback.error{border-left-color:var(--error-color,#db4437)}.studio-feedback.warning{border-left-color:var(--warning-color,#e09b24)}.studio-feedback.success{border-left-color:var(--success-color,#209e69)}
+      /* The generic .error rule (translucent red, 22px padding) also matches this notice; take it back. */
+      .studio-feedback.error{margin:14px 0;padding:14px 16px;border-radius:12px;color:var(--primary-text-color,#17202a);
+        background:linear-gradient(#ee5b6618,#ee5b6618),linear-gradient(var(--card-background-color,#fff),var(--card-background-color,#fff)),var(--primary-background-color,#fff);
+        border-left-color:var(--error-color,#db4437)}
+      .studio-feedback.error b{color:var(--error-color,#c62828)}.studio-feedback.warning{border-left-color:var(--warning-color,#e09b24)}.studio-feedback.success{border-left-color:var(--success-color,#209e69)}
       .device-settings-dialog{box-sizing:border-box;width:min(620px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:26px;border:1px solid var(--divider-color,#ddd);border-radius:22px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#17202a);box-shadow:0 24px 80px #0005;overflow:auto}
       .device-settings-dialog::backdrop{background:#0008}
       .device-settings-dialog h2{margin:0;font-size:24px;letter-spacing:-.02em}

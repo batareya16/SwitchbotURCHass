@@ -519,7 +519,7 @@ def compile_pages(
                 if draft["kind"] == "hid":
                     uploads.extend(c.build_hid_ir_transfer(device_id=remote["device_id"], key_name=name, code=code))
                 else:
-                    uploads.extend((stage, packet, frozenset({1})) for stage, packet, _ in c.build_ir_transfer_sequence(
+                    uploads.extend(c.build_ir_transfer_sequence(
                         c.id_to_bytes(remote["device_id"]), code, data_type=3, transfer_name=name))
                 default_function = 0x07D3 if draft["kind"] == "hid" else 115
                 function = int(key.get("glyph", key.get("function", default_function)))

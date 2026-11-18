@@ -123,3 +123,14 @@ def test_wrong_size_and_zero_sequence_payloads_are_ignored():
     assert tracker.feed(b"\0" * 16) is None
     assert tracker.feed(advert(0, 0x21)) is None
     assert tracker.previous is None
+
+
+def test_named_ir_transfer_accepts_the_devices_real_acknowledgements():
+    stages = commands.build_hid_ir_transfer(
+        device_id="4684019217020000000000", key_name="3", code=bytes(range(40)))
+    names = [name for name, _packet, _accepted in stages]
+    assert names[0] == "ir_transfer_init" and names[-1] == "ir_transfer_finish"
+    accepted = {name: codes for name, _packet, codes in stages}
+    assert accepted["ir_transfer_init"] == frozenset({0x01, 0x10})  # the device answers 10 00
+    assert accepted["ir_transfer_part_0"] == frozenset({0x00, 0x01})
+    assert accepted["ir_transfer_finish"] == frozenset({0x00, 0x01})

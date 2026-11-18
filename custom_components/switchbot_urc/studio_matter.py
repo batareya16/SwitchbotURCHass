@@ -97,7 +97,11 @@ async def _save(hass, msg) -> dict[str, Any]:
     if msg.get("remote_id"):
         if existing is None or existing.get("remote_id") != msg["remote_id"]:
             raise ValueError("That is not the text remote")
-        row = next((row for row in on_device if row[0] == existing.get("index")), None)
+        # Slots shift when an earlier remote is deleted, so the stored index can be stale. The
+        # id is what the device keeps, so find the row by it and fall back to the slot only.
+        identity = c.id_to_bytes(existing["device_id"])
+        row = (next((item for item in on_device if item[3] == identity), None)
+               or next((item for item in on_device if item[0] == existing.get("index")), None))
         if row is None:
             raise ValueError("The text remote is no longer on the device. Refresh, then add it again.")
         packet = build_matter_create(
@@ -111,6 +115,7 @@ async def _save(hass, msg) -> dict[str, Any]:
         remotes = deepcopy(list(entry.options.get("remotes", [])))
         for remote in remotes:
             if remote.get("remote_id") == existing["remote_id"]:
+                remote["index"] = row[0]
                 remote["matter_captions"] = list(captions)
                 remote["physical_packets"] = [packet.hex()]
         hass.config_entries.async_update_entry(entry, options={**entry.options, "remotes": remotes})

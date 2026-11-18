@@ -1,10 +1,18 @@
 # Changelog
 
+## 0.52.2
+
+- Fix saving an IR command (and its custom icon) in a HID remote: the remote answers the first upload step with `10 00`, which Studio wrongly treated as a rejection. Storage is still checked before uploading.
+- Fix "The text remote is no longer on the device" when editing a text remote after another remote was deleted: the remote is now found by its id, not by a slot number that can shift.
+- Show **Text remotes available** next to Scenes available (one per Universal Remote).
+- Make error and status notices in Remote Studio opaque and readable while they float over the page.
+- Text remote is no longer labelled experimental in Remote Studio and the README; the README now describes scenes and the text remote.
+- Align integration, Studio frontend, and Bridge add-on versions at 0.52.2.
+
 ## 0.52.1
 
 - Edit a text remote's name and four captions in the appearance editor (pencil on its row). It shows the firmware's own list picture instead of a lamp, and no longer offers an icon that cannot be written.
 - Add a scene from **Add a remote → Scene** like any other remote: choose its name, icon and background, then press Install. The extra Scenes button under the loading state is gone.
-- Show **Text remotes available** next to Scenes available (one per Universal Remote).
 - Align integration, Studio frontend, and Bridge add-on versions at 0.52.1.
 
 ## 0.52.0

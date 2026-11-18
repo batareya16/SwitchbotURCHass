@@ -1061,16 +1061,16 @@ def build_hid_ir_transfer(*, device_id: str, key_name: str, code: bytes) -> tupl
     """Named custom IR upload from official HID editor (transfer type 3).
 
     Code is the decompressed codeToHex payload, not a bank offset or gzip/base64 text.
-    Unlike the captured full-bank transfer, this editor requires status 01 at every stage.
+    The device acknowledges these transfers like the captured full-bank transfer: initialise
+    answers ``10 00`` (accepted here alongside ``01``), parts and finish answer ``00`` or ``01``.
+    Requiring ``01`` everywhere rejected a healthy first step. Storage is checked up front
+    (``0F 63 06``), so a ``10`` is not mistaken for a full remote.
     """
     encoded = key_name.encode("utf-8")
     if not encoded or len(encoded) > 31 or "/" in key_name or "\x00" in key_name:
         raise ValueError("IR key name must be 1–31 UTF-8 bytes without slash or NUL")
-    return tuple(
-        (stage, packet, frozenset({1}))
-        for stage, packet, _accepted in build_ir_transfer_sequence(
-            id_to_bytes(device_id), code, data_type=3, transfer_name=key_name
-        )
+    return build_ir_transfer_sequence(
+        id_to_bytes(device_id), code, data_type=3, transfer_name=key_name
     )
 
 
