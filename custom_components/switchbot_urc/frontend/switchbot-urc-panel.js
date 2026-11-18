@@ -273,13 +273,13 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._activeRemoteId = null;
     this._loading = false;
     this._error = null;
+    this._notice = null;
     this._dirty = false;
     this._jsonValid = true;
     this._physical = null;
     this._nativeProfiles = [];
     this._nativeMenuGlyphs = [];
     this._physicalOrigins = {};
-    this._lastIdentityMigrations = [];
     this._physicalSources = [];
     // Catalog picker state. `available` stays null until the first lookup answers, so the
     // picker can say "loading" once instead of asking on every render.
@@ -433,7 +433,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const kind = this._physical.kind;
     const free = this._freeIndexOnPage(index);
     if (free === null) {
-      this._physicalStatus = "This page has no room for another row.";
+      this._notify("This page has no room for another row.", "warning");
       this._render();
       return;
     }
@@ -869,7 +869,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button class="primary compact" id="addKeyToPage" ${this._freeIndexOnPage(page.index) === null || this._physicalBusy ? "disabled" : ""}>＋ Add row</button>
         ${freePages.length ? `<label class="page-move">Move to<select id="moveCurrentPage"><option value="">Choose key…</option>${freePages.map((index) => `<option value="${index}">Key ${"ABCD"[index - 1]}</option>`).join("")}</select></label>` : ""}
       </div>
-      ${this._physicalStatus ? `<p class="small" role="status">${escapeHtml(this._physicalStatus)}</p>` : ""}
       <div class="mode-tabs page-editor-tabs">
         <button data-page-editor="menu" class="${editingMenu ? "selected" : ""}">Menu settings</button>
         <button data-page-editor="row" class="${!editingMenu ? "selected" : ""}" ${button ? "" : "disabled"}>${button ? `Row ${page.buttons.findIndex((item) => item.button_id === button.button_id) + 1}` : "Select a row"}</button>
@@ -1083,7 +1082,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${isHid ? `<div class="action-box">
           <div class="key-actions"><button class="secondary compact" id="enterHidPairMode"
             ${hidPairing?.busy || this._physicalBusy ? "disabled" : ""}>Enter pairing mode</button></div>
-          ${hidPairing?.message ? `<p class="small" role="status">${escapeHtml(hidPairing.message)}</p>` : ""}
+          ${this._feedback(hidPairing?.message, "info", "Bluetooth pairing")}
         </div>`
           : isIr ? `<p class="appearance-note">This remote keeps its saved icon code. The app's 18 icon names are not 18 distinct firmware illustrations.</p>`
           : ""}
@@ -1271,7 +1270,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             <button class="secondary" id="refresh" ${this._scenePanel?.busy ? "disabled" : ""} title="Re-read the remote and pick up anything created in the SwitchBot app">${this._physicalBusy || this._scenePanel?.busy === "read" ? "Refreshing…" : "Refresh"}</button>
           </div>
         </header>
-        ${this._error && !remote ? `<div class="error" role="alert">${escapeHtml(this._error)}</div>` : ""}
+        <div id="studioFeedback">${this._renderStudioFeedback()}</div>
         ${this._loading ? `<div class="loading"><span></span>Loading remotes…</div>` : ""}
         ${!this._loading && !entries.length ? `<div class="empty"><b>No configured Universal Remote found.</b><br>Set up the integration first.</div>` : ""}
         ${entries.length ? `
@@ -1325,7 +1324,6 @@ class SwitchBotUrcPanel extends HTMLElement {
                   : page?.index && this._physical ? this._renderPageEditor(page, button, remote)
                   : (button ? this._editor(button, remote)
                     : `<div class="empty small">Choose a button, or use the pencil on a remote to edit its appearance.</div>`)}</div>
-                ${this._error ? `<div class="error" role="alert">${escapeHtml(this._error)}</div>` : ""}
                 <footer class="studio-save">
                   <span role="status" id="saveStatus">${escapeHtml(this._saveStatus() || this._saveLabel())}</span>
                   ${this._renderSaveButton()}
@@ -1407,9 +1405,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${values.japan_model ? "" : select("temperature_unit", "Temperature unit", [["0", "°C"], ["1", "°F"]])}
         ${select("language", "Screen language", [["0", "简体中文"], ["1", "English"], ["2", "日本語"]])}
         </div><p class="small">Changing the language may restart the remote.</p>
-        </fieldset><footer class="studio-save"><span role="status">${escapeHtml(state.status)}</span>
+        </fieldset>${this._feedback(state.error || state.status, state.error ? "error" : "success", "Remote settings")}
+        <footer class="studio-save"><span></span>
           <button type="submit" class="primary compact" id="saveDeviceSettings" ${state.busy || !Object.keys(this._deviceSettingsChanges()).length ? "disabled" : ""}>${state.busy === "save" ? "Saving…" : "Save"}</button></footer></form>` : ""}
-      ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ""}
+      ${!values ? this._feedback(state.error, "error", "Remote settings") : ""}
       ${!state.busy && (!values || state.error) ? '<button class="secondary" id="retryDeviceSettings">Read settings again</button>' : ""}
     </dialog>`;
   }
@@ -1434,8 +1433,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       const field = input.dataset.remoteSetting;
       state.draft[field] = input.type === "checkbox" ? input.checked : Number(input.value);
       state.status = "";
-      const status = root.querySelector("#deviceSettingsForm [role=status]");
-      if (status) status.textContent = "";
+      const status = root.querySelector("#deviceSettingsForm .studio-feedback.success");
+      if (status) status.remove();
       const output = root.querySelector(`[data-settings-value="${field}"]`);
       if (output) output.textContent = `${input.value}%`;
       if (field === "auto_brightness") {
@@ -1487,7 +1486,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         entry_id: this._entryId, remote_id: this._remoteId });
       if (request !== this._physicalRequest || scope !== this._draftScope()) return;
       this._physical = result.layout;
-      this._physicalBackup = result.backup;
       this._physicalSources = result.ir_sources;
       this._physicalFunctions = result.functions || [];
       this._nativeProfiles = result.native_profiles || [];
@@ -1537,8 +1535,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       <p class="small">Fetch the key when the remote starts answering with undecodable
         responses: it rotates on its own, and the account holds the current one.</p>
       ${cloud.busy ? `<p class="small">Talking to the account…</p>` : ""}
-      ${cloud.error ? `<p class="small warning">${escapeHtml(cloud.error)}</p>` : ""}
-      ${cloud.note ? `<p class="small">${escapeHtml(cloud.note)}</p>` : ""}
+      ${this._feedback(cloud.error, "error", "SwitchBot account")}
+      ${!cloud.error ? this._feedback(cloud.note, "success", "SwitchBot account") : ""}
     </details>`;
   }
 
@@ -1596,7 +1594,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button class="secondary compact" data-diagnostic="bindings" title="Which remote each saved action belongs to; reads nothing from the device">Why did that action run?</button>
       </div>
       ${diag?.busy ? `<p class="small">Running…</p>` : ""}
-      ${diag?.error ? `<p class="small warning">${escapeHtml(diag.error)}</p>` : ""}
+      ${this._feedback(diag?.error, "error", "Diagnostics")}
       ${diag?.rows ? `<table><thead><tr><th>Query</th><th>Answer</th></tr></thead><tbody>${
         diag.rows.map((row) => `<tr><td><code>${escapeHtml(row.query)}</code></td>
           <td><code>${escapeHtml(row.value)}</code></td></tr>`).join("")
@@ -1717,15 +1715,15 @@ class SwitchBotUrcPanel extends HTMLElement {
         <div class="loading"><span></span>Asking the remote…</div></details>`;
     }
     if (table.error) {
-      return `<details class="device-table"><summary>Installed on the remote</summary>
-        <p class="small">Could not read the device table: ${escapeHtml(table.error)}</p></details>`;
+      return `<details class="device-table" open><summary>Installed on the remote</summary>
+        ${this._feedback(table.error, "error", "Device table")}</details>`;
     }
     const rows = (table.rows || []).map((row) => `<tr>
         <td>${row.slot}</td><td>${escapeHtml(row.kind)}</td>
         <td>${escapeHtml(row.device_type)}</td><td>${escapeHtml(row.target_mac)}</td>
       </tr>`).join("");
     const warnings = (table.warnings || []).map(
-      (text) => `<p class="small warning">${escapeHtml(text)}</p>`).join("");
+      (text) => this._feedback(text, "warning", "Device table")).join("");
     return `<details class="device-table">
       <summary>Installed on the remote (${(table.rows || []).length}, next free slot ${table.next_free_slot ?? "none"})</summary>
       <table><thead><tr><th>Slot</th><th>Kind</th><th>Type</th><th>Target</th></tr></thead>
@@ -1853,12 +1851,13 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${draft ? `<nav class="mode-tabs"><button data-scene-tab="actions" class="${!this._scenePanel.appearance ? "selected" : ""}">Custom actions</button>
           <button data-scene-tab="appearance" class="${this._scenePanel.appearance ? "selected" : ""}">Appearance</button></nav>
           <div ${busy ? "inert" : ""}>${this._scenePanel.appearance ? appearance : actions}</div>
-          <footer class="studio-save"><span role="status">${escapeHtml(status || "")}</span>
+          ${this._feedback(error || status, error ? "error" : "success", draft.name || "Scene")}
+          <footer class="studio-save"><span></span>
             <button class="primary compact" id="saveScene" ${busy ? "disabled" : ""}>${busy === "save" ? "Saving…" : "Save"}</button>
           </footer>
           ${draft.index != null ? '<button class="action danger" id="deleteScene">Delete scene</button>' : ""}`
           : '<div class="empty small">Choose a scene on the remote, or add one.</div>'}
-        ${error ? `<div class="error" role="alert">${escapeHtml(error)}</div>` : ""}
+        ${!draft ? this._feedback(error || status, error ? "error" : "info", "Scenes") : ""}
       </aside></div>`;
   }
 
@@ -1966,7 +1965,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <div class="action-title"><b>Add a remote</b></div>
         ${add.loading
           ? '<p class="small" role="status">Loading remote options…</p>'
-          : `<p class="error" role="alert">Could not load remote options. ${escapeHtml(add.loadError)}</p>`}
+          : this._feedback(`Could not load remote options. ${add.loadError}`, "error", "Add a remote")}
         <div class="key-actions">
           ${add.loadError ? '<button class="primary" id="retryAddRemote">Retry</button>' : ""}
           <button class="secondary" id="addSceneFromPicker">Scene</button>
@@ -2036,7 +2035,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         placeholder="What it is called on the remote's screen"></label>
       ${add.kind === "native" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
         ${add.replace ? "checked" : ""}>Replace an existing copy of the same remote</label>`}
-      ${capacityError || add.error ? `<p class="small warning">${escapeHtml(capacityError || add.error)}</p>` : ""}
+      ${this._feedback(add.error || capacityError, add.error ? "error" : "warning", "Add a remote")}
       <div class="key-actions">
         <button class="primary" id="addRemoteConfirm" ${add.busy || capacityError ? "disabled" : ""}>${
           add.busy ? "Installing…" : "Install"}</button>
@@ -2287,7 +2286,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._notify(result?.warning
         || (result?.new_bridge
           ? `Installed in slot ${result.slot} on the new bridge ${result.bridge}`
-          : `Installed in slot ${result.slot}`));
+          : `Installed in slot ${result.slot}`), result?.warning ? "warning" : "success");
       this._add = null;
       this._physical = null;
       this._physicalFor = null;
@@ -2329,13 +2328,10 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderApplyBar() {
     if (!this._physical) return "";
     const changes = this._physicalChanges();
-    if (!changes && !this._physicalStatus) return "";
+    if (!changes) return "";
     return `<div class="apply-bar ${changes ? "dirty" : ""}" ${this._saving ? "inert" : ""}>
-      <span>${changes
-        ? `${changes} change${changes === 1 ? "" : "s"} to the remote itself. Save writes them.`
-        : escapeHtml(this._physicalStatus)}</span>
+      <span>${changes} layout change${changes === 1 ? "" : "s"} to save.</span>
       <span class="spacer"></span>
-      ${this._physicalBackup ? `<button class="secondary compact" id="physicalRestore">Load previous layout</button>` : ""}
       ${changes ? `<button class="secondary compact" id="physicalDiscard">Discard layout and button edits</button>` : ""}
     </div>`;
   }
@@ -2689,15 +2685,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._physicalStatus = "";
       this._render();
     });
-    root.getElementById("physicalRestore")?.addEventListener("click", () => {
-      this._physical = structuredClone(this._physicalBackup.layout);
-      this._resetPhysicalOrigins(this._physical);
-      for (const item of this._lastIdentityMigrations) {
-        this._physicalOrigins[item.from] = item.to;
-      }
-      this._physicalStatus = "Previous layout loaded. Apply it to restore the physical remote.";
-      this._render();
-    });
   }
 
   _draftKey(button) {
@@ -2841,7 +2828,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           cat.buttons.map((item, index) => option(index, item.label, false)).join("")
         }</select></label>` : ""}
       ${cat.busy ? `<p class="small">${escapeHtml(cat.busy)}</p>` : ""}
-      ${cat.error ? `<p class="small warning">${escapeHtml(cat.error)}</p>` : ""}
+      ${this._feedback(cat.error, "error", "IR catalog")}
     </details>`;
   }
 
@@ -2905,9 +2892,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             ? `This button will ${escapeHtml(button.preset_action.replaceAll("_", " "))}${
                 remote.binding?.entity_id ? ` ${escapeHtml(remote.binding.entity_id)}` : ""}.`
             : "No Quick-bind action currently matches this button."
-        }${remote.binding?.entity_id
-          ? ` Every button on this remote that has no actions of its own drives
-             ${escapeHtml(remote.binding.entity_id)}.` : ""}</span></div>` : ""}
+        }</span></div>` : ""}
         ${this._mode === "disabled" ? `<div class="explanation danger"><b>Ignore this button.</b><span>Physical presses will be received but no Home Assistant action will run.</span></div>` : ""}
         ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div><div id="visualActionEditor"></div><div id="selectOptionWarning" class="small" role="status">${escapeHtml(this._selectOptionWarning())}</div><p class="json-help">To run a script, choose <b>Script: Turn on</b> and select the script, or choose the script’s own action.</p><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false" class="${this._jsonValid ? "" : "invalid"}">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : ""}
       </div>
@@ -3006,6 +2991,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _wireEvents() {
     const root = this.shadowRoot;
+    this._wireFeedback();
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote",
                       "recreateRemote", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
@@ -3052,7 +3038,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       try {
         const result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/recreate`,
           entry_id: this._entryId, remote_id: this._remoteId });
-        this._notify(`Rewritten into slot ${result.slot}`);
+        this._notify(`Rewritten into slot ${result.slot}`, "success");
         this._physical = null;
         this._physicalFor = null;
         this._error = null;
@@ -3074,7 +3060,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._sources = null;
       await this._ensureSources();
       if (!this._sources?.native_options?.next_move_address) {
-        this._notify("No free address is available on a configured bridge.");
+        this._notify("No free address is available on a configured bridge.", "warning");
         return;
       }
       if (!confirm(`This removes "${remote.name}" from the remote and writes it again. Continue?`)) return;
@@ -3088,7 +3074,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._notify(result?.warning
           || (result.moved_from
             ? `Moved from ${result.moved_from} to ${result.address}`
-            : `Rewritten into slot ${result.slot}`));
+            : `Rewritten into slot ${result.slot}`), result?.warning ? "warning" : "success");
         this._sources = null;
         this._physical = null;
         this._physicalFor = null;
@@ -3118,7 +3104,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           entry_id: this._entryId, remote_id: this._remoteId });
         this._notify(result?.device_untouched
           ? "Removed from Home Assistant; it was no longer on the remote"
-          : "Remote deleted");
+          : "Remote deleted", "success");
         this._remoteId = null;
         this._buttonId = null;
         this._physical = null;
@@ -3136,6 +3122,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._wirePhysical();
     root.getElementById("entrySelect")?.addEventListener("change", (event) => {
       if (this._saving) return;
+      this._notice = null;
+      this._error = null;
       this._stashLayout();
       this._entryId = event.target.value;
       this._iconPickerFor = null;
@@ -3151,6 +3139,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
     root.getElementById("remoteSelect")?.addEventListener("change", (event) => {
       if (this._saving) return;
+      this._notice = null;
+      this._error = null;
       this._stashLayout();
       if (event.target.value === "__scenes__") { this._openScenes(); return; }
       this._remoteId = event.target.value;
@@ -3188,6 +3178,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.querySelectorAll("[data-remote]").forEach((element) => {
       const pick = () => {
         if (this._saving || this._physicalBusy || this._remoteId === element.dataset.remote) return;
+        this._notice = null;
+        this._error = null;
         this._stashLayout();
         this._remoteId = element.dataset.remote;
         this._iconPickerFor = null;
@@ -3382,8 +3374,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         identity_migrations: identityMigrations, identity_removals: identityRemovals });
       if (result.entry) this._replaceEntry(result.entry);
       this._physicalStatus = result.status;
-      this._physicalBackup = result.backup;
-      this._lastIdentityMigrations = identityMigrations;
       this._physical = result.layout || this._physical;
       this._physicalBaseline = structuredClone(this._physical);
       this._resetPhysicalOrigins(this._physical);
@@ -3430,7 +3420,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._dirty = false;
       await this._load();
       if (!this._error) {
-        this._notify(warning || (layoutChanges ? `Saved. ${this._physicalStatus || "Layout written to the remote."}` : "Saved"));
+        this._notify(warning || (layoutChanges ? "Layout and actions saved. The remote acknowledged the layout." : "Changes saved."), warning ? "warning" : "success");
       }
     } catch (error) {
       this._error = error?.message || String(error);
@@ -3450,9 +3440,9 @@ class SwitchBotUrcPanel extends HTMLElement {
         remote_id: this._remoteId,
         button_id: this._buttonId,
       });
-      this._notify("Test press sent to Home Assistant");
+      this._notify("Test press sent to Home Assistant", "success");
     } catch (error) {
-      this._notify(error?.message || String(error));
+      this._notify(error?.message || String(error), "error");
     }
   }
 
@@ -3461,17 +3451,46 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (index >= 0) this._data.entries[index] = updated;
   }
 
-  _notify(message) {
-    const event = new CustomEvent("hass-notification", {
-      bubbles: true,
-      composed: true,
-      detail: { message },
+  _feedback(message, tone = "info", context = "", dismissible = false) {
+    if (!message) return "";
+    const labels = { error: "Could not complete", warning: "Check this", success: "Done", info: "Information" };
+    return `<div class="studio-feedback ${tone}" role="${tone === "error" ? "alert" : "status"}">
+      <div><b>${escapeHtml(context || labels[tone])}</b><span>${escapeHtml(message)}</span></div>
+      ${dismissible ? '<button type="button" class="link-button" id="dismissFeedback" aria-label="Dismiss notification">Dismiss</button>' : ""}</div>`;
+  }
+
+  _renderStudioFeedback() {
+    if (this._error) return this._feedback(this._error, "error", "Remote Studio", true);
+    const notice = this._notice;
+    if (!notice || notice.entryId !== this._entryId) return "";
+    return this._feedback(notice.message, notice.tone, notice.context, true);
+  }
+
+  _wireFeedback() {
+    this.shadowRoot.getElementById("dismissFeedback")?.addEventListener("click", () => {
+      this._notice = null;
+      this._error = null;
+      const feedback = this.shadowRoot.getElementById("studioFeedback");
+      if (feedback) feedback.innerHTML = "";
     });
-    this.dispatchEvent(event);
+  }
+
+  _notify(message, tone = "info") {
+    this._error = null;
+    this._notice = { message, tone, entryId: this._entryId, context: this._remote()?.name || "Remote Studio" };
+    const feedback = this.shadowRoot.getElementById("studioFeedback");
+    if (feedback) {
+      feedback.innerHTML = this._renderStudioFeedback();
+      this._wireFeedback();
+    }
   }
 
   _styles() {
     return `
+      #studioFeedback{position:sticky;top:12px;z-index:30}
+      .studio-feedback{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:14px 0;padding:14px 16px;border:1px solid var(--divider-color,#ddd);border-left:4px solid var(--primary-color,#03a9f4);border-radius:12px;background:var(--card-background-color,#fff);font-size:13px;line-height:1.5}
+      .studio-feedback>div{display:grid;gap:3px;min-width:0}.studio-feedback span{white-space:pre-wrap;overflow-wrap:anywhere}.studio-feedback b{font-size:13px}.studio-feedback .link-button{flex:none;margin-top:2px}
+      .studio-feedback.error{border-left-color:var(--error-color,#db4437)}.studio-feedback.warning{border-left-color:var(--warning-color,#e09b24)}.studio-feedback.success{border-left-color:var(--success-color,#209e69)}
       .device-settings-dialog{box-sizing:border-box;width:min(620px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:26px;border:1px solid var(--divider-color,#ddd);border-radius:22px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#17202a);box-shadow:0 24px 80px #0005;overflow:auto}
       .device-settings-dialog::backdrop{background:#0008}
       .device-settings-dialog h2{margin:0;font-size:24px;letter-spacing:-.02em}

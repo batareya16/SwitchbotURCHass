@@ -346,8 +346,7 @@ def ws_physical_get(hass, connection, msg):
                                           "functions": functions,
                                           "native_profiles": _native_profiles(),
                                           "native_menu_glyphs": sorted(c.NATIVE_MENU_GLYPHS),
-                                          "status": remote.get("physical_status", ""),
-                                          "backup": remote.get("physical_backup")})
+                                          "status": remote.get("physical_status", "")})
     except (ValueError, KeyError, TypeError) as err:
         connection.send_error(msg["id"], "physical_unavailable", str(err))
 
@@ -450,7 +449,7 @@ async def ws_physical_apply(hass, connection, msg):
                 narrowed = [item for item in matches if str(item[0]) == str(remote.get("index"))]
                 if len(narrowed) == 1:
                     matches = narrowed
-            recovering_native = not matches and draft["kind"] == "native" and remote.get("physical_backup") and remote.get("physical_pending")
+            recovering_native = not matches and draft["kind"] == "native" and remote.get("physical_pending")
             if len(matches) != 1 and not recovering_native:
                 raise ValueError(
                     f"Could not uniquely identify the physical remote: {len(matches)} table rows "
@@ -523,9 +522,8 @@ async def ws_physical_apply(hass, connection, msg):
                     space = await client.query(6)
                     if len(space) < 9 or sum(len(bytes.fromhex(k.get("code_hex", ""))) for p in draft["pages"] for k in p["buttons"]) >= int.from_bytes(space[5:9], "big"):
                         raise ValueError("Not enough confirmed device storage for these IR codes")
-            # Persist a recoverable snapshot before the first mutating command.
-            persist(hass, entry, identity, physical_backup={"layout": previous_layout,
-                "packets": [packet.hex() for packet in physical.source_packets(remote)]},
+            # Track the pending write before the first mutating command.
+            persist(hass, entry, identity,
                 physical_original_packets=remote.get("physical_original_packets") or [packet.hex() for packet in physical.source_packets(remote)],
                 physical_pending=draft,
                 physical_status="Applying physical layout")
@@ -578,18 +576,17 @@ async def ws_physical_apply(hass, connection, msg):
             connection.send_result(msg["id"], {
                 "status": status,
                 "layout": physical.draft_for(updated),
-                "backup": updated.get("physical_backup"),
                 "entry": _serialize_entry(hass, entry),
             })
         except asyncio.CancelledError:
             if mutated:
-                persist(hass, entry, msg["remote_id"], physical_status="Physical update interrupted. Load the previous layout to restore it.")
+                persist(hass, entry, msg["remote_id"], physical_status="Physical update interrupted. Check the remote and save the layout again.")
             raise
         except Exception as err:
             _LOGGER.exception("Physical remote update failed at %s", stage)
             message = f"{stage}: {err}"
             if mutated:
-                message += ". The layout may be partially written. The previous layout is saved under Restore previous layout."
+                message += ". The layout may be partially written. Check the remote and save the layout again."
                 persist(hass, entry, msg["remote_id"], physical_status=message)
             connection.send_error(msg["id"], "physical_apply_failed", message)
 

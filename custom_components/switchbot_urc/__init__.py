@@ -134,6 +134,13 @@ SEND_COMMAND_SEQUENCE_SCHEMA = vol.Schema(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up from a config entry."""
     targets.remove_saved_press_keys(hass, entry)
+    if any(isinstance(remote, dict) and "physical_backup" in remote
+           for remote in entry.options.get("remotes", [])):
+        options = deepcopy(dict(entry.options))
+        for remote in options["remotes"]:
+            if isinstance(remote, dict):
+                remote.pop("physical_backup", None)
+        hass.config_entries.async_update_entry(entry, options=options)
     address: str = entry.data[CONF_ADDRESS]
     key = bytes.fromhex(entry.data[CONF_KEY])
     key_id = int(entry.data[CONF_KEY_ID], 16)

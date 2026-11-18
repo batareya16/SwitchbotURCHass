@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.51.3
+
+- Edit scenes on the remote preview and assign Home Assistant action sequences.
+- Choose firmware button pictograms for IR commands inside HID remotes.
+- Preserve scene drafts across Refresh and fix saving IR commands with an inherited zero HID function.
+- Add physical remote settings to Remote Studio and integration options, including touch wheel scrolling, brightness, wake behavior, button sounds, screen timeout, temperature units, and language.
+- Remove the previous-layout backup and restore feature.
+- Simplify the Quick bind explanation for the selected button.
+- Align integration, Studio frontend, and Bridge add-on versions at 0.51.3.
+
 ## 0.51.2
 
 - Add and manage scenes from **Add a remote → Scene** or the **Scenes** button in Remote Studio. Assign a Home Assistant scene or script and edit the name, icon, and color shown on the Universal Remote.

@@ -159,6 +159,44 @@ test('remote settings ignores a closed read and preserves the editor drafts', as
   assert.equal(instance._draftActions, actions);
 });
 
+test('operation results and errors share one persistent dismissible Studio notice', () => {
+  const instance = panel();
+  instance._remote = () => ({name: 'Floor lamp'});
+  let dismiss;
+  const region = {innerHTML: ''};
+  instance.shadowRoot = {getElementById(id) {
+    if (id === 'studioFeedback') return region;
+    if (id === 'dismissFeedback') return {addEventListener(_event, callback) {dismiss = callback;}};
+    return null;
+  }};
+  instance._notify = Panel.prototype._notify;
+  instance._error = 'An earlier failure';
+  instance._notify('Changes saved.', 'success');
+  assert.match(region.innerHTML, /studio-feedback success/);
+  assert.match(region.innerHTML, /Floor lamp/);
+  assert.doesNotMatch(region.innerHTML, /earlier failure/);
+  instance._error = '<Save failed>';
+  const failure = instance._renderStudioFeedback();
+  assert.match(failure, /role="alert"/);
+  assert.match(failure, /&lt;Save failed&gt;/);
+  assert.doesNotMatch(failure, /Changes saved/);
+  dismiss();
+  assert.equal(instance._error, null);
+  assert.equal(region.innerHTML, '');
+  instance._notify('Changes saved.', 'success');
+  instance._entryId = 'another-remote';
+  assert.equal(instance._renderStudioFeedback(), '');
+});
+
+test('saved device acknowledgements are not duplicated above the remote or in page editing', () => {
+  const instance = panel();
+  instance._physicalStatus = 'Device acknowledged all pages.';
+  instance._physicalChanges = () => 0;
+  assert.equal(instance._renderApplyBar(), '');
+  const page = instance._pages().find(item => item.index === 1);
+  assert.doesNotMatch(instance._renderPageEditor(page, null, instance._remote()), /Device acknowledged all pages/);
+});
+
 test('scene selection preserves draft names and actions between rows', () => {
   const instance = panel();
   instance._button = () => null;
