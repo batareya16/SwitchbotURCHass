@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.52.0
+
+- Add an experimental **Text remote** (Matter) in Remote Studio: four captioned buttons A–D written to the Universal Remote, with Home Assistant actions for each button. Presses arrive from the remote's Bluetooth advertisements, so a Bluetooth adapter or proxy must be in range. One text remote per Universal Remote. Not yet confirmed on hardware.
+- Make the remote's preview screen behave like the real display: the list is clipped below the glass curve, fades at its edges, and scrolls the selected remote into view.
+- Keep the SwitchBot account, Installed on the remote and Diagnostics panels visible while a scene is open and remember which are expanded.
+- Give the scene and caption editors the same field, icon and card styling as the rest of Studio.
+- Align integration, Studio frontend, and Bridge add-on versions at 0.52.0.
+
 ## 0.51.4
 
 - Show scenes alongside all other remotes in Remote Studio and load them through the shared inventory.
