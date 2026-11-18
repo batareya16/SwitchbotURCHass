@@ -45,7 +45,13 @@ ICONS = [
     "light", "desklamp", "floorlamp", "ceilinglamp", "strip", "switch",
     "bathtub", "coffeemachine", "socket", "tv", "boiler", "heater",
     "cooler", "washer", "fridge", "cookware", "pool", "ventilator",
+    # Firmware-only icons (0x13, 0x14): the app has no names for them.
+    "blinds", "garage",
 ]
+
+# Tiles whose list and screen artwork the firmware picks by the wire icon byte (native and text
+# remotes) also accept "device": icon 0, which keeps the artwork that belongs to the device type.
+ICON_CHOICES = ["device", *ICONS]
 
 # Default button set offered for a new UniversalBLE remote.
 DEFAULT_BUTTONS = ["ON", "OFF", "UP", "DOWN", "OK"]

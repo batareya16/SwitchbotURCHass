@@ -1930,7 +1930,8 @@ class UrcOptionsFlow(OptionsFlow):
                             "socket": "Outlet", "boiler": "Boiler", "heater": "Heater",
                             "cooler": "Cooling", "washer": "Washing machine",
                             "fridge": "Fridge", "cookware": "Cooker", "pool": "Pool",
-                            "ventilator": "Fan",
+                            "ventilator": "Fan", "blinds": "Roller blind",
+                            "garage": "Garage",
                         }
                     ),
                     vol.Required(

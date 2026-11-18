@@ -146,13 +146,8 @@ def match_native_appearance(remote: dict, appearances: dict, device_type: int):
     return typed[0] if len(typed) == 1 else None
 
 
-def remote_artwork_id(remote: dict) -> int | None:
-    """Resolve the illustration from the cached wire fields for Native, HID or IR."""
-    if str(remote.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
-        appearance = native_appearance(remote)
-        return c.native_artwork_id(
-            c.NATIVE_DEVTYPE[str(remote["device_type"]).upper()],
-            appearance["icon_code"], appearance["control_mode"])
+def _hid_ir_wire_fields(remote: dict) -> tuple[int, int, int] | None:
+    """(device type, wire icon, screen mode) of an HID or IR remote, read from its saved Main page."""
     name = str(remote.get("device_type", "")).upper()
     if name in c.DEVTYPE:
         device_type = c.DEVTYPE[name]
@@ -185,7 +180,24 @@ def remote_artwork_id(remote: dict) -> int | None:
             continue
         mode, icon = packet[control + 1:control + 3]
         break
-    return c.native_artwork_id(device_type, icon, mode)
+    return device_type, icon, mode
+
+
+def remote_artwork_id(remote: dict) -> int | None:
+    """Resolve the illustration from the cached wire fields for Native, HID or IR."""
+    if str(remote.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
+        appearance = native_appearance(remote)
+        return c.native_artwork_id(
+            c.NATIVE_DEVTYPE[str(remote["device_type"]).upper()],
+            appearance["icon_code"], appearance["control_mode"])
+    fields = _hid_ir_wire_fields(remote)
+    return None if fields is None else c.native_artwork_id(*fields)
+
+
+def remote_wire_icon(remote: dict) -> int | None:
+    """The wire icon byte an installed HID or IR remote carries, or None for other kinds."""
+    fields = _hid_ir_wire_fields(remote)
+    return None if fields is None else fields[1]
 
 
 # keyFun -> what the V48 firmware actually transmits, from the report table at flash 0x33a4a.

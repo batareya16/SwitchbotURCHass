@@ -70,16 +70,20 @@ def new_device_id(taken: set[bytes], id_to_bytes) -> str:
 
 
 def build_matter_create(
-    *, remote_index: int, device_id: str, name: str, captions
+    *, remote_index: int, device_id: str, name: str, captions, icon: int = 0
 ) -> bytes:
-    """One complete create or caption-update packet (same bytes the app sends)."""
+    """One complete create or caption-update packet (same bytes the app sends).
+
+    The text screen draws no artwork, but the home list reads the same icon byte as every other
+    tile (V48 0x2002ee50), so a nonzero ``icon`` shows that illustration on the tile.
+    """
     captions = normalize_captions(captions)
     return build_create(
         remote_index=remote_index,
         device_type=DEVICE_TYPE,
         control_type=CONTROL_TYPE,
         control_mode=0,
-        icon=0,
+        icon=icon,
         device_id=device_id,
         name=name,
         ble_key_type=KEY_TYPE,

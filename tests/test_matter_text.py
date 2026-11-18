@@ -42,6 +42,16 @@ def test_create_packet_matches_the_official_app_bytes():
     assert packet[7:] == body
 
 
+def test_icon_changes_only_the_icon_byte_and_crc():
+    args = dict(remote_index=2, device_id="4d5400000001", name="T", captions=("a", "b", "c", "d"))
+    plain = matter.build_matter_create(**args)
+    washer = matter.build_matter_create(**args, icon=commands.ICON["washer"])
+    assert washer[7 + 4] == 14 and plain[7 + 4] == 0
+    assert washer[7:11] == plain[7:11] and washer[12:] == plain[12:]
+    assert washer[5:7] == commands.crc16_modbus(washer[7:]).to_bytes(2, "big")
+    assert commands.rewrite_native_page_icon(plain, 14) == washer
+
+
 def test_caption_update_keeps_slot_and_id():
     first = matter.build_matter_create(
         remote_index=2, device_id="4d5400000001", name="T", captions=("a", "b", "c", "d"))

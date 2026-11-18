@@ -448,6 +448,49 @@ def test_studio_creates_bridge_remote_without_saved_credentials(studio, monkeypa
     assert entry.data == {}
 
 
+@pytest.mark.parametrize("icon, expected_code", [("washer", 14), ("device", None), (None, None)])
+def test_bridge_remote_takes_the_chosen_icon_or_keeps_the_types(studio, monkeypatch, icon, expected_code):
+    from switchbot_urc import commands, studio_remotes
+
+    address = "DA:71:16:E0:1F:93"
+    entry = types.SimpleNamespace(entry_id="entry", domain=studio_remotes.DOMAIN,
+                                  data={}, options={})
+    hass = types.SimpleNamespace(data={}, config_entries=types.SimpleNamespace(
+        async_get_entry=lambda _: entry,
+        async_update_entry=lambda item, **changes: vars(item).update(changes)))
+    connection = types.SimpleNamespace(
+        send_result=lambda *_: None, send_error=lambda _, code, message: pytest.fail(message))
+    controller = studio_remotes.addressing.Bridge(
+        adapter="hci0", address=address, advertising_sets=1, serving=[address],
+        extended_advertising=True)
+    written = []
+
+    async def read_table(*_args):
+        return []
+
+    async def confirm(_hass, _controller, selected):
+        return selected == address
+
+    async def bind(_client, stages, *, device_id):
+        written.extend(packet for _, packet in stages)
+
+    monkeypatch.setattr(studio_remotes, "_client", lambda *_: object())
+    monkeypatch.setattr(studio_remotes, "_bridges", lambda _: [controller])
+    monkeypatch.setattr(studio_remotes, "read_device_table", read_table)
+    monkeypatch.setattr(studio_remotes, "_confirm_bridge_address", confirm)
+    monkeypatch.setattr(studio_remotes.install, "bind_native_once", bind)
+    msg = {"id": 1, "entry_id": "entry", "name": "Plug", "native_type": "PLUG"}
+    if icon is not None:
+        msg["icon"] = icon
+    asyncio.run(studio_remotes.ws_remote_create(hass, connection, msg))
+
+    (remote,) = entry.options["remotes"]
+    default_code = commands.native_type_metadata("PLUG")["icon_code"]
+    code = default_code if expected_code is None else expected_code
+    assert remote["icon_code"] == code
+    assert written[0][7 + 4] == code  # slot, type, control, mode, icon
+
+
 @pytest.mark.parametrize("readback_received", [True, False])
 def test_layout_write_reads_back_in_the_same_bridge_session(studio, readback_received):
     from switchbot_urc.client import UrcClient

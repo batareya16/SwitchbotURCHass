@@ -23,7 +23,7 @@ from . import addressing
 from . import install
 from . import ir_catalog
 from . import targets
-from .catalog import DEVICE_TYPES, ICONS
+from .catalog import DEVICE_TYPES, ICON_CHOICES, ICONS
 from .cloud import CloudError
 from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
@@ -277,6 +277,83 @@ async def _delete_remote(hass, connection, msg):
         connection.send_error(msg["id"], "remote_delete_failed", str(err))
 
 
+def _local_identity_bytes(remote: dict[str, Any]) -> bytes | None:
+    """The table id a saved remote answers to, or None when it carries no usable address."""
+    identity = remote.get("physical_device_id") or remote.get("device_id")
+    if not identity:
+        return None
+    try:
+        text = str(identity)
+        return c.id_to_bytes(text) if len(text) in (12, 17) else bytes.fromhex(text)
+    except ValueError:
+        return None
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/physical/delete_row",
+    vol.Required("entry_id"): str,
+    vol.Required("slot"): int,
+    vol.Required("device_type"): int,
+    vol.Required("control_type"): int,
+    vol.Required("device_id"): str,
+})
+@websocket_api.async_response
+async def ws_delete_table_row(hass, connection, msg):
+    async with remote_management_lock(hass):
+        await _delete_table_row(hass, connection, msg)
+
+
+async def _delete_table_row(hass, connection, msg):
+    """Delete one row of the remote's own device table, whatever Studio knows about it.
+
+    Studio lists a remote only when it has a saved record for it. A row written by another tool,
+    by the SwitchBot app or by a test has none, so the usual delete cannot name it. The panel
+    names the row it shows (slot, type, transport and id), this proves the device still holds
+    exactly that row, and only then sends the one destructive write.
+    """
+    try:
+        entry = hass.config_entries.async_get_entry(msg["entry_id"])
+        if entry is None or entry.domain != DOMAIN:
+            raise ValueError("Integration not found")
+        client = _client(hass, entry)
+        slot = msg["slot"]
+        wanted = (slot, msg["device_type"], msg["control_type"], bytes.fromhex(msg["device_id"]))
+        table = await read_device_table(hass, entry, client)
+        if not any(tuple(row[:4]) == wanted for row in table):
+            raise ValueError("That row is no longer on the remote as shown; read the table again")
+        command = c.build_delete(
+            remote_index=slot, device_type=wanted[1], control_type=wanted[2],
+            device_id=wanted[3].hex(),
+        )
+
+        def _still_there(raw: bytes) -> bool:
+            return any(tuple(row[:4]) == wanted for row in c.parse_added_devices(raw))
+
+        _before, response = await client.send_command_with_preflight_query(
+            command, subcommand=0x07, preflight_check=_still_there,
+        )
+        if response and response[0] != RESP_OK:
+            raise ValueError(f"the remote rejected the delete with 0x{response[0]:02X}")
+        after = await read_device_table(hass, entry, client)
+        if any(tuple(row[:4]) == wanted for row in after):
+            raise ValueError("the remote still lists that row after the delete")
+
+        # Forget the saved record of the deleted row, if there is one. The firmware compacts the
+        # table, so the slots after it moved: Refresh puts the remaining records right.
+        forgotten = 0
+        for item in entry.options.get("remotes", []):
+            if (isinstance(item, dict) and _local_identity_bytes(item) == wanted[3]
+                    and item.get("index") in (None, slot)):
+                forgotten += 1 + _forget_remote(
+                    hass, entry, str(item.get("remote_id") or item.get("device_id") or ""))
+                break
+        connection.send_result(msg["id"], {"slot": slot, "rows": len(after), "forgot_record": bool(forgotten)})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio table row delete failed")
+        connection.send_error(msg["id"], "table_row_delete_failed", str(err))
+
+
 @websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/remote/create",
@@ -284,7 +361,7 @@ async def _delete_remote(hass, connection, msg):
     vol.Required("name"): str,
     vol.Optional("device_type"): str,
     vol.Optional("native_type"): str,
-    vol.Optional("icon"): str,
+    vol.Optional("icon"): vol.In(ICON_CHOICES),
     vol.Optional("target_id"): str,
     vol.Optional("new_target_address"): str,
     vol.Optional("auto_address", default=False): bool,
@@ -328,12 +405,17 @@ async def _create_native_remote(hass, connection, msg):
         )
         device_type = selected_type["device_type"]
         remote_id = new_remote_id(entry)
+        # "device" (or no choice) keeps the picture that belongs to the type; any other icon
+        # replaces it, because the firmware picks the picture from a nonzero icon first.
+        chosen = str(msg.get("icon") or "device").lower()
+        icon_name = selected_type["icon_name"] if chosen == "device" else chosen
+        icon_code = selected_type["icon_code"] if chosen == "device" else c.ICON[chosen]
         stages = c.build_native_bind_sequence(
             device_type_name=device_type,
             remote_index=slot,
             name=msg["name"],
             device_id=address,
-            icon_name=selected_type["icon_name"],
+            icon_name=icon_name,
             control_mode=selected_type["control_mode"],
             event_remote_id=remote_id,
         )
@@ -349,8 +431,8 @@ async def _create_native_remote(hass, connection, msg):
             "device_type": device_type,
             "native_type": selected_type["value"],
             "control_mode": selected_type["control_mode"],
-            "icon": selected_type["icon_name"],
-            "icon_code": selected_type["icon_code"],
+            "icon": icon_name,
+            "icon_code": icon_code,
             "device_id": address,
             "physical_device_id": address,
             "remote_id": remote_id,
@@ -377,6 +459,7 @@ async def _create_native_remote(hass, connection, msg):
     vol.Optional("remote_type"): int,
     vol.Optional("remote_id"): str,
     vol.Optional("replace_existing", default=False): bool,
+    vol.Optional("icon"): vol.In(ICON_CHOICES),
 })
 @websocket_api.async_response
 async def ws_remote_install_ir(hass, connection, msg):
@@ -445,6 +528,8 @@ async def _install_ir_remote(hass, connection, msg):
             remotes=entry.options.get("remotes", []),
             targets=targets.all_targets(entry),
             status=status.append,
+            # "device" keeps the icon the catalog or account profile carries.
+            icon_name=(msg["icon"] if msg.get("icon") not in (None, "device") else None),
             observe_table=lambda table: store_device_table(hass, entry, table),
         )
         if errors.get("base") in {"ir_device_table_full", "ir_capacity_full"}:
@@ -611,6 +696,7 @@ async def ws_remote_sources(hass, connection, msg):
 
 def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_delete)
+    websocket_api.async_register_command(hass, ws_delete_table_row)
     websocket_api.async_register_command(hass, ws_remote_create)
     websocket_api.async_register_command(hass, ws_remote_install_ir)
     websocket_api.async_register_command(hass, ws_remote_sources)

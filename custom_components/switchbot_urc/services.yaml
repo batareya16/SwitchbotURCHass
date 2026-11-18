@@ -46,7 +46,7 @@ create_remote:
     icon:
       name: Icon
       default: light
-      selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch, tv] } }
+      selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch, bathtub, coffeemachine, socket, tv, boiler, heater, cooler, washer, fridge, cookware, pool, ventilator, blinds, garage] } }
     control_mode:
       name: Control mode
       default: 0
@@ -132,7 +132,7 @@ bind_native:
     icon:
       name: Icon
       default: strip
-      selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch] } }
+      selector: { select: { options: [light, desklamp, floorlamp, ceilinglamp, strip, switch, bathtub, coffeemachine, socket, tv, boiler, heater, cooler, washer, fridge, cookware, pool, ventilator, blinds, garage] } }
     replace_existing:
       name: Replace existing target
       description: Delete an existing remote that already uses the same fake-target MAC before binding.

@@ -16,6 +16,7 @@ from homeassistant.core import callback
 
 from . import commands as c
 from . import install
+from .catalog import ICON_CHOICES
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
 from .matter_text import (
     COMPANY_ID,
@@ -70,6 +71,7 @@ async def _send(client, packet: bytes) -> None:
     vol.Required("captions"): [str],
     vol.Optional("name"): str,
     vol.Optional("remote_id"): str,
+    vol.Optional("icon"): vol.In(ICON_CHOICES),
 })
 @websocket_api.async_response
 async def ws_save_matter(hass, connection, msg):
@@ -104,9 +106,13 @@ async def _save(hass, msg) -> dict[str, Any]:
                or next((item for item in on_device if item[0] == existing.get("index")), None))
         if row is None:
             raise ValueError("The text remote is no longer on the device. Refresh, then add it again.")
+        # A caption rewrite resends the whole create packet, so keep the tile's icon byte.
+        icon_code = (c.ICON[msg["icon"]] if msg.get("icon")
+                     else int(existing.get("icon_code") or 0))
         packet = build_matter_create(
             remote_index=row[0], device_id=existing["device_id"],
             name=str(existing.get("name") or "Accessory"), captions=captions,
+            icon=icon_code,
         )
         await _send(client, packet)
         after = await read_device_table(hass, entry, client)
@@ -118,6 +124,9 @@ async def _save(hass, msg) -> dict[str, Any]:
                 remote["index"] = row[0]
                 remote["matter_captions"] = list(captions)
                 remote["physical_packets"] = [packet.hex()]
+                remote["icon_code"] = icon_code
+                if msg.get("icon"):
+                    remote["icon"] = msg["icon"]
         hass.config_entries.async_update_entry(entry, options={**entry.options, "remotes": remotes})
         return {"remote_id": existing["remote_id"], "slot": row[0], "captions": list(captions)}
 
@@ -133,8 +142,10 @@ async def _save(hass, msg) -> dict[str, Any]:
         raise ValueError("No more remotes can be added.")
     slot = len(table)
     device_id = new_device_id({row[3] for row in table}, c.id_to_bytes)
+    icon_code = c.ICON[msg["icon"]] if msg.get("icon") else 0
     packet = build_matter_create(
-        remote_index=slot, device_id=device_id, name=name, captions=captions)
+        remote_index=slot, device_id=device_id, name=name, captions=captions,
+        icon=icon_code)
     await _send(client, packet)
     identity = c.id_to_bytes(device_id)
     after = await read_device_table(hass, entry, client)
@@ -147,7 +158,8 @@ async def _save(hass, msg) -> dict[str, Any]:
     remote_id = new_remote_id(entry)
     remotes = list(entry.options.get("remotes", []))
     remotes.append({
-        "index": slot, "name": name, "device_type": STUDIO_DEVICE_TYPE, "icon": "light",
+        "index": slot, "name": name, "device_type": STUDIO_DEVICE_TYPE,
+        "icon": msg.get("icon") or "light", "icon_code": icon_code,
         "device_id": device_id, "remote_id": remote_id, "buttons": [],
         "matter_captions": list(captions), "physical_packets": [packet.hex()],
     })

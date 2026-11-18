@@ -241,3 +241,57 @@ def test_caption_edit_finds_the_text_remote_after_its_slot_moved(studio):
     assert client.sent[0][7] == 0  # written to the slot it occupies now
     assert entry.options["remotes"][0]["index"] == 0
     assert entry.options["remotes"][0]["matter_captions"][2] == "Radio"
+
+
+def _packet_icon(packet):
+    return packet[7 + 4]  # slot, type, control, mode, icon
+
+
+def test_icon_is_written_kept_across_caption_edits_and_can_be_reset(studio):
+    client = FakeRemote([NATIVE_ROW])
+    hass, entry, connection, out = make(studio, client)
+    run(studio.studio_matter.ws_save_matter(hass, connection, {
+        "id": 1, "entry_id": "entry", "name": "Accessory", "captions": CAPTIONS,
+        "icon": "washer"}))
+    remote = entry.options["remotes"][0]
+    assert out["errors"] == []
+    assert _packet_icon(client.sent[0]) == commands.ICON["washer"]
+    assert (remote["icon"], remote["icon_code"]) == ("washer", 14)
+
+    # A caption-only edit resends the whole record, so it must carry the stored icon.
+    run(studio.studio_matter.ws_save_matter(hass, connection, {
+        "id": 2, "entry_id": "entry", "remote_id": remote["remote_id"],
+        "captions": ["Lamp", "Fan", "Radio", "Scene D"]}))
+    assert _packet_icon(client.sent[1]) == 14
+    assert entry.options["remotes"][0]["icon_code"] == 14
+
+    run(studio.studio_matter.ws_save_matter(hass, connection, {
+        "id": 3, "entry_id": "entry", "remote_id": remote["remote_id"],
+        "captions": CAPTIONS, "icon": "device"}))
+    assert out["errors"] == []
+    assert _packet_icon(client.sent[2]) == 0
+    assert entry.options["remotes"][0]["icon"] == "device"
+
+
+def test_serialised_text_remote_reports_its_wire_icon_and_firmware_picture(studio, monkeypatch):
+    remote = {"index": 1, "name": "Accessory", "device_type": "MATTER_TEXT",
+              "device_id": "4d5400000001", "remote_id": "abcd1234", "buttons": [],
+              "matter_captions": CAPTIONS, "icon": "light", "icon_code": 14}
+    hass, entry, _, _ = make(studio, FakeRemote([]), [remote])
+    monkeypatch.setattr(studio, "_repair_identities", lambda *_: None)
+    monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
+        async_get_entity_id=lambda *_: None))
+    payload = studio._serialize_entry(hass, entry)
+    row = payload["remotes"][0]
+    assert (row["icon"], row["icon_code"], row["artwork_id"]) == ("washer", 14, 0x28)
+    assert payload["icon_artwork"]["washer"] == 0x28 and payload["icon_artwork"]["bathtub"] == 0x11
+    assert payload["icon_artwork"]["blinds"] == 0x2D and payload["icon_artwork"]["garage"] == 0x2E
+    assert len(payload["icons"]) == 20
+    assert "device" not in payload["icon_artwork"]
+
+    # An older text remote saved before icons existed has no wire icon: it keeps its own picture.
+    old = {**remote, "icon": "light"}
+    old.pop("icon_code")
+    hass, entry, _, _ = make(studio, FakeRemote([]), [old])
+    row = studio._serialize_entry(hass, entry)["remotes"][0]
+    assert (row["icon"], row["icon_code"], row["artwork_id"]) == ("device", 0, None)

@@ -297,6 +297,8 @@ IR tile redraws immediately after a write still requires its update path to be c
 | cookware | `10` | cookware |
 | pool | `11` | pool |
 | ventilator | `12` | ventilator |
+| (no app name) | `13` | blinds: roller blinds, profile `0x2d` |
+| (no app name) | `14` | garage: garage, profile `0x2e` |
 
 ARM's create parser stores the packet's `controlType`, `controlMode`, and `icon` at
 model `+2`, `+3`, and `+4`. Sender `0x7848` places them in IPC bytes `+0x13`,

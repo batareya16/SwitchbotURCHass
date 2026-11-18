@@ -837,6 +837,9 @@ ICON = {
     "socket": 9, "tv": 10, "boiler": 11, "heater": 12,
     "cooler": 13, "washer": 14, "fridge": 15, "cookware": 16,
     "pool": 17, "ventilator": 18, "device": 0,
+    # Bytes 0x13 and 0x14 have no name in the app, but the V48 icon table draws roller blinds
+    # and a garage for them, so Studio names them for what the firmware shows.
+    "blinds": 19, "garage": 20,
 }
 
 # bleKeyType for UniversalBLE keys.

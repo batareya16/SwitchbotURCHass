@@ -762,6 +762,114 @@ test('text remote captions are validated in bytes and saved with the appearance 
   assert.deepEqual(remote.matter.captions, ['Lamp', 'B', 'C', 'D']);
 });
 
+test('a text remote icon is saved with its captions in one write and updates the list picture', async () => {
+  const instance = panel();
+  const remote = {remote_id: 'mt', name: 'Hall', icon: 'device',
+    matter: {captions: ['A', 'B', 'C', 'D'], max_bytes: 31}};
+  const sent = [];
+  instance._remote = () => remote;
+  instance._draftScope = () => 'mt';
+  instance._entry = () => ({icon_artwork: {washer: 0x28}});
+  instance._appearanceDraftsByRemote = new Map([['mt', {name: 'Hall', icon: 'washer', captions: ['A', 'B', 'C', 'D']}]]);
+  instance._hass = {callWS: async (msg) => { sent.push(msg); return {}; }};
+  await instance._saveAppearance();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].icon, 'washer');
+  assert.deepEqual(sent[0].captions, ['A', 'B', 'C', 'D']);
+  assert.equal(remote.icon, 'washer');
+  assert.equal(remote.artwork_id, 0x28);
+  assert.equal(instance._firmwareIconSrc('washer'), '/switchbot_urc_static/artwork/profile-28.png');
+  assert.equal(instance._firmwareIconSrc('device'), '');
+});
+
+test('native and text remotes offer firmware illustrations as icons, HID and IR keep theirs', () => {
+  const instance = panel();
+  instance._entry = () => ({icons: ['light', 'bathtub', 'washer'], icon_artwork: {light: 0x0c, bathtub: 0x11, washer: 0x28}});
+  instance._draftScope = () => 'r';
+  instance._appearanceDraftsByRemote = new Map();
+  instance._iconPickerFor = 'r';
+  instance._physical = null;
+  instance._nativeProfiles = [];
+  const render = (remote) => instance._renderAppearance({remote_id: 'r', name: 'R', icon: 'device', ...remote});
+
+  const matter = render({device_type: 'MATTER_TEXT', matter: {captions: ['A', 'B', 'C', 'D'], max_bytes: 31}});
+  assert.match(matter, /data-pick-icon="device"/);
+  assert.match(matter, /profile-28\.png/);
+  assert.match(matter, /data-pick-icon="washer"/);
+  assert.doesNotMatch(matter, /cannot be changed/);
+
+  const native = render({device_type: 'STRIP', can_test_native_icon: true});
+  assert.match(native, /data-pick-icon="bathtub"/);
+  assert.match(native, /profile-11\.png/);
+  assert.match(native, /Type default/);
+
+  for (const device_type of ['APPLE_TV', 'IR_24']) {
+    const page = render({device_type});
+    assert.match(page, /data-pick-icon="washer"/);
+    assert.match(page, /profile-28\.png/);
+    assert.match(page, /Type default/);
+  }
+  assert.match(render({device_type: 'IR_24'}), /Confirmed on real HID and IR remotes/);
+});
+
+test('HID and IR icon changes are written by resending their saved pages', async () => {
+  for (const [device_type, expected] of [['APPLE_TV', 'washer'], ['IR_24', 'device']]) {
+    const instance = panel();
+    const remote = {remote_id: 'r', name: 'R', icon: expected === 'device' ? 'washer' : 'device', device_type, artwork_id: 0x15};
+    const sent = [];
+    instance._remote = () => remote;
+    instance._draftScope = () => 'r';
+    instance._entry = () => ({icon_artwork: {washer: 0x28}});
+    instance._appearanceDraftsByRemote = new Map([['r', {name: 'R', icon: expected}]]);
+    instance._hass = {callWS: async (msg) => { sent.push(msg); return {}; }};
+    await instance._saveAppearance();
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].type, /studio\/remote\/update_page_icon$/);
+    assert.equal(sent[0].icon, expected);
+    assert.equal(remote.icon, expected);
+    assert.equal(remote.artwork_id, expected === 'washer' ? 0x28 : null);
+  }
+});
+
+test('the Add dialog offers firmware illustrations for every installable kind except scenes', () => {
+  const instance = panel();
+  instance._entry = () => ({icons: ['light', 'washer'], icon_artwork: {light: 0x0c, washer: 0x28}});
+  for (const kind of ['native', 'catalog', 'cloud', 'hid', 'matter']) {
+    const html = instance._renderAddIconPicker({kind, icon: 'washer'});
+    assert.match(html, /data-add-icon="device"/);
+    assert.match(html, /data-add-icon="washer"[^>]*aria-label="[^"]*"[^>]*aria-pressed="true"/);
+    assert.match(html, /profile-28\.png/);
+  }
+  assert.match(instance._renderAddIconPicker({kind: 'catalog'}), /data-add-icon="device"[^>]*aria-pressed="true"/);
+  assert.match(instance._renderAddIconPicker({kind: 'catalog'}), /picture of the IR model/);
+});
+
+test('every row of the installed table can be deleted, whether or not Studio knows it', async () => {
+  const instance = panel();
+  instance._physicalBusy = false;
+  instance._deviceTable = {rows: [{slot: 6, kind: 'native', device_type: '0x02', control_type: 0,
+    device_id: '100e0e0000020000000000', target_mac: '02:00:00:0E:0E:10'}], next_free_slot: 7};
+  const html = instance._renderDeviceTable();
+  assert.match(html, /data-delete-row="6"[^>]*data-row-type="0x02"[^>]*data-row-control="0"[^>]*data-row-id="100e0e0000020000000000"/);
+
+  const sent = [];
+  instance._hass = {callWS: async (msg) => { sent.push(msg); return msg.type.endsWith('/table') ? {rows: []} : {}; }};
+  instance._render = () => {};
+  instance._load = async () => {};
+  instance._notify = () => {};
+  instance._entryId = 'entry';
+  context.confirm = () => true;
+  await instance._deleteTableRow({deleteRow: '6'});
+  const request = sent.find((msg) => msg.type.endsWith('/physical/delete_row'));
+  assert.deepEqual([request.slot, request.device_type, request.control_type, request.device_id],
+    [6, 2, 0, '100e0e0000020000000000']);
+  context.confirm = () => false;
+  sent.length = 0;
+  instance._deviceTable = {rows: [{slot: 6, kind: 'native', device_type: '0x02', control_type: 0, device_id: 'aa', target_mac: 'x'}]};
+  await instance._deleteTableRow({deleteRow: '6'});
+  assert.equal(sent.length, 0);
+});
+
 test('adding a scene is checked against the scene limit like any other install', () => {
   const instance = panel();
   const scenes = Array.from({length: 10}, (_, index) => ({kind: 'scene', scene_index: index}));

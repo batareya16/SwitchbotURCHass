@@ -22,7 +22,7 @@ from homeassistant.components import bluetooth, websocket_api
 from . import commands as c
 from . import install
 from . import physical_layout
-from .catalog import DEFAULT_BUTTONS, DEVICE_TYPES, ICONS, buttons_for
+from .catalog import DEFAULT_BUTTONS, DEVICE_TYPES, ICON_CHOICES, ICONS, buttons_for
 from .client import UrcResponseDecodeError
 from .cloud import CloudError
 from .cloud_ir import find_cloud_items, profile_from_cloud
@@ -656,7 +656,7 @@ def _native_main_page_source_packet(remote: dict[str, Any], slot: int) -> bytes:
     vol.Required("type"): f"{DOMAIN}/studio/remote/update_native_icon",
     vol.Required("entry_id"): str,
     vol.Required("remote_id"): str,
-    vol.Required("icon"): vol.In(ICONS),
+    vol.Required("icon"): vol.In(ICON_CHOICES),
 })
 @websocket_api.async_response
 async def ws_native_icon_update(hass, connection, msg):
@@ -724,6 +724,79 @@ async def ws_native_icon_update(hass, connection, msg):
     except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
         _LOGGER.exception("Remote Studio native icon update failed")
         connection.send_error(msg["id"], "native_icon_update_failed", str(err))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/remote/update_page_icon",
+    vol.Required("entry_id"): str,
+    vol.Required("remote_id"): str,
+    vol.Required("icon"): vol.In(ICON_CHOICES),
+})
+@websocket_api.async_response
+async def ws_page_icon_update(hass, connection, msg):
+    """Rewrite the wire icon of an installed HID or IR remote from its saved page packets.
+
+    The firmware reads the icon byte of every tile the same way (V48 selector 0x2002363c), so
+    this resends the saved pages with that one byte and the CRC changed, in the same slot.
+    """
+    try:
+        entry = _entry(hass, msg)
+        client = _client(hass, entry)
+        item = _find(await _inventory(hass, entry, client), msg["remote_id"])
+        if not item.get("physical") or item.get("control_type") not in (c.CTRL_HID, c.CTRL_IR):
+            raise ValueError("This icon update is only available for an installed HID or IR remote")
+        managed = item.get("managed_item") or {}
+        saved = managed.get("physical_packets") or []
+        if not saved:
+            raise ValueError(
+                "Studio has no saved pages for this remote, so it cannot rewrite them safely; "
+                "refresh the remote first")
+        slot = int(item["index"])
+        type_bytes = c.device_type_bytes(int(item["device_type_byte"]))
+        control_offset = 1 + len(type_bytes)
+        id_offset = control_offset + 3
+        icon_code = c.ICON[msg["icon"].lower()]
+        packets = []
+        for value in saved:
+            packet = bytes.fromhex(value)
+            body = packet[7:]
+            # The saved pages must still be this remote's: same slot, type, transport and id.
+            if (len(body) < id_offset + 11 or body[0] != slot
+                    or body[1:control_offset] != type_bytes
+                    or body[control_offset] != int(item["control_type"])
+                    or body[id_offset:id_offset + 11] != item["device_id_bytes"]):
+                raise ValueError("The saved page data does not match this remote; refresh first")
+            packets.append(c.rewrite_native_page_icon(packet, icon_code))
+        responses = await client.send_command_sequence(
+            tuple(packets), timeout=30.0, timeout_retries=0,
+            accepted_codes=tuple(frozenset({1}) for _ in packets),
+        )
+        if len(responses) != len(packets):
+            raise ValueError(
+                "The remote did not acknowledge every page icon update; it remains installed. "
+                "Retry the icon update to finish any remaining pages.")
+        for index, response in enumerate(responses):
+            if not response or response[0] != 1:
+                raise ValueError(
+                    f"Page icon update {index + 1} was rejected "
+                    f"({response.hex() if response else 'timeout'}); the remote remains "
+                    "installed. Retry to finish any remaining pages.")
+
+        remotes = deepcopy(list(entry.options.get("remotes", [])))
+        identity = str(managed.get("remote_id") or managed.get("device_id") or "")
+        for remote in remotes:
+            if str(remote.get("remote_id") or remote.get("device_id") or "") == identity:
+                remote.update({
+                    "icon": msg["icon"], "icon_code": icon_code,
+                    "physical_packets": [packet.hex() for packet in packets],
+                })
+                break
+        _save_remotes(hass, entry, remotes)
+        connection.send_result(msg["id"], {"slot": slot, "icon": msg["icon"]})
+    except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
+        _LOGGER.exception("Remote Studio page icon update failed")
+        connection.send_error(msg["id"], "page_icon_update_failed", str(err))
 
 
 def _validate_native_test_packet(remote: dict[str, Any], slot: int, packet: bytes) -> None:
@@ -946,7 +1019,7 @@ async def _pair_hid(client, device_id: str) -> str:
     vol.Required("entry_id"): str,
     vol.Required("name"): str,
     vol.Required("device_type"): vol.In(DEVICE_TYPES),
-    vol.Optional("icon", default=ICONS[0]): vol.In(ICONS),
+    vol.Optional("icon", default=ICONS[0]): vol.In(ICON_CHOICES),
     vol.Optional("buttons"): [str],
 })
 @websocket_api.async_response
@@ -1171,6 +1244,7 @@ def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_rename)
     websocket_api.async_register_command(hass, ws_remote_recreate)
     websocket_api.async_register_command(hass, ws_native_icon_update)
+    websocket_api.async_register_command(hass, ws_page_icon_update)
     websocket_api.async_register_command(hass, ws_native_icon_variant_test)
     websocket_api.async_register_command(hass, ws_pair_hid)
     websocket_api.async_register_command(hass, ws_create_hid)
