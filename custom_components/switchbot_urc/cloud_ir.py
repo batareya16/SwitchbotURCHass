@@ -162,6 +162,20 @@ class CloudIrProfile:
             raise ValueError("cloud IR key map has no valid code-bank references")
         object.__setattr__(self, "key_map", valid[:90])
 
+    def build_pages(self, *, remote_index: int, name: str, icon: int | None = None) -> tuple[bytes, ...]:
+        """The key pages for this profile; a TV gets the official app's own layout."""
+        shown_icon = self.icon if icon is None else icon
+        if self.device_type in commands.TV_REMOTE_TYPES:
+            return commands.build_tv_pages(
+                remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
+                name=name, key_map=list(self.key_map), icon=shown_icon,
+                custom_keys=frozenset(label for label, _bank in self.custom_code_banks),
+            )
+        return commands.build_ir_pages(
+            remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
+            name=name, key_map=list(self.key_map), icon=shown_icon,
+        )
+
     def build_install(
         self, *, remote_index: int, name: str, remote_count: int,
         icon: int | None = None,
@@ -209,14 +223,7 @@ class CloudIrProfile:
                 frozenset({0x01}),
             )
             for page_number, page in enumerate(
-                commands.build_ir_pages(
-                    remote_index=remote_index,
-                    device_type=self.device_type,
-                    remote_id=self.remote_id,
-                    name=name,
-                    key_map=list(self.key_map),
-                    icon=self.icon if icon is None else icon,
-                )
+                self.build_pages(remote_index=remote_index, name=name, icon=icon)
             )
         )
         result.append(

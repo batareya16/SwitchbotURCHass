@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.3
+
+- Fix the buttons of an IR TV installed from Studio doing nothing. Studio laid the key pages out its own way, with the SwitchBot cloud's key ids and keys in cloud order, while the remote looks keys up by the firmware's function ids and expects each main-page key on its own position. A TV now gets the layout the official app writes: Power on both ON and OFF, volume, channel, arrows, OK, back and menu on their own positions, and the digits, playback, inputs and extra keys on the sub-pages behind the A-D soft keys (a soft key without keys is switched off). Not confirmed on a real Universal Remote yet. The other IR types (air conditioner, fan, light, set-top box and so on) are still laid out the old way.
+- The Bridge add-on is unchanged in this release.
+
 ## 0.53.2
 
 - IR remotes from the SwitchBot account are now installed as new remotes under a new ID, the same way catalog remotes always were. Installing one used to write it under its account ID, where what an interrupted earlier upload left behind could keep the new copy from working. The **Replace an existing copy of the same remote** option is gone from the Add dialog; delete a remote you no longer want from its row. When the IR slots are full, Studio now says to delete one first.

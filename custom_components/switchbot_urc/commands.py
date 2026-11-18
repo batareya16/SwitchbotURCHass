@@ -1367,6 +1367,114 @@ def build_ir_pages(
     return tuple(pages)
 
 
+# ---- IR TV pages, as the official app lays them out (urc-bundle.js, the TV key handler) -----
+#
+# A cloud key map names its keys with the app's own ids (Power = 11, Volume up = 9, ...). The
+# remote does not look those ids up: it finds a key by the firmware function id the app writes
+# next to the screen position (Power = 105, Volume up = 15, ...), and the main page puts each
+# default key on its own position (Power on ON and OFF, Volume up on VOLADD, ...). The other
+# keys go to four sub-pages, opened from the A-D soft keys, in the order of the key map.
+TV_REMOTE_TYPES = (2, 16)
+_TV_FUNCTION = {
+    9: 15, 1: 16, 3: 17, 7: 18, 5: 13, 11: 105, 13: 19, 39: 12,
+    15: 41, 17: 42, 19: 43, 21: 44, 23: 45, 25: 46, 27: 47, 29: 48, 31: 49,
+    51: 200, 53: 201, 55: 202, 30: 203, 34: 21, 40: 22, 46: 23, 44: 24, 32: 25, 36: 26,
+    38: 27, 42: 28, 57: 114, 22: 211, 24: 212, 26: 213, 28: 214, 18: 220, 2: 221, 4: 222,
+    50: 223, 6: 224, 20: 109, 10: 101, 12: 102, 14: 103, 16: 104, 48: 111, 8: 106,
+    45: 7, 47: 8, 43: 9, 49: 10, 41: 11,
+}
+_TV_MAIN_POSITION = {
+    11: TAG["ON"], 3: TAG["CHUP"], 7: TAG["CHDOWN"], 9: TAG["VOLADD"], 1: TAG["VOLDEL"],
+    13: TAG["SOUNDOFF"], 5: TAG["HOME"], 39: TAG["BACK"], 45: TAG["LEFT"], 47: TAG["RIGHT"],
+    43: TAG["UP"], 49: TAG["DOWN"], 41: TAG["OK"],
+}
+_TV_SUBPAGE_KEYS = {
+    1: (15, 17, 19, 21, 23, 25, 27, 29, 31, 51, 53, 55, 30),
+    2: (32, 34, 40, 36, 38, 44, 46, 42),
+    3: (22, 24, 26, 28, 57),
+    4: (6, 18, 2, 20, 4, 50, 10, 12, 14, 16, 48, 8),
+}
+# The keys whose presence switches the A, B and C soft keys on (the digits without the
+# three-code key, playback, inputs).
+_TV_SOFT_KEYS = {
+    TAG["A"]: (15, 17, 19, 21, 23, 25, 27, 29, 31, 51, 53, 55),
+    TAG["B"]: (36, 32, 34, 40, 38, 42, 44, 46),
+    TAG["C"]: (57, 22, 24, 26, 28),
+}
+_TV_SOFT_FUNCTION = {TAG["A"]: 39, TAG["B"]: 20, TAG["C"]: 210, TAG["D"]: 100}
+_TV_POWER = 11
+_TV_MAIN_KEYS = tuple(_TV_MAIN_POSITION)
+
+
+def build_tv_pages(
+    *,
+    remote_index: int,
+    device_type: int,
+    remote_id: bytes,
+    name: str,
+    key_map: list[tuple[int, int, int]],
+    icon: int = 0,
+    custom_keys: frozenset[str] = frozenset(),
+) -> tuple[bytes, ...]:
+    """Build the pages the official app writes for an IR TV from a cloud key map.
+
+    ``key_map`` holds ``(key id, offset, length)``; a key listed in ``custom_keys`` was uploaded
+    on its own and is referenced by name. Power is written twice, on ON and on OFF, the way
+    the app does. The soft keys A-D show only the sub-pages that have keys.
+    """
+    if len(remote_id) != 11:
+        raise ValueError("IR remote id must be exactly 11 bytes")
+    if not key_map:
+        raise ValueError("IR key map must not be empty")
+    name_bytes = bytearray(pad(name.encode("utf-8"), 64))
+    name_bytes[63] = 0
+
+    def block(key: int, start: int, length: int) -> tuple[int, bytes]:
+        if str(key) in custom_keys:
+            label = str(key).encode("utf-8")[:31]
+            return 2, label.ljust(32, b"\0")
+        if not 0 <= start <= 0xFFFFFFFF or not 0 < length <= 0xFFFF:
+            raise ValueError("IR code-bank reference is out of range")
+        return 1, (start.to_bytes(4, "big") + length.to_bytes(2, "big")).ljust(32, b"\0")
+
+    def record(position: int, function: int, kind: int, payload: bytes = b"") -> bytes:
+        return bytes([position]) + function.to_bytes(2, "big") + bytes([kind]) + payload.ljust(32, b"\0")
+
+    keys = [entry for entry in key_map if entry[0] in _TV_FUNCTION]
+    present = {entry[0] for entry in keys}
+    has_power = _TV_POWER in present or str(_TV_POWER) in custom_keys
+    pages: list[bytes] = []
+    for page in range(5):
+        records: list[bytes] = []
+        wanted = _TV_MAIN_KEYS if page == 0 else _TV_SUBPAGE_KEYS[page]
+        for key, start, length in keys:
+            if key == _TV_POWER and has_power:
+                continue
+            if key not in wanted:
+                continue
+            kind, payload = block(key, start, length)
+            position = _TV_MAIN_POSITION[key] if page == 0 else len(records)
+            records.append(record(position, _TV_FUNCTION[key], kind, payload))
+        if page == 0:
+            for position in (TAG["A"], TAG["B"], TAG["C"], TAG["D"]):
+                if position == TAG["D"]:
+                    shown = any(key in present for key in _TV_SUBPAGE_KEYS[4])
+                else:
+                    shown = any(key in present for key in _TV_SOFT_KEYS[position])
+                records.append(record(position, _TV_SOFT_FUNCTION[position], 4 if shown else 254))
+            if has_power:
+                power = next((entry for entry in keys if entry[0] == _TV_POWER), None)
+                kind, payload = block(*(power or (_TV_POWER, 0, 1)))
+                for position in (TAG["ON"], TAG["OFF"]):
+                    records.append(record(position, _TV_FUNCTION[_TV_POWER], kind, payload))
+        elif not records:
+            continue
+        body = bytes([remote_index & 0xFF, device_type & 0xFF, CTRL_IR, 0, icon & 0xFF]) \
+            + remote_id + bytes(name_bytes) + bytes([0, page, len(records)]) + b"".join(records)
+        pages.append(b"\x0f\x62\x06" + s16(len(body)) + s16(crc16_modbus(body)) + body)
+    return tuple(pages)
+
+
 # V48 ARM slot table at cd34() + 0x24 has 25 device records.
 MAX_REMOTE_SLOTS = 25
 # Category limits used by the SwitchBot app. HID is also counted among the BLE devices.

@@ -309,11 +309,7 @@ async def _adopt_ir_remotes(cloud, table, remotes, catalogue) -> int:
                 records[0], remote_id=remote_id, name=name,
                 remote_type=device_type, metadata=metadata,
             )
-            pages = c.build_ir_pages(
-                remote_index=slot, device_type=profile.device_type,
-                remote_id=profile.remote_id, name=name,
-                key_map=list(profile.key_map), icon=profile.icon,
-            )
+            pages = profile.build_pages(remote_index=slot, name=name)
             studio_pages = c.studio_pages_from_packets(tuple(pages))
         except Exception as err:  # noqa: BLE001 - one unreadable remote must not stop the rest
             _LOGGER.warning("could not rebuild IR remote in slot %s: %s", slot, err)
