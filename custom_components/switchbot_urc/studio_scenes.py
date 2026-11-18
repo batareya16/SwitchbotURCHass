@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import asdict
 
 import voluptuous as vol
 from homeassistant.components import bluetooth, websocket_api
 from homeassistant.core import callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.script import Script, async_validate_actions_config
 
 from .const import CONF_ADDRESS, DOMAIN
 from .scenes import (
@@ -56,11 +57,22 @@ def _store_bindings(hass, entry, bindings):
         )
 
 
+def _binding_actions(binding):
+    if "actions" in binding:
+        return deepcopy(binding["actions"])
+    entity_id = binding.get("entity_id", "")
+    if entity_id.startswith(("scene.", "script.")):
+        return [{"action": f"{entity_id.split('.', 1)[0]}.turn_on",
+                 "target": {"entity_id": entity_id}}]
+    return []
+
+
 def _result(scenes, bindings):
     return {
         "limit": SCENE_LIMIT,
         "scenes": [
-            {**asdict(scene), "entity_id": bindings.get(str(index), {}).get("entity_id", "")}
+            {**asdict(scene), "entity_id": bindings.get(str(index), {}).get("entity_id", ""),
+             "actions": _binding_actions(bindings.get(str(index), {}))}
             for index, scene in sorted(scenes.items())
         ],
     }
@@ -102,6 +114,7 @@ async def ws_list_scenes(hass, connection, msg):
     vol.Optional("icon"): vol.All(int, vol.Range(min=0, max=255)),
     vol.Optional("color"): vol.All(int, vol.Range(min=0, max=255)),
     vol.Optional("entity_id", default=""): str,
+    vol.Optional("actions"): list,
     vol.Optional("delete", default=False): bool,
 })
 @websocket_api.async_response
@@ -134,12 +147,13 @@ async def ws_save_scene(hass, connection, msg):
                     if index is None:
                         raise ValueError("The remote already has ten scenes")
                 entity_id = msg["entity_id"]
-                if index not in current and not entity_id:
-                    raise ValueError("Choose a Home Assistant scene or script to run")
                 if entity_id and (
                     not entity_id.startswith(("scene.", "script.")) or not hass.states.get(entity_id)
                 ):
                     raise ValueError("Choose a Home Assistant scene or script")
+                actions = deepcopy(msg.get("actions", _binding_actions({"entity_id": entity_id})))
+                if actions:
+                    await async_validate_actions_config(hass, deepcopy(actions))
                 scene = Scene(index, msg["name"].strip(), msg["icon"], msg["color"])
                 installed = current.get(index)
                 if scene.icon > 24 and (installed is None or scene.icon != installed.icon):
@@ -149,8 +163,8 @@ async def ws_save_scene(hass, connection, msg):
                 scene.encode()
                 target[index] = scene
                 bindings.pop(str(index), None)
-                if entity_id:
-                    bindings[str(index)] = {"scene": asdict(scene), "entity_id": entity_id}
+                if actions:
+                    bindings[str(index)] = {"scene": asdict(scene), "actions": actions}
             if target != current:
                 packet = build_scene_list(list(target.values()))
                 runtime["scene_write_unverified"] = True
@@ -181,18 +195,50 @@ async def ws_save_scene(hass, connection, msg):
     connection.send_result(msg["id"], _result(target, bindings))
 
 
+async def _run_scene_actions(hass, entry, index):
+    binding = entry.options.get(SCENE_BINDINGS, {}).get(str(index), {})
+    actions = _binding_actions(binding)
+    if not actions:
+        return
+    validated = await async_validate_actions_config(hass, actions)
+    action_script = Script(hass, validated, f"WoRWS scene {index}", DOMAIN,
+                           script_mode="parallel", max_runs=10)
+    await action_script.async_run({"scene_index": index, "scene_name": binding["scene"]["name"]})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/scenes/test",
+    vol.Required("entry_id"): str,
+    vol.Required("index"): vol.All(int, vol.Range(min=0, max=SCENE_LIMIT - 1)),
+})
+@websocket_api.async_response
+async def ws_test_scene(hass, connection, msg):
+    entry, runtime = _entry_and_runtime(hass, connection, msg)
+    if entry is None:
+        return
+    if runtime.get("scene_write_unverified"):
+        connection.send_error(msg["id"], "scene_unverified", "Refresh the scene list first")
+        return
+    try:
+        await _run_scene_actions(hass, entry, msg["index"])
+    except Exception as err:
+        connection.send_error(msg["id"], "scene_action_failed", str(err))
+        return
+    connection.send_result(msg["id"])
+
+
 def listen_for_scenes(hass, entry, runtime):
     """Listen on Home Assistant's passive Bluetooth scanners for this physical remote."""
     address = entry.data[CONF_ADDRESS].upper()
     address_bytes = bytes.fromhex(address.replace(":", ""))
     tracker = ScenePressTracker()
 
-    async def activate(entity_id):
-        domain = entity_id.split(".", 1)[0]
+    async def activate(index):
         try:
-            await hass.services.async_call(domain, "turn_on", {"entity_id": entity_id}, blocking=True)
-        except HomeAssistantError:
-            _LOGGER.exception("Could not activate %s from WoRWS scene", entity_id)
+            await _run_scene_actions(hass, entry, index)
+        except Exception:
+            _LOGGER.exception("Could not run actions for WoRWS scene %s", index)
 
     @callback
     def receive(info, _change):
@@ -203,9 +249,8 @@ def listen_for_scenes(hass, entry, runtime):
         if index is None or runtime.get("scene_write_unverified"):
             return
         binding = entry.options.get(SCENE_BINDINGS, {}).get(str(index), {})
-        entity_id = binding.get("entity_id", "")
-        if entity_id.startswith(("scene.", "script.")):
-            hass.async_create_task(activate(entity_id))
+        if _binding_actions(binding):
+            hass.async_create_task(activate(index))
 
     cached = bluetooth.async_last_service_info(hass, address, connectable=False)
     if cached:
@@ -221,3 +266,4 @@ def listen_for_scenes(hass, entry, runtime):
 def register(hass):
     websocket_api.async_register_command(hass, ws_list_scenes)
     websocket_api.async_register_command(hass, ws_save_scene)
+    websocket_api.async_register_command(hass, ws_test_scene)

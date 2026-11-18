@@ -53,8 +53,11 @@ def _stub_homeassistant():
     module("homeassistant.components.http", HomeAssistantView=object, StaticPathConfig=object)
     module("homeassistant.components.frontend", async_register_built_in_panel=lambda *a, **k: None)
     module("homeassistant.helpers")
+    async def _validate_actions(_hass, actions):
+        return actions
+
     module("homeassistant.helpers.script", Script=object,
-           async_validate_actions_config=lambda *a, **k: None)
+           async_validate_actions_config=_validate_actions)
     module("homeassistant.helpers.aiohttp_client", async_get_clientsession=lambda *a: None)
     module("homeassistant.helpers.entity_registry", async_get=lambda *a: None)
     module("homeassistant.helpers.device_registry", async_get=lambda *a: None)
@@ -138,9 +141,68 @@ def test_scene_save_updates_ha_only_after_physical_readback(studio, verified):
     assert bool(results) == verified
     assert bool(errors) != verified
     if verified:
-        assert entry.options["scene_bindings"]["0"]["entity_id"] == "scene.movie"
+        assert entry.options["scene_bindings"]["0"]["actions"] == [
+            {"action": "scene.turn_on", "target": {"entity_id": "scene.movie"}}
+        ]
     else:
         assert "scene_bindings" not in entry.options
+
+
+def test_scene_actions_update_without_rewriting_the_remote_and_execute(studio, monkeypatch):
+    scenes = studio.studio_scenes
+    row = {"index": 0, "name": "Movie", "icon": 18, "color": 6}
+    packet = scenes.build_scene_list([scenes.Scene(**row)])
+    frame = b"\x01\0\0\0" + packet[3:7] + packet[7:]
+    entry = types.SimpleNamespace(domain="switchbot_urc", options={})
+
+    async def query(_):
+        return frame
+
+    async def write(*args, **kwargs):
+        pytest.fail("Changing HA actions must not write the device scene list")
+
+    hass = types.SimpleNamespace(
+        data={"switchbot_urc": {"entry": {"client": types.SimpleNamespace(
+            query=query, send_command_sequence=write)}}},
+        config_entries=types.SimpleNamespace(
+            async_get_entry=lambda _: entry,
+            async_update_entry=lambda item, *, options: setattr(item, "options", options)),
+    )
+    errors, results, runs = [], [], []
+    connection = types.SimpleNamespace(
+        send_error=lambda *args: errors.append(args),
+        send_result=lambda *args: results.append(args))
+
+    class ActionScript:
+        def __init__(self, _hass, actions, *args, **kwargs):
+            assert actions == ACTIONS
+
+        async def async_run(self, variables):
+            runs.append(variables)
+
+    monkeypatch.setattr(scenes, "Script", ActionScript)
+
+    async def exercise():
+        await scenes.ws_save_scene(hass, connection, {
+            "id": 1, "entry_id": "entry", "expected": [row], "delete": False,
+            **row, "entity_id": "", "actions": ACTIONS,
+        })
+        await scenes._run_scene_actions(hass, entry, 0)
+
+    asyncio.run(exercise())
+    assert not errors
+    assert results
+    assert entry.options["scene_bindings"]["0"]["actions"] == ACTIONS
+    assert runs == [{"scene_index": 0, "scene_name": "Movie"}]
+
+
+def test_existing_scene_entity_binding_loads_as_actions(studio):
+    scenes = studio.studio_scenes
+    row = scenes.Scene(3, "Sleep", 21, 6)
+    result = scenes._result({3: row}, {"3": {"scene": vars(row), "entity_id": "script.sleep"}})
+    assert result["scenes"][0]["actions"] == [
+        {"action": "script.turn_on", "target": {"entity_id": "script.sleep"}}
+    ]
 
 
 def test_ir_slot_zero_stays_visible_and_refresh_loads_its_profile(studio):

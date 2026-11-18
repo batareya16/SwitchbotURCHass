@@ -43,10 +43,13 @@ function panel() {
   return instance;
 }
 
-test('scene editor saves a named HA scene with the current physical inventory', async () => {
+test('scene editor uses the remote face, firmware icon choices and custom actions', async () => {
   const instance = panel();
-  const existing = {index: 4, name: 'Sleep', icon: 21, color: 6, entity_id: 'scene.sleep'};
-  const newScene = {name: 'Movie', icon: 18, color: 6, entity_id: 'script.movie'};
+  instance._pages = () => [];
+  instance._nativeProfiles = [];
+  instance._entry = () => ({remotes: []});
+  const existing = {index: 4, name: 'Sleep', icon: 21, color: 6, actions: []};
+  const newScene = {name: 'Movie', icon: 18, color: 6, actions: instance._draftActions};
   instance._scenePanel = {entryId: 'entry', rows: [existing], limit: 10,
     loaded: true, draft: newScene};
   let request;
@@ -54,16 +57,64 @@ test('scene editor saves a named HA scene with the current physical inventory', 
     request = message;
     return {scenes: [{...newScene, index: 0}, existing]};
   }};
-  assert.match(instance._renderScenes(), /name="entity_id"/);
-  assert.match(instance._renderScenes(), /value="18"\s+selected>Movie/);
+  const markup = instance._renderScenes();
+  assert.match(markup, /viewBox="0 0 300 657"/);
+  assert.match(markup, /data-edit-scene="4"/);
+  assert.match(markup, /scene-18.png/);
+  assert.match(markup, /id="visualActionEditor"/);
+  instance._scenePanel.appearance = true;
+  const appearance = instance._renderScenes();
+  assert.match(appearance, /data-scene-icon="18"/);
+  assert.match(appearance, /id="sceneName"/);
+  assert.equal((appearance.match(/data-scene-icon=/g) || []).length, 25);
+  assert.doesNotMatch(markup, /name="entity_id"/);
   await instance._saveScene(false);
   assert.equal(request.type, 'switchbot_urc/studio/scenes/save');
   assert.equal(request.expected[0].index, 4);
-  assert.equal(request.expected[0].entity_id, undefined);
-  assert.equal(request.entity_id, 'script.movie');
+  assert.equal(request.expected[0].actions, undefined);
+  assert.equal(request.actions[0].action, 'light.turn_on');
   assert.equal(request.index, undefined);
   assert.equal(instance._scenePanel.rows.length, 2);
-  assert.equal(instance._scenePanel.draft, null);
+  assert.equal(instance._scenePanel.draft.index, 0);
+});
+
+test('scene workspace renders through the normal Studio entry point', () => {
+  const instance = panel();
+  instance._pages = () => [];
+  instance._button = () => null;
+  instance._page = () => ({index: 0, buttons: []});
+  instance._nativeProfiles = [];
+  instance._entry = () => ({entry_id: 'entry', remotes: []});
+  instance._entries = () => [instance._entry()];
+  instance._hass = {states: {}};
+  instance._scenePanel = {entryId: 'entry', rows: [
+    {index: 0, name: 'Movie', icon: 18, color: 5, actions: []},
+  ], loaded: true, limit: 10, draft: null};
+  instance._wireEvents = () => {};
+  instance._wireScenes = () => {};
+  instance._mountActionSelector = () => {};
+  instance.shadowRoot = {innerHTML: '', querySelector() {return null;}};
+  instance._renderUnsafe();
+  assert.match(instance.shadowRoot.innerHTML, /id="sceneRemoteSelect"/);
+  assert.match(instance.shadowRoot.innerHTML, /data-edit-scene="0"/);
+  assert.match(instance.shadowRoot.innerHTML, /viewBox="0 0 300 657"/);
+  assert.doesNotMatch(instance.shadowRoot.innerHTML, /Back to remotes|sceneForm/);
+});
+
+test('scene selection preserves draft names and actions between rows', () => {
+  const instance = panel();
+  instance._button = () => null;
+  const first = {index: 0, name: 'Movie', icon: 18, color: 5, actions: []};
+  const second = {index: 1, name: 'Morning', icon: 1, color: 2, actions: []};
+  instance._scenePanel = {rows: [first, second], draft: null};
+  instance._selectSceneDraft(structuredClone(first));
+  instance._scenePanel.draft.name = 'Movie night';
+  instance._draftActions = [{action: 'light.turn_off', target: {entity_id: 'light.hall'}}];
+  instance._rememberMapping();
+  instance._selectSceneDraft(structuredClone(second));
+  instance._selectSceneDraft(structuredClone(first));
+  assert.equal(instance._scenePanel.draft.name, 'Movie night');
+  assert.equal(instance._draftActions[0].action, 'light.turn_off');
 });
 
 test('one-row page is written before its HA action, preserving action editor values', async () => {

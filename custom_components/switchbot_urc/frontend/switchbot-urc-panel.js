@@ -463,7 +463,14 @@ class SwitchBotUrcPanel extends HTMLElement {
     return this._physical ? `p${button.button_page}_k${button.button_index}` : button.button_id;
   }
 
-  _rememberMapping(button = this._button()) {
+  _rememberMapping(button) {
+    if (this._scenePanel?.draft) {
+      this._scenePanel.draft.actions = structuredClone(this._draftActions);
+      this._scenePanel.draft.actionsJson = this._actionJsonDraft;
+      this._scenePanel.draft.actionsValid = this._jsonValid;
+      return;
+    }
+    button ??= this._button();
     if (!button || !this._dirty) return;
     this._mappingDrafts().set(this._mappingKey(button), {
       mode: this._mode,
@@ -980,6 +987,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _renderScreen(page) {
+    if (this._scenePanel) return "";
     // Real HTML inside the SVG screen, so the list scrolls like the device's own does instead
     // of silently cutting off whatever does not fit.
     if ((page?.index ?? 0) !== 0) {
@@ -1002,8 +1010,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       }).join("");
     }
     const remotes = this._entry()?.remotes || [];
-    if (!remotes.length) return `<p class="scr-empty">No remotes yet</p>`;
-    return remotes.map((item) => {
+    const navigation = `<nav class="remote-screen-tabs"><button class="selected" type="button">Devices</button><button type="button" id="manageScenes">Scenes</button></nav>`;
+    if (!remotes.length) return navigation + `<p class="scr-empty">No remotes yet</p>`;
+    return navigation + remotes.map((item) => {
       const current = item.remote_id === this._remoteId;
       const nativeProfile = item.can_test_native_icon
         ? this._nativeProfile(item.native_type || item.device_type) : null;
@@ -1082,18 +1091,19 @@ class SwitchBotUrcPanel extends HTMLElement {
     </section>`;
   }
 
-  _renderFace(page) {
+  _renderFace(page, screenContent) {
     const byPos = {};
     (page?.buttons || []).forEach((item) => {
       byPos[String(item.position || "").toUpperCase()] = item;
     });
-    const key = (tag, body, label) => this._key(byPos, tag, body, label);
-    const pages = this._pages();
+    const key = (tag, body, label) => this._scenePanel
+      ? `<g class="k inactive">${body}</g>` : this._key(byPos, tag, body, label);
+    const pages = this._scenePanel ? [] : this._pages();
     const mainButtons = pages.find((item) => item.index === 0)?.buttons || [];
     const softkeys = Object.fromEntries(mainButtons.map((item) => [
       String(item.position || "").toUpperCase(), item,
     ]));
-    const profile = this._nativeProfile(this._physical?.native_type || this._physical?.template);
+    const profile = this._scenePanel ? null : this._nativeProfile(this._physical?.native_type || this._physical?.template);
     const isIr = this._physical?.kind === "ir"
       || String(this._remote()?.device_type || "").startsWith("IR_");
     const irPreview = this._remote()?.ir_screen_preview;
@@ -1132,8 +1142,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         <path d="M48 58 C50 43 63 32 80 32 H220 C237 32 250 43 252 58" class="glass-edge"/>
         <foreignObject x="35" y="20" width="230" height="242" clip-path="url(#screenClip)">
           <div xmlns="http://www.w3.org/1999/xhtml" class="scr-scroll" tabindex="0"
-            data-screen-key="${escapeHtml(`${this._entryId}:${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`)}">
-            ${this._renderScreen(page)}
+            data-screen-key="${escapeHtml(`${this._entryId}:${this._scenePanel ? "scenes" : `${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`}`)}">
+            ${screenContent ?? this._renderScreen(page)}
           </div>
         </foreignObject>
         <g class="scr-sep"><path d="M35 262h230"/></g>
@@ -1174,7 +1184,7 @@ class SwitchBotUrcPanel extends HTMLElement {
               role="button" tabindex="0" data-page-link="${linked.index}">
               <title>${escapeHtml(tag)} opens ${escapeHtml(linked.name)}</title>${shape}</g>`;
           }
-          return this._key(softkeys, tag, shape, tag);
+          return this._scenePanel ? `<g class="k inactive">${shape}</g>` : this._key(softkeys, tag, shape, tag);
         }).join("")}
         </g>
 
@@ -1228,7 +1238,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const page = this._page();
     const button = this._button();
     const entries = this._entries();
-    const screenKey = `${this._entryId}:${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`;
+    const screenKey = `${this._entryId}:${this._scenePanel ? "scenes" : `${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`}`;
     const previousScreen = this.shadowRoot.querySelector(".scr-scroll");
     const previousScroll = previousScreen?.dataset.screenKey === screenKey
       ? previousScreen.scrollTop : 0;
@@ -1266,16 +1276,16 @@ class SwitchBotUrcPanel extends HTMLElement {
             <label>Universal Remote
               <select id="entrySelect" ${this._scenePanel?.busy ? "disabled" : ""}>${entries.map((item) => `<option value="${escapeHtml(item.entry_id)}" ${item.entry_id === this._entryId ? "selected" : ""}>${escapeHtml(item.title)} · ${escapeHtml(item.address)}</option>`).join("")}</select>
             </label>
-            ${this._scenePanel ? "" : `<label>Logical remote
-              <select id="remoteSelect">${(entry?.remotes || []).map((item) => `<option value="${escapeHtml(item.remote_id)}" ${item.remote_id === this._remoteId ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}</option>`).join("")}</select>
+            ${this._scenePanel ? `<label>Logical remote<select id="sceneRemoteSelect"><option value="__devices__">Device remotes</option>${this._scenePanel.rows.map((row) => `<option value="${row.index}" ${row.index === this._scenePanel.draft?.index ? "selected" : ""}>${escapeHtml(row.name)} · Scene</option>`).join("")}${this._scenePanel.draft?.index == null ? `<option value="new" selected>New scene</option>` : ""}</select></label>` : `<label>Logical remote
+              <select id="remoteSelect">${(entry?.remotes || []).map((item) => `<option value="${escapeHtml(item.remote_id)}" ${item.remote_id === this._remoteId ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.device_type)}</option>`).join("")}<option value="__scenes__">Scene remotes</option></select>
             </label>
             <div class="identity"><span>Stable ID</span><code>${escapeHtml(remote?.remote_id || "—")}</code><small>Slot ${escapeHtml(remote?.remote_slot ?? "unknown")}</small></div>`}
           </section>
           <div class="toolbar">
-            ${this._scenePanel ? this._action("manageScenes", "‹", "Back to remotes", "Close scene management") : `
+            ${this._scenePanel ? this._action("addScene", "＋", "Add a remote", "Add a scene", "accent") : `
             ${this._action("addRemote", "＋", "Add a remote",
               "Install a new remote on the Universal Remote", "accent")}
-            ${this._action("manageScenes", "▸", "Scenes", "Manage the scene list on the Universal Remote")}
+
             ${remote?.layout_editable ? this._action("recreateRemote", "↻", "Write again",
               "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge",
@@ -1327,7 +1337,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (screen) screen.scrollTop = previousScroll;
     this._wireEvents();
     this._wireScenes();
-    if (this._scenePanel) return;
+    if (this._scenePanel) { this._mountActionSelector(); return; }
     this._wireAddRemote();
     this._wireDiagnostics();
     this._wireCloud();
@@ -1608,6 +1618,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     const entryId = this._entryId;
     if (!entryId || this._scenePanel?.busy) return;
     const previous = this._scenePanel?.entryId === entryId ? this._scenePanel : null;
+    if (!this._scenePanel) {
+      this._rememberMapping();
+      this._stashLayout();
+    }
     clearTimeout(this._activeTimer);
     this._add = null;
     const panel = { entryId, busy: "read", rows: [], limit: 10, loaded: false, draft: null, error: "" };
@@ -1615,11 +1629,13 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._render();
     try {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/list`, entry_id: entryId });
+      if (this._scenePanel !== panel) return;
       panel.rows = result.scenes;
       panel.limit = result.limit;
       panel.loaded = true;
       if (addNew && panel.rows.length < panel.limit) {
-        panel.draft = { name: "", icon: 0, color: 5, entity_id: "" };
+        panel.draft = { name: "New scene", icon: 0, color: 5, actions: [] };
+        panel.appearance = true;
       } else if (previous?.draft) {
         const index = previous.draft.index;
         const before = previous.rows.find((row) => row.index === index);
@@ -1637,120 +1653,165 @@ class SwitchBotUrcPanel extends HTMLElement {
       panel.error = error?.message || String(error);
     } finally {
       panel.busy = "";
-      if (this._scenePanel === panel) this._render();
+      if (this._scenePanel === panel) {
+        this._selectSceneDraft(panel.draft || structuredClone(panel.rows[0] || null));
+      }
     }
+  }
+
+  _selectSceneDraft(draft) {
+    const panel = this._scenePanel;
+    panel.drafts ??= new Map();
+    if (panel.draft) panel.drafts.set(panel.draft.index ?? "new", structuredClone(panel.draft));
+    if (draft) draft = panel.drafts.get(draft.index ?? "new") || draft;
+    panel.draft = draft;
+    this._draftActions = structuredClone(draft?.actions || []);
+    this._actionJsonDraft = draft?.actionsJson;
+    this._jsonValid = draft?.actionsValid ?? true;
+    this._mode = "actions";
+    this._render();
+  }
+
+  _sceneIcon(icon) {
+    return `<img class="scene-icon" src="/switchbot_urc_static/artwork/scene-${String(icon).padStart(2, "0")}.png" alt="">`;
   }
 
   _renderScenes() {
     const { busy, rows, limit, loaded, draft, error, status } = this._scenePanel;
-    const option = (value, label, current) => `<option value="${escapeHtml(String(value))}"
-      ${value === current ? "selected" : ""}>${escapeHtml(label)}</option>`;
-    const choices = (labels, current) => labels.map((label, index) => option(index, label, current)).join("")
-      + (current >= labels.length ? option(current, `Current (${current})`, current) : "");
-    const entities = Object.values(this._hass?.states || {})
-      .filter(({ entity_id }) => entity_id.startsWith("scene.") || entity_id.startsWith("script."))
-      .sort((a, b) => (a.attributes.friendly_name || a.entity_id)
-        .localeCompare(b.attributes.friendly_name || b.entity_id));
-    return `<section class="add-remote" aria-labelledby="sceneHeading">
-      <div class="action-title"><b id="sceneHeading">Scenes</b>
-        ${loaded ? `<span>${rows.length} / ${limit} on this remote</span>` : ""}</div>
-      ${busy === "read" ? '<p class="small" role="status">Reading scenes from the remote…</p>' : ""}
-      ${loaded && rows.length ? `<div class="scene-list">${rows.map((row) => `
-        <button type="button" class="secondary scene-row" ${busy ? "disabled" : ""}
-          data-edit-scene="${row.index}" aria-pressed="${row.index === draft?.index}">
-          <span>${escapeHtml(row.name)}</span>
-          <small>${escapeHtml(this._hass?.states?.[row.entity_id]?.attributes.friendly_name || row.entity_id || "No Home Assistant action")}</small>
-        </button>`).join("")}</div>` : ""}
-      ${loaded && !rows.length && !draft ? '<p class="small">No scenes on this remote yet.</p>' : ""}
-      ${loaded && !draft ? `<div class="key-actions"><button class="primary" id="newScene"
-        ${busy || rows.length >= limit ? "disabled" : ""}>Add scene</button></div>` : ""}
-      ${draft ? `<form id="sceneForm" class="scene-form">
-        <b>${draft.index == null ? "New scene" : "Edit scene"}</b>
-        <label>Home Assistant scene or script<select name="entity_id"
-          ${draft.index == null ? "required" : ""} ${busy ? "disabled" : ""}>
-          ${option("", "Choose a scene or script…", draft.entity_id)}
-          ${draft.entity_id && !this._hass?.states?.[draft.entity_id]
-            ? option(draft.entity_id, draft.entity_id, draft.entity_id) : ""}
-          ${entities.map(({ entity_id, attributes }) => option(entity_id,
-            `${attributes.friendly_name || entity_id} · ${entity_id.split(".")[0]}`, draft.entity_id)).join("")}
-        </select></label>
-        <label>Name on the remote<input name="name" type="text" required
-          value="${escapeHtml(draft.name)}" ${busy ? "disabled" : ""}></label>
-        <div class="scene-appearance">
-          <label>Icon<select name="icon" ${busy ? "disabled" : ""}>${choices(SCENE_ICONS, draft.icon)}</select></label>
-          <label>Background<select name="color" ${busy ? "disabled" : ""}>${choices(SCENE_COLORS, draft.color)}</select></label>
-        </div>
-        <div class="key-actions">
-          <button class="primary" type="submit" ${busy ? "disabled" : ""}>${busy ? "Saving…" : "Save scene"}</button>
-          <button type="button" class="secondary" id="cancelScene" ${busy ? "disabled" : ""}>Cancel</button>
-          ${draft.index != null ? `<button type="button" class="action danger" id="deleteScene"
-            ${busy ? "disabled" : ""}>Delete scene</button>` : ""}
-        </div>
-      </form>` : ""}
-      ${error ? `<div class="error" role="alert">${escapeHtml(error)}</div>` : ""}
-      ${status ? `<p class="small" role="status">${escapeHtml(status)}</p>` : ""}
-    </section>`;
+
+    const screen = `<nav class="remote-screen-tabs"><button id="showDeviceRemotes" type="button">Devices</button><button class="selected" type="button">Scenes</button></nav>`
+      + rows.map((row) => {
+        const selected = row.index === draft?.index;
+        const preview = selected ? draft : row;
+        return `<div class="scr-row${selected ? " on" : ""}">
+          <button type="button" class="k pick-remote" data-edit-scene="${row.index}">
+            <span class="scene-tile" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${preview.color}.png)">${this._sceneIcon(preview.icon)}</span>
+            <span class="nm">${escapeHtml(preview.name)}</span></button>
+          ${selected ? `<button class="k ic-btn" data-scene-appearance title="Edit name and appearance">✎</button>` : ""}
+        </div>`;
+      }).join("")
+      + (draft && draft.index == null ? `<div class="scr-row on"><button class="k pick-remote" data-scene-appearance>
+        <span class="scene-tile" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${draft.color}.png)">${this._sceneIcon(draft.icon)}</span>
+        <span class="nm">${escapeHtml(draft.name || "New scene")}</span></button></div>` : "")
+      + (loaded && rows.length < limit ? `<button class="scene-screen-add" id="newScene">＋ Add scene</button>` : "");
+    const sceneFace = this._renderFace({ index: 0, buttons: [] }, screen);
+    const appearance = draft ? `<div class="editor-head"><h2>${draft.index == null ? "New scene" : "Appearance"}</h2></div>
+      <label>Name on the remote<input id="sceneName" maxlength="63" value="${escapeHtml(draft.name)}" autocomplete="off"></label>
+      <label>Icon</label><div class="scene-icon-grid">${SCENE_ICONS.map((label, icon) =>
+        `<button type="button" data-scene-icon="${icon}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"
+          aria-pressed="${draft.icon === icon}" class="${draft.icon === icon ? "selected" : ""}">
+          ${this._sceneIcon(icon)}</button>`).join("")}</div>
+      <label>Background</label><div class="scene-colors">${SCENE_COLORS.map((color, index) =>
+        `<button type="button" data-scene-color="${index}" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${index}.png)" title="${SCENE_COLORS[index]}"
+          aria-label="${SCENE_COLORS[index]}" aria-pressed="${draft.color === index}" class="${draft.color === index ? "selected" : ""}"></button>`).join("")}</div>` : "";
+    const actions = draft ? `<div class="editor-head"><h2>${escapeHtml(draft.name || "New scene")}</h2>
+      ${draft.index != null ? '<button class="secondary compact" id="testScene">Test saved actions</button>' : ""}</div>
+      <div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div>
+      <div id="visualActionEditor"></div><div id="selectOptionWarning" class="small" role="status"></div>
+      <details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : "";
+    return `<div class="workspace scene-workspace">
+      <section class="remote-stage"><div class="device-wrap">${sceneFace}</div></section>
+      <aside class="editor">
+        ${busy === "read" ? '<p role="status">Reading scenes from the remote…</p>' : ""}
+        ${draft ? `<nav class="mode-tabs"><button data-scene-tab="actions" class="${!this._scenePanel.appearance ? "selected" : ""}">Custom actions</button>
+          <button data-scene-tab="appearance" class="${this._scenePanel.appearance ? "selected" : ""}">Appearance</button></nav>
+          <div ${busy ? "inert" : ""}>${this._scenePanel.appearance ? appearance : actions}</div>
+          <footer class="studio-save"><span role="status">${escapeHtml(status || "")}</span>
+            <button class="primary compact" id="saveScene" ${busy ? "disabled" : ""}>${busy === "save" ? "Saving…" : "Save"}</button>
+          </footer>
+          ${draft.index != null ? '<button class="action danger" id="deleteScene">Delete scene</button>' : ""}`
+          : '<div class="empty small">Choose a scene on the remote, or add one.</div>'}
+        ${error ? `<div class="error" role="alert">${escapeHtml(error)}</div>` : ""}
+      </aside></div>`;
   }
 
   _wireScenes() {
     const root = this.shadowRoot;
-    root.getElementById("manageScenes")?.addEventListener("click", () => {
-      if (!this._scenePanel) {
-        this._openScenes();
-      } else if (!this._scenePanel.busy) {
-        this._scenePanel = null;
-        this._render();
-      }
-    });
+    root.getElementById("manageScenes")?.addEventListener("click", () => this._openScenes());
     const panel = this._scenePanel;
     if (!panel) return;
-    const setDraft = (draft) => {
-      Object.assign(panel, { draft, error: "", status: "" });
+    const showDevices = () => {
+      if (panel.busy) return;
+      this._scenePanel = null;
+      this._dirty = false;
+      this._selectButton(this._button(), false);
       this._render();
     };
-    root.getElementById("newScene")?.addEventListener("click", () => {
-      setDraft({ name: "", icon: 0, color: 5, entity_id: "" });
-      root.querySelector('#sceneForm [name="entity_id"]')?.focus();
+    root.getElementById("sceneRemoteSelect")?.addEventListener("change", (event) => {
+      if (panel.busy) return;
+      if (event.target.value === "__devices__") return showDevices();
+      const row = event.target.value === "new" ? panel.drafts?.get("new")
+        : panel.rows.find((item) => item.index === Number(event.target.value));
+      if (row) this._selectSceneDraft(structuredClone(row));
     });
-    root.querySelectorAll("[data-edit-scene]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const row = panel.rows.find(({ index }) => index === Number(button.dataset.editScene));
-        if (row) setDraft({ ...row });
-      });
+    root.getElementById("showDeviceRemotes")?.addEventListener("click", showDevices);
+    const create = () => {
+      if (panel.busy || !panel.loaded || panel.rows.length >= panel.limit) return;
+      panel.appearance = true;
+      this._selectSceneDraft({ name: "New scene", icon: 0, color: 5, actions: [] });
+    };
+    root.getElementById("addScene")?.addEventListener("click", create);
+    root.getElementById("newScene")?.addEventListener("click", create);
+    root.querySelectorAll("[data-edit-scene]").forEach((button) => button.addEventListener("click", () => {
+      if (panel.busy) return;
+      const row = panel.rows.find(({ index }) => index === Number(button.dataset.editScene));
+      if (row) { panel.appearance = false; this._selectSceneDraft(structuredClone(row)); }
+    }));
+    root.querySelectorAll("[data-scene-tab]").forEach((button) => button.addEventListener("click", () => {
+      if (panel.busy) return;
+      panel.appearance = button.dataset.sceneTab === "appearance";
+      this._render();
+    }));
+    root.querySelectorAll("[data-scene-appearance]").forEach((button) => button.addEventListener("click", () => {
+      if (panel.busy) return;
+      panel.appearance = true;
+      this._render();
+    }));
+    root.getElementById("sceneName")?.addEventListener("input", (event) => {
+      panel.draft.name = event.target.value;
+      const selectedName = root.querySelector(".scene-workspace .scr-row.on .nm");
+      if (selectedName) selectedName.textContent = event.target.value;
     });
-    root.getElementById("cancelScene")?.addEventListener("click", () => setDraft(null));
+    for (const field of ["icon", "color"]) {
+      root.querySelectorAll(`[data-scene-${field}]`).forEach((button) => button.addEventListener("click", () => {
+        if (panel.busy) return;
+        panel.draft[field] = Number(button.getAttribute(`data-scene-${field}`));
+        this._render();
+      }));
+    }
+    root.getElementById("saveScene")?.addEventListener("click", () => this._saveScene(false));
     root.getElementById("deleteScene")?.addEventListener("click", () => {
-      const row = panel.rows.find(({ index }) => index === panel.draft.index);
-      if (row && window.confirm(`Delete "${row.name}" from the remote?`)) this._saveScene(true);
+      if (!panel.busy && window.confirm(`Delete "${panel.draft.name}" from the remote?`)) this._saveScene(true);
     });
-    const form = root.getElementById("sceneForm");
-    form?.addEventListener("input", (event) => {
-      const { name, value } = event.target;
-      panel.draft[name] = name === "icon" || name === "color" ? Number(value) : value;
-      if (name === "entity_id" && !panel.draft.name && value) {
-        panel.draft.name = this._hass.states[value]?.attributes.friendly_name || value;
-        form.elements.name.value = panel.draft.name;
-      }
-    });
-    form?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      this._saveScene(false);
+    root.getElementById("testScene")?.addEventListener("click", async () => {
+      try {
+        await this._hass.callWS({type: `${DOMAIN}/studio/scenes/test`, entry_id: panel.entryId, index: panel.draft.index});
+      } catch (error) { panel.error = error?.message || String(error); this._render(); }
     });
   }
 
   async _saveScene(remove) {
     const panel = this._scenePanel;
     if (!panel?.draft || panel.busy) return;
-    const { index, name, icon, color, entity_id } = panel.draft;
-    const fields = remove ? { index, delete: true } : { name, icon, color, entity_id,
+    if (!remove && !this._jsonValid) {
+      panel.error = "Fix the actions JSON before saving.";
+      this._render();
+      return;
+    }
+    const { index, name, icon, color } = panel.draft;
+    const fields = remove ? { index, delete: true } : { name, icon, color, actions: structuredClone(this._draftActions),
       ...(index == null ? {} : { index }) };
     const expected = panel.rows.map(({ index, name, icon, color }) => ({ index, name, icon, color }));
+    const installedIndices = new Set(panel.rows.map((row) => row.index));
     Object.assign(panel, { busy: "save", error: "", status: "" });
     this._render();
     try {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/save`,
         entry_id: panel.entryId, expected, ...fields });
-      Object.assign(panel, { rows: result.scenes, draft: null,
+      panel.drafts?.delete(index ?? "new");
+      const saved = result.scenes.find((row) => index == null
+        ? !installedIndices.has(row.index) : row.index === index);
+      Object.assign(panel, { rows: result.scenes, draft: remove ? null : structuredClone(saved),
         status: remove ? "Scene deleted from the remote." : "Scene saved to the remote." });
     } catch (error) {
       panel.error = error?.message || String(error);
@@ -2788,6 +2849,12 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _updateActionEditor() {
+    if (this._scenePanel) {
+      this._updateSelectOptionWarning();
+      const summary = this.shadowRoot.getElementById("actionSummary");
+      if (summary) summary.textContent = this._actionSummary();
+      return;
+    }
     this._updateSelectOptionWarning();
     const summary = this.shadowRoot.getElementById("actionSummary");
     if (summary) summary.textContent = this._actionSummary();
@@ -2801,7 +2868,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     for (const id of ["entrySelect", "remoteSelect", "refresh", "addRemote",
                       "recreateRemote", "moveRemote", "deleteRemote"]) {
       const el = root.getElementById(id);
-      if (el) el.disabled = this._physicalBusy || this._saving;
+      if (el) el.disabled = this._physicalBusy || this._saving || Boolean(this._scenePanel?.busy);
     }
     root.getElementById("refresh")?.addEventListener("click", () => this._refresh());
     root.getElementById("checkRemoteCapacity")?.addEventListener("click", () => {
@@ -2944,6 +3011,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("remoteSelect")?.addEventListener("change", (event) => {
       if (this._saving) return;
       this._stashLayout();
+      if (event.target.value === "__scenes__") { this._openScenes(); return; }
       this._remoteId = event.target.value;
       this._iconPickerFor = null;
       this._physical = null;
@@ -3263,10 +3331,20 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _styles() {
     return `
-      .scene-list,.scene-form{display:grid;gap:8px}
-      .scene-form{padding-top:16px;border-top:1px solid var(--divider-color,#e2e5e8);gap:14px}
-      .scene-appearance{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-      .scene-row{height:auto;min-height:44px;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;text-align:left;white-space:normal;overflow-wrap:anywhere}
+      .scene-icon{width:32px;height:32px;object-fit:contain}
+      .remote-screen-tabs{display:flex;gap:6px;margin:10px 0;padding:0 4px}
+      .remote-screen-tabs button{flex:1;border:0;border-radius:6px;background:#222;color:#aaa;font-size:11px;padding:8px 4px}
+      .remote-screen-tabs button.selected{background:#444;color:white}
+      .scene-tile{background-size:cover;display:grid;place-items:center;width:32px;height:32px;border-radius:8px;flex:none}
+      .scene-screen-add{border:1px dashed #666;background:transparent;color:#ddd;border-radius:8px;width:100%;padding:10px;font-size:11px;margin-top:8px}
+      .scene-icon-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(48px,1fr));gap:8px;margin:10px 0 22px}
+      .scene-icon-grid button{display:grid;place-items:center;min-height:48px;background:#ddd;border:2px solid transparent;border-radius:10px;padding:8px}
+      .scene-icon-grid button.selected,.scene-colors button.selected{border:2px solid var(--primary-color,#ff9800);outline:2px solid var(--primary-color,#ff9800);outline-offset:2px}
+      .scene-colors{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0 22px}
+      .scene-colors button{background-size:cover;width:36px;height:36px;border-radius:50%;border:2px solid transparent}
+      .scene-workspace .editor>label{display:block;margin-top:18px}
+      .scene-workspace .scr-row .pick-remote{gap:10px}
+      .scene-workspace .remote-stage .k.inactive{pointer-events:none;opacity:.5}
       .scene-row[aria-pressed="true"]{border-color:var(--primary-color,#03a9f4)}
       .scene-row small{color:var(--secondary-text-color,#68727d);text-align:right}
       .appearance{display:grid;gap:18px}.appearance-head{display:flex;align-items:flex-start;justify-content:space-between}.appearance-head>div{display:grid;gap:3px}.appearance-head b{font-size:22px;letter-spacing:-.03em}.appearance-head span,.appearance-part-body p,.appearance-note{font-size:12px;line-height:1.45;color:var(--secondary-text-color,#68727d)}
