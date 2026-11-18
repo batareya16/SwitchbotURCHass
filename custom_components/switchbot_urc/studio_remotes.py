@@ -35,6 +35,16 @@ from .studio_physical import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _cloud_remote_type(item: dict[str, Any]) -> int | None:
+    """The IR remote type number of an account record, when the record carries one."""
+    for key in ("type", "remoteType"):
+        try:
+            return int(item[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
 def _client(hass, entry):
     client = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("client")
     if client is None:
@@ -719,7 +729,8 @@ async def ws_remote_sources(hass, connection, msg):
         "cloud": bool(entry.data.get("cloud")),
         "cloud_remotes": [
             {"remote_id": str(item["remoteID"]),
-             "name": str(item.get("remoteName") or item["remoteID"])}
+             "name": str(item.get("remoteName") or item["remoteID"]),
+             "device_type": _cloud_remote_type(item)}
             for item in entry.options.get("cloud_remotes", [])
             if isinstance(item, dict) and item.get("remoteID")
         ],

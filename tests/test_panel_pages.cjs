@@ -956,6 +956,13 @@ test('Type default and Original show the picture they give back', () => {
   instance._sources = {native_options: {screen_profiles: []}};
   const matter = instance._renderAddIconPicker({kind: 'matter', icon: 'device'});
   assert.match(matter, /data-add-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-1b\.png"/);
+  // IR from the catalog or the account: the picture of the chosen remote type (2 = TV)
+  instance._catalog = {remoteType: 2};
+  assert.match(instance._renderAddIconPicker({kind: 'catalog', icon: 'device'}),
+    /data-add-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-18\.png"/);
+  instance._sources = {cloud_remotes: [{remote_id: 'a', name: 'TV', device_type: 2}]};
+  assert.match(instance._renderAddIconPicker({kind: 'cloud', icon: 'device', remoteId: 'a'}),
+    /data-add-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-18\.png"/);
 });
 
 test('tiles can be moved in the installed table and the order is sent as a whole', async () => {

@@ -2396,10 +2396,16 @@ class SwitchBotUrcPanel extends HTMLElement {
     const picked = add.icon || "device";
     const names = ["device", ...(this._entry()?.icons || [])];
     // The picture "Type default" gives back for what is being added, where it is known.
+    const irType = add.kind === "catalog" ? Number(this._catalog?.remoteType)
+      : add.kind === "cloud"
+        ? Number((this._sources?.cloud_remotes || []).find((item) => item.remote_id === add.remoteId)?.device_type)
+        : NaN;
     const defaultSrc = add.kind === "native"
       ? this._nativeArtworkSrc(this._nativeProfile(add.nativeType || add.deviceType))
       : add.kind === "hid" ? this._hidArtworkSrc(add.deviceType)
-        : add.kind === "matter" ? MATTER_ARTWORK : "";
+        : add.kind === "matter" ? MATTER_ARTWORK
+          : IR_PROFILE_ARTWORK[irType]
+            ? `/switchbot_urc_static/artwork/profile-${IR_PROFILE_ARTWORK[irType]}.png` : "";
     const note = add.kind === "catalog" || add.kind === "cloud"
       ? "Type default keeps the picture of the IR model. A chosen icon replaces it."
       : add.kind === "matter"

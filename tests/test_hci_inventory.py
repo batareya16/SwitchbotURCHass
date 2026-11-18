@@ -378,3 +378,21 @@ def test_controller_refusal_does_not_leave_a_permanent_connection_guard():
             server.query_inventory(PEER, [{"kind": "query", "subcmd": 7}])
         assert server._central_client is None
     assert commands == [hci.OP_LE_CREATE_CONN, hci.OP_LE_CREATE_CONN]
+
+
+def test_bulk_upload_is_not_throttled_like_a_short_command():
+    client = hci.AttManagementClient(PEER, None)
+    client.write_handle, client.write_properties, client.mtu = 0x11, 0x04, 23
+    sent = []
+    client.send = sent.append
+    waits = []
+    client.closed = types_namespace = type("E", (), {
+        "wait": lambda _self, timeout: waits.append(timeout) or False})()
+    client.write_frame(bytes(100))
+    assert len(sent) == 5 and set(waits) == {hci.AttManagementClient.CHUNK_PAUSE}
+    waits.clear()
+    sent.clear()
+    client.write_frame(bytes(4106))
+    assert len(sent) == 206 and len(waits) == 205
+    assert set(waits) == {hci.AttManagementClient.BULK_CHUNK_PAUSE}
+    assert hci.AttManagementClient.BULK_CHUNK_PAUSE < hci.AttManagementClient.CHUNK_PAUSE
