@@ -99,11 +99,13 @@ test('scene workspace renders through the normal Studio entry point', () => {
   instance._wireEvents = () => {};
   instance._wireScenes = () => {};
   instance._mountActionSelector = () => {};
-  instance.shadowRoot = {innerHTML: '', querySelector() {return null;}, getElementById() {return null;}};
+  instance.shadowRoot = {innerHTML: '', querySelector() {return null;}, querySelectorAll() {return [];}, getElementById() {return null;}};
   instance._renderUnsafe();
   assert.match(instance.shadowRoot.innerHTML, /id="remoteSelect"/);
   assert.match(instance.shadowRoot.innerHTML, /data-remote="scene:0"/);
   assert.match(instance.shadowRoot.innerHTML, /viewBox="0 0 300 657"/);
+  // The account / installed / diagnostics panels stay put while a scene is open.
+  assert.match(instance.shadowRoot.innerHTML, /<summary>Diagnostics<\/summary>/);
   assert.doesNotMatch(instance.shadowRoot.innerHTML, /Back to remotes|sceneForm|sceneRemoteSelect|remote-screen-tabs/);
 });
 

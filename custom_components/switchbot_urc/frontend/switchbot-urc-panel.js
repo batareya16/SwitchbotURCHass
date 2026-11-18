@@ -288,6 +288,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
     this._scenePanel = null;
+    this._matterDraft = null;
     this._scenePanels = new Map();
     this._deviceSettings = null;
     this._sources = null;
@@ -1149,14 +1150,11 @@ class SwitchBotUrcPanel extends HTMLElement {
             <stop offset="0%" stop-color="#ff4d4d"/><stop offset="70%" stop-color="#c00"/>
             <stop offset="100%" stop-color="#800"/>
           </radialGradient>
-          <clipPath id="screenClip">
-            <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V262 H35 Z"/>
-          </clipPath>
         </defs>
         <rect x="35" y="20" width="230" height="617" rx="45" fill="url(#body)" class="shell"/>
         <path d="M35 65 C35 40 55 20 80 20 H220 C245 20 265 40 265 65 V296 H35 Z" class="glass"/>
         <path d="M48 58 C50 43 63 32 80 32 H220 C237 32 250 43 252 58" class="glass-edge"/>
-        <foreignObject x="35" y="20" width="230" height="242" clip-path="url(#screenClip)">
+        <foreignObject x="35" y="64" width="230" height="198">
           <div xmlns="http://www.w3.org/1999/xhtml" class="scr-scroll" tabindex="0"
             data-screen-key="${escapeHtml(`${this._entryId}:${page?.index ?? 0}:${page?.index ? this._remoteId : "home"}`)}">
             ${screenContent ?? this._renderScreen(page)}
@@ -1250,6 +1248,11 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _renderUnsafe() {
     const settingsFocus = this.shadowRoot.activeElement?.dataset?.remoteSetting;
+    // Re-rendering rebuilds every <details>; remember which ones the user had opened so
+    // switching between a remote and a scene does not collapse them and shift the page.
+    const openPanels = new Set(Array.from(
+      this.shadowRoot.querySelectorAll("details.device-table[open]") || [],
+    ).map((item) => item.className));
     const entry = this._entry();
     const remote = this._remote();
     const page = this._page();
@@ -1299,32 +1302,33 @@ class SwitchBotUrcPanel extends HTMLElement {
           </section>
           <div class="toolbar">
             ${this._action("addRemote", "＋", "Add a remote", "Install a new remote on the Universal Remote", "accent")}
-            ${remote?.layout_editable && remote.kind !== "scene" ? this._action("recreateRemote", "↻", "Write again", "Remove this remote from the device and write it back, unchanged") : ""}
+            ${remote?.layout_editable && remote.kind !== "scene" && !remote.matter ? this._action("recreateRemote", "↻", "Write again", "Remove this remote from the device and write it back, unchanged") : ""}
             ${remote?.can_move ? this._action("moveRemote", "⇄", "Move to another bridge", "Bind this remote to a different Bluetooth address") : ""}
             ${remote ? this._action("deleteRemote", "🗑", "Delete", `Remove "${remote.name}" from the Universal Remote for good`, "danger") : ""}
           </div>
           ${this._renderRemoteCapacity()}
           ${this._renderAddRemote()}
           ${entry?.scene_error ? this._feedback(entry.scene_error, "warning", "Scene remotes") : ""}
+          ${this._renderCloud()}
+          ${this._renderDeviceTable()}
+          ${this._renderDiagnostics()}
           ${this._scenePanel ? this._renderScenes() : `
           ${remote?.reachability ? `<p class="reachability ${escapeHtml(remote.reachability.level)}">${escapeHtml(remote.reachability.text)}</p>` : ""}
           ${this._renderApplyBar()}
           ${this._iconPickerFor ? "" : this._renderNativeProfileWarnings()}
-          ${this._renderCloud()}
-          ${this._renderDeviceTable()}
-          ${this._renderDiagnostics()}
+          ${this._renderMatterEditor(remote)}
           ${remote ? `
-            <section class="quick-bind" ${this._saving ? "inert" : ""}>
+            ${remote.matter ? "" : `<section class="quick-bind" ${this._saving ? "inert" : ""}>
               <div><b>Quick bind</b><span>Apply a complete light preset; individual buttons can override it.</span></div>
               <select id="lightSelect"><option value="">Choose a light…</option>${lights.map((state) => `<option value="${escapeHtml(state.entity_id)}" ${state.entity_id === (this._presetDraftsByRemote.get(this._draftScope()) || boundLight) ? "selected" : ""}>${escapeHtml(state.attributes.friendly_name || state.entity_id)}</option>`).join("")}</select>
-            </section>
+            </section>`}
             <nav class="pages" ${this._saving ? "inert" : ""}>${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
             <div class="workspace">
               <section class="remote-stage" ${this._saving ? "inert" : ""}>
                 <div class="device-wrap">${this._renderFace(page)}</div>
                 <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span>${this._physical ? '<span><i class="unsaved"></i>Unsaved change</span>' : ""}</div>
               </section>
-              <aside class="editor">
+              <aside class="editor appearance-editor">
                 <div ${this._saving ? "inert" : ""}>${!remote.layout_editable
                   ? '<div class="empty small">This IR remote is installed. Refresh can load its buttons if the profile is saved in your SwitchBot account.</div>'
                   : this._iconPickerFor === remote.remote_id
@@ -1344,6 +1348,23 @@ class SwitchBotUrcPanel extends HTMLElement {
       </main>${this._renderDeviceSettings()}`;
     const screen = this.shadowRoot.querySelector(".scr-scroll");
     if (screen) screen.scrollTop = previousScroll;
+    // With many remotes the selection can sit outside the display's window; bring it in, but only
+    // when the selection itself changed so the user's own scrolling is never undone.
+    const shownKey = `${this._entryId}:${page?.index ?? 0}:${this._scenePanel?.draft?.index ?? this._remoteId}`;
+    if (screen && this._shownSelection !== shownKey) {
+      this._shownSelection = shownKey;
+      const row = screen.querySelector(".scr-row.on");
+      if (row) {
+        const top = row.offsetTop - screen.offsetTop;
+        if (top < screen.scrollTop + 8) screen.scrollTop = Math.max(0, top - 8);
+        else if (top + row.offsetHeight > screen.scrollTop + screen.clientHeight - 14) {
+          screen.scrollTop = top + row.offsetHeight - screen.clientHeight + 14;
+        }
+      }
+    }
+    Array.from(this.shadowRoot.querySelectorAll("details.device-table") || []).forEach((item) => {
+      if (openPanels.has(item.className)) item.open = true;
+    });
     this._wireEvents();
     this._wireScenes();
     this._wireDeviceSettings();
@@ -1852,14 +1873,15 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     const sceneFace = this._renderFace({ index: 0, buttons: [] }, this._renderScreen({index: 0}));
     const appearance = draft ? `<div class="editor-head"><h2>${draft.index == null ? "New scene" : "Appearance"}</h2></div>
-      <label>Name on the remote<input id="sceneName" maxlength="63" value="${escapeHtml(draft.name)}" autocomplete="off"></label>
-      <label>Icon</label><div class="scene-icon-grid">${SCENE_ICONS.map((label, icon) =>
+      <div class="form-stack">
+      <label class="field">Name on the remote<input id="sceneName" maxlength="63" value="${escapeHtml(draft.name)}" autocomplete="off"></label>
+      <div class="field" role="group" aria-label="Icon"><span class="field-label">Icon</span><div class="scene-icon-grid">${SCENE_ICONS.map((label, icon) =>
         `<button type="button" data-scene-icon="${icon}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"
           aria-pressed="${draft.icon === icon}" class="${draft.icon === icon ? "selected" : ""}">
-          ${this._sceneIcon(icon)}</button>`).join("")}</div>
-      <label>Background</label><div class="scene-colors">${SCENE_COLORS.map((color, index) =>
+          ${this._sceneIcon(icon)}</button>`).join("")}</div></div>
+      <div class="field" role="group" aria-label="Background"><span class="field-label">Background</span><div class="scene-colors">${SCENE_COLORS.map((color, index) =>
         `<button type="button" data-scene-color="${index}" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${index}.png)" title="${SCENE_COLORS[index]}"
-          aria-label="${SCENE_COLORS[index]}" aria-pressed="${draft.color === index}" class="${draft.color === index ? "selected" : ""}"></button>`).join("")}</div>` : "";
+          aria-label="${SCENE_COLORS[index]}" aria-pressed="${draft.color === index}" class="${draft.color === index ? "selected" : ""}"></button>`).join("")}</div></div></div>` : "";
     const actions = draft ? `<div class="editor-head"><h2>${escapeHtml(draft.name || "New scene")}</h2>
       ${draft.index != null ? '<button class="secondary compact" id="testScene">Test saved actions</button>' : ""}</div>
       <div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div>
@@ -1963,6 +1985,54 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
   }
 
+  _renderMatterCaptionFields(captions, maxBytes) {
+    const bytes = (text) => new TextEncoder().encode(text || "").length;
+    return `<div class="matter-captions">${Array.from("ABCD", (letter, index) => {
+      const value = captions[index] ?? "";
+      return `<label>Button ${letter}<input type="text" data-matter-caption="${index}"
+        value="${escapeHtml(value)}" spellcheck="false"
+        placeholder="Caption for ${letter}"><small>${bytes(value)}/${maxBytes} bytes</small></label>`;
+    }).join("")}
+      <p class="small">Captions are written to the remote's screen. Each fits ${maxBytes} bytes;
+      Cyrillic letters take two bytes each.</p></div>`;
+  }
+
+  _renderMatterEditor(remote) {
+    const matter = remote?.matter;
+    if (!matter) return "";
+    const draft = this._matterDraft?.remoteId === remote.remote_id ? this._matterDraft : null;
+    const captions = draft?.captions || matter.captions;
+    return `<section class="matter-editor" ${this._saving ? "inert" : ""}>
+      <div class="action-title"><b>Captions</b><span>experimental, not yet confirmed on hardware</span></div>
+      ${this._renderMatterCaptionFields(captions, matter.max_bytes)}
+      ${this._feedback(draft?.error, "error", "Captions")}
+      ${draft?.status ? `<p class="small" role="status">${escapeHtml(draft.status)}</p>` : ""}
+      <div class="key-actions"><button class="primary" id="saveMatterCaptions"
+        ${draft?.busy || this._physicalBusy ? "disabled" : ""}>${draft?.busy ? "Writing…" : "Write captions"}</button></div>
+    </section>`;
+  }
+
+  async _saveMatterCaptions(remote) {
+    const draft = this._matterDraft?.remoteId === remote.remote_id
+      ? this._matterDraft : { remoteId: remote.remote_id, captions: [...remote.matter.captions] };
+    this._matterDraft = draft;
+    Object.assign(draft, { busy: true, error: "", status: "" });
+    this._physicalBusy = true;
+    this._render();
+    try {
+      await this._hass.callWS({ type: `${DOMAIN}/studio/matter/save`,
+        entry_id: this._entryId, remote_id: remote.remote_id, captions: draft.captions });
+      this._matterDraft = null;
+      this._notify("Captions written to the remote.", "success");
+    } catch (error) {
+      draft.error = error?.message || String(error);
+    } finally {
+      draft.busy = false;
+      this._physicalBusy = false;
+      await this._load();
+    }
+  }
+
   _renderAddRemote() {
     const add = this._add;
     if (!add) return "";
@@ -1993,6 +2063,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       ["hid", "HID remote", !!sources.hid,
        "Presses go out as Bluetooth keys to one paired host — a TV, a box, a computer."],
       ["scene", "Scene", true, "Run Home Assistant actions from a scene on the Universal Remote."],
+      ["matter", "Text remote", !!sources.matter && !sources.matter.installed,
+       sources.matter?.installed
+         ? "This Universal Remote already has a text remote. Edit its captions instead."
+         : "Experimental. Four buttons A–D with captions you choose; presses reach Home Assistant over Bluetooth."],
     ];
     const option = (value, label, selected) =>
       `<option value="${escapeHtml(String(value))}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
@@ -2026,6 +2100,8 @@ class SwitchBotUrcPanel extends HTMLElement {
             ${sources.bridges.map((item) => option(item.target_id, item.name, item.target_id === add.targetId)).join("")}
           </select></label>
         </details>` : ""}` : ""}
+      ${add.kind === "matter" ? this._renderMatterCaptionFields(
+        add.captions || sources.matter?.default_captions || [], sources.matter?.max_bytes || 31) : ""}
       ${add.kind === "cloud" ? `<label>Remote<select data-add-field="remote_id">${
         (sources.cloud_remotes || []).map((item) => option(item.remote_id, item.name, item.remote_id === add.remoteId)).join("")
       }</select></label>` : ""}
@@ -2039,7 +2115,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <p class="small">After adding the remote, pair it from its settings.</p>` : ""}
       <label>Name<input type="text" data-add-field="name" value="${escapeHtml(add.name || "")}"
         placeholder="What it is called on the remote's screen"></label>
-      ${add.kind === "native" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
+      ${add.kind === "native" || add.kind === "matter" ? "" : `<label class="inline"><input type="checkbox" data-add-field="replace"
         ${add.replace ? "checked" : ""}>Replace an existing copy of the same remote</label>`}
       ${this._feedback(add.error || capacityError, add.error ? "error" : "warning", "Add a remote")}
       <div class="key-actions">
@@ -2151,6 +2227,14 @@ class SwitchBotUrcPanel extends HTMLElement {
           ? "light"
           : (kinds.hid?.icons || [])[0]) || "";
         this._render();
+      });
+    });
+
+    root.querySelectorAll(".add-remote [data-matter-caption]").forEach((field) => {
+      field.addEventListener("input", () => {
+        const base = add.captions || this._sources?.matter?.default_captions || [];
+        add.captions = Array.from({ length: 4 }, (_, i) => base[i] ?? "");
+        add.captions[Number(field.dataset.matterCaption)] = field.value;
       });
     });
 
@@ -2267,6 +2351,15 @@ class SwitchBotUrcPanel extends HTMLElement {
           entry_id: this._entryId, name,
           native_type: add.nativeType || add.deviceType, icon: add.icon,
           ...(add.targetId ? { target_id: add.targetId } : { auto_address: true }) });
+      } else if (add.kind === "matter") {
+        result = await this._hass.callWS({ type: `${DOMAIN}/studio/matter/save`,
+          entry_id: this._entryId, name,
+          captions: add.captions || this._sources?.matter?.default_captions || [] });
+        if (result?.remote_id) {
+          this._remoteId = result.remote_id;
+          this._pageIndex = 0;
+          this._buttonId = null;
+        }
       } else if (add.kind === "hid") {
         result = await this._hass.callWS({ type: `${DOMAIN}/studio/remote/create_hid`,
           entry_id: this._entryId, name, device_type: add.deviceType,
@@ -3196,6 +3289,23 @@ class SwitchBotUrcPanel extends HTMLElement {
       editAppearance({ icon: element.dataset.pickIcon });
       this._render();
     }));
+    root.querySelectorAll(".matter-editor [data-matter-caption]").forEach((field) => {
+      field.addEventListener("input", () => {
+        const remote = this._remote();
+        if (!remote?.matter) return;
+        if (this._matterDraft?.remoteId !== remote.remote_id) {
+          this._matterDraft = { remoteId: remote.remote_id, captions: [...remote.matter.captions] };
+        }
+        this._matterDraft.captions[Number(field.dataset.matterCaption)] = field.value;
+        const counter = field.parentElement?.querySelector("small");
+        if (counter) counter.textContent = `${new TextEncoder().encode(field.value).length}/${remote.matter.max_bytes} bytes`;
+      });
+    });
+    root.getElementById("saveMatterCaptions")?.addEventListener("click", () => {
+      const remote = this._remote();
+      if (remote?.matter) this._saveMatterCaptions(remote);
+    });
+
     root.querySelector("[data-rename-input]")?.addEventListener("input", (event) => {
       editAppearance({ name: event.target.value });
     });
@@ -3492,14 +3602,22 @@ class SwitchBotUrcPanel extends HTMLElement {
       .remote-setting-selects label{display:grid;gap:8px;font-size:13px;font-weight:600}
       .remote-setting-selects select{width:100%;min-width:0}
       .device-settings-dialog .studio-save{margin-top:12px}
-      .scene-icon{width:32px;height:32px;object-fit:contain}
-      .scene-tile{background-size:cover;display:grid;place-items:center;width:32px;height:32px;border-radius:8px;flex:none}
-      .scene-icon-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(48px,1fr));gap:8px;margin:10px 0 22px}
-      .scene-icon-grid button{display:grid;place-items:center;min-height:48px;background:#ddd;border:2px solid transparent;border-radius:10px;padding:8px}
-      .scene-icon-grid button.selected,.scene-colors button.selected{border:2px solid var(--primary-color,#ff9800);outline:2px solid var(--primary-color,#ff9800);outline-offset:2px}
-      .scene-colors{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0 22px}
-      .scene-colors button{background-size:cover;width:36px;height:36px;border-radius:50%;border:2px solid transparent}
-      .scene-workspace .editor>label{display:block;margin-top:18px}
+      .scene-icon{width:18px;height:18px;object-fit:contain}
+      .scene-tile{background-size:cover;display:grid;place-items:center;width:18px;height:18px;min-width:18px;border-radius:8px;flex:none;overflow:hidden}.scene-tile .scene-icon{width:100%;height:100%}
+      .scene-icon-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:8px}
+      .scene-icon-grid button{display:grid;place-items:center;aspect-ratio:1;min-height:48px;padding:0;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--secondary-background-color,#f5f6f8);cursor:pointer;transition:border-color .15s,background .15s}
+      .scene-icon-grid button:hover{border-color:var(--primary-color,#03a9f4)}
+      .scene-icon-grid .scene-icon{width:28px;height:28px}
+      .scene-icon-grid button.selected{border:2px solid var(--primary-color,#03a9f4);background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff))}
+      .scene-colors{display:flex;flex-wrap:wrap;gap:12px;padding:3px}
+      .scene-colors button{background-size:cover;width:36px;height:36px;border-radius:50%;border:1px solid #00000022;cursor:pointer;transition:transform .12s}
+      .scene-colors button:hover{transform:scale(1.08)}
+      .scene-colors button.selected{border-color:#fff;box-shadow:0 0 0 2px var(--primary-color,#03a9f4)}
+      .scene-icon-grid button:focus-visible,.scene-colors button:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+      .scene-workspace .editor-head{align-items:center}
+      .scene-workspace .editor>.mode-tabs{margin-bottom:20px}
+      .scene-workspace .editor>.mode-tabs+div .editor-head{margin-bottom:16px}
+      .scene-workspace .editor>.mode-tabs+div .action-box{margin-top:4px}
       .scene-workspace .scr-row .pick-remote{gap:10px}
       .scene-workspace .remote-stage .k.inactive{pointer-events:none;opacity:.5}
       .appearance{display:grid;gap:18px}.appearance-head{display:flex;align-items:flex-start;justify-content:space-between}.appearance-head>div{display:grid;gap:3px}.appearance-head b{font-size:22px;letter-spacing:-.03em}.appearance-head span,.appearance-part-body p,.appearance-note{font-size:12px;line-height:1.45;color:var(--secondary-text-color,#68727d)}
@@ -3538,14 +3656,38 @@ class SwitchBotUrcPanel extends HTMLElement {
       .action.accent .g{opacity:1}
       .action.accent:hover{box-shadow:0 8px 20px color-mix(in srgb,var(--primary-color,#03a9f4) 38%,transparent)}
       .action.danger{color:#d33b47;border-color:#f0c2c6}
+      /* One look for every text field and its caption, wherever a form appears. */
+      .small{font-size:12px;line-height:1.5;color:var(--secondary-text-color,#68727d)}
+      .form-stack{display:grid;gap:22px}
+      .field{display:grid;gap:8px;min-width:0;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}
+      .field-label{font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}
+      .field input,.matter-captions input{width:100%;height:42px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:10px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#17202a);font:inherit;font-weight:500}
+      .field input:focus-visible,.matter-captions input:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:1px;border-color:transparent}
+      .matter-captions{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 12px;margin:12px 0}
+      .matter-captions label{display:grid;gap:6px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}
+      .matter-captions label small{font-weight:500;font-size:11px;font-variant-numeric:tabular-nums}
+      .matter-captions>.small{grid-column:1/-1;margin:0}
+      .matter-editor{display:grid;gap:12px;margin:14px 0;padding:18px 20px;border:1px solid var(--divider-color,#e2e5e8);border-radius:16px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a}
+      .matter-editor .action-title{align-items:baseline;gap:12px;flex-wrap:wrap}
+      .matter-editor .action-title b{font-size:15px}
+      .matter-editor .matter-captions{margin:0}
+      .matter-editor .key-actions{margin-top:0}
+      /* The three read-only panels are a group of cards, not stray rows of text. */
+      details.device-table{margin:8px 0;padding:12px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;background:var(--card-background-color,#fff)}
+      details.device-table>summary{font-size:13px;font-weight:600;color:var(--primary-text-color,#17202a)}
+      details.device-table[open]>summary{margin-bottom:10px}
       .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
       .device-wrap{width:min(100%,360px)}
       .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
       .device .shell{stroke:#d2d5da;stroke-width:1.2}
       .device .glass{fill:#090a0c}
       .device .glass-edge{fill:none;stroke:#ffffff29;stroke-width:1.2;stroke-linecap:round}
-      .scr-scroll{height:242px;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;
-        -webkit-overflow-scrolling:touch;padding:48px 13px 10px;scrollbar-width:thin;
+      /* The list is a window onto the device's own display: a plain rectangle below the glass
+         curve, so rows slide out at its edges instead of running under the rounded top. */
+      .scr-scroll{height:198px;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;
+        -webkit-overflow-scrolling:touch;padding:8px 13px 14px;scrollbar-width:thin;
+        -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 8px,#000 calc(100% - 14px),transparent 100%);
+        mask-image:linear-gradient(to bottom,transparent 0,#000 8px,#000 calc(100% - 14px),transparent 100%);
         scrollbar-color:#ffffff40 transparent;font:600 12px/1.2 system-ui,sans-serif;color:#fff}
       .scr-scroll::-webkit-scrollbar{width:4px}
       .scr-scroll::-webkit-scrollbar-thumb{background:#ffffff40;border-radius:2px}

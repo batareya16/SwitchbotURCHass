@@ -31,7 +31,9 @@ from . import studio_manage
 from . import studio_physical
 from .physical_layout import ir_screen_preview, native_appearance, remote_artwork_id
 from . import studio_remotes
+from . import studio_matter
 from . import studio_scenes
+from .matter_text import CAPTION_MAX_BYTES, STUDIO_DEVICE_TYPE as STUDIO_MATTER_TYPE
 from . import studio_settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -125,6 +127,15 @@ def _remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None) -> lis
     remote_id = studio_physical.remote_identity(remote)
     remote_slot = remote.get("index") if isinstance(remote.get("index"), int) else None
     result: list[dict[str, Any]] = []
+    if remote.get("device_type") == STUDIO_MATTER_TYPE:
+        # Four captioned softkeys. keyFun is index + 1, exactly what the remote stores.
+        captions = studio_matter.captions_of(remote)
+        return [{"index": 0, "name": "Main", "buttons": [
+            _button_record(
+                remote_id=remote_id, remote_slot=remote_slot, page=0, index=index,
+                function=index + 1, position=letter, label=captions[index], binding=binding,
+            ) for index, letter in enumerate("ABCD")
+        ]}]
     stored_pages = remote.get("studio_pages")
     if isinstance(stored_pages, list):
         positions = {value: key for key, value in commands.TAG.items()}
@@ -299,6 +310,12 @@ def _reachability(remote: dict[str, Any]) -> dict[str, str]:
     confusing thing the panel can do, so the answer travels with every remote.
     """
     device_type = str(remote.get("device_type", "")).upper()
+    if device_type == STUDIO_MATTER_TYPE:
+        return {
+            "level": "full",
+            "text": "Presses reach Home Assistant from the remote's Bluetooth advertisements, "
+                    "so a Bluetooth adapter or proxy must be in range.",
+        }
     if device_type.startswith("IR_") or device_type == "IR_TV":
         return {
             "level": "none",
@@ -373,6 +390,9 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                     in commands.NATIVE_DEVTYPE,
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
+                **({"matter": {"captions": list(studio_matter.captions_of(remote)),
+                               "max_bytes": CAPTION_MAX_BYTES}}
+                   if remote.get("device_type") == STUDIO_MATTER_TYPE else {}),
             }
         )
     remotes.extend(studio_scenes.serialized_remotes(hass, entry))
@@ -634,6 +654,7 @@ async def async_register_studio(hass: HomeAssistant) -> None:
             studio_cloud.register(hass)
             studio_manage.register(hass)
             studio_scenes.register(hass)
+            studio_matter.register(hass)
             studio_settings.register(hass)
             websocket_api.async_register_command(hass, ws_studio_save_button_action)
             websocket_api.async_register_command(hass, ws_studio_quick_bind)

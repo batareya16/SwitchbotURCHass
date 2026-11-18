@@ -597,6 +597,15 @@ async def ws_remote_sources(hass, connection, msg):
             "device_types": list(DEVICE_TYPES),
             "icons": list(ICONS),
         },
+        # One text remote per Universal Remote: V48 draws the first Matter record only.
+        "matter": {
+            "installed": any(
+                isinstance(item, dict) and item.get("device_type") == "MATTER_TEXT"
+                for item in entry.options.get("remotes", [])
+            ) or (table is not None and any(row[1] == 0x27 and row[2] == 3 for row in table)),
+            "default_captions": ["BUTTON 1", "BUTTON 2", "BUTTON 3", "BUTTON 4"],
+            "max_bytes": 31,
+        },
     })
 
 
