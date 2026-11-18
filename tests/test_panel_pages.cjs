@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 let Panel;
 const context = {
-  HTMLElement: class {}, structuredClone, console,
+  HTMLElement: class {}, structuredClone, console, clearTimeout,
   customElements: {get() {}, define(_name, implementation) {Panel = implementation;}},
 };
 vm.createContext(context);
@@ -115,6 +115,45 @@ test('scene selection preserves draft names and actions between rows', () => {
   instance._selectSceneDraft(structuredClone(first));
   assert.equal(instance._scenePanel.draft.name, 'Movie night');
   assert.equal(instance._draftActions[0].action, 'light.turn_off');
+});
+
+test('scene refresh preserves other drafts and invalidates externally changed scenes', async () => {
+  const instance = panel();
+  instance._button = () => null;
+  const first = {index: 0, name: 'Movie', icon: 18, color: 5, actions: []};
+  const second = {index: 1, name: 'Morning', icon: 1, color: 2, actions: []};
+  instance._scenePanel = {entryId: 'entry', rows: [first, second], draft: null};
+  instance._selectSceneDraft(structuredClone(first));
+  instance._scenePanel.draft.name = 'Movie night';
+  instance._draftActions = [{action: 'light.turn_off', target: {entity_id: 'light.hall'}}];
+  instance._rememberMapping();
+  instance._selectSceneDraft(structuredClone(second));
+  instance._hass = {async callWS() {return {scenes: [first, second], limit: 10};}};
+  await instance._openScenes();
+  instance._selectSceneDraft(structuredClone(first));
+  assert.equal(instance._scenePanel.draft.name, 'Movie night');
+  assert.equal(instance._draftActions[0].action, 'light.turn_off');
+  instance._selectSceneDraft(structuredClone(second));
+  const changed = {...first, name: 'Changed on the remote'};
+  instance._hass.callWS = async () => ({scenes: [changed, second], limit: 10});
+  await instance._openScenes();
+  instance._selectSceneDraft(structuredClone(changed));
+  assert.equal(instance._scenePanel.draft.name, changed.name);
+  assert.equal(instance._draftActions.length, 0);
+});
+
+test('IR keys inside HID expose firmware icons while HID commands retain their function', () => {
+  const instance = panel();
+  instance._catalog = {available: false};
+  const button = {button_id: 'p1_k0', button_page: 1, button_index: 0};
+  instance._physical = {kind: 'hid', pages: [
+    {index: 0, buttons: []},
+    {index: 1, buttons: [{index: 0, transport: 'ir', code_hex: 'aabb', glyph: 105}]},
+  ]};
+  assert.match(instance._renderKeyEditor(button), /data-glyph-field="glyph"/);
+  assert.match(instance._renderKeyEditor(button), /keyfun-0069.png/);
+  instance._physical.pages[1].buttons[0] = {index: 0, transport: 'hid', function: 25};
+  assert.doesNotMatch(instance._renderKeyEditor(button), /data-glyph-field="glyph"/);
 });
 
 test('one-row page is written before its HA action, preserving action editor values', async () => {

@@ -163,3 +163,40 @@ def test_hid_recreate_preserves_custom_ir_key_and_device_type():
     assert page[23:32] == b"Edited TV"
     assert page[91:94] == original[91:94]  # key index, function and HID record type
     assert page[90 + 36 + 3] == 2  # second key remains a named custom IR key
+
+
+@pytest.mark.parametrize("glyph,expected_function", [(None, 0x07D3), (105, 105)])
+def test_hid_ir_replaces_an_inherited_zero_function(glyph, expected_function):
+    remote = {"device_type": "GOOGLE_TV", "device_id": "001122334455", "name": "TV"}
+    key = {"index": 0, "transport": "ir", "function": 0, "code_hex": "aabbccdd"}
+    if glyph is not None:
+        key["glyph"] = glyph
+    draft = {"kind": "hid", "pages": [{"index": 0, "buttons": [key]}]}
+    uploads, pages = physical.compile_pages(remote, draft, slot=1)
+    assert uploads
+    record = pages[0][90:126]
+    assert record[:4] == b"\x00" + expected_function.to_bytes(2, "big") + b"\x02"
+    assert record[4:].rstrip(b"\0") == b"0"
+
+
+def test_hid_ir_glyph_changes_only_the_visible_function():
+    remote = {"device_type": "GOOGLE_TV", "device_id": "001122334455", "name": "TV"}
+    draft = {"kind": "hid", "pages": [{"index": 0, "buttons": [
+        {"index": 0, "transport": "ir", "code_hex": "aabbccdd", "glyph": 105},
+        {"index": 4, "transport": "hid", "function": 25},
+    ]}]}
+    uploads, pages = physical.compile_pages(remote, draft, slot=1)
+    assert uploads
+    first = pages[0][90:126]
+    assert first[:4] == bytes([0, 0, 105, 2])
+    assert first[4:].rstrip(b"\0") == b"0"
+    assert pages[0][126:130] == bytes([4, 0, 25, 6])
+    key = draft["pages"][0]["buttons"][0]
+    key["glyph"] = 0
+    with pytest.raises(ValueError, match="nonzero"):
+        physical.validate(remote, draft)
+    key["glyph"] = 105
+    key["transport"] = "hid"
+    key["function"] = 25
+    with pytest.raises(ValueError, match="screen icon"):
+        physical.validate(remote, draft)

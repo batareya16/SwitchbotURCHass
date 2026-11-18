@@ -1040,7 +1040,10 @@ def build_hid_edit_page(
             encoded = ir_name.encode("utf-8")
             if not encoded or len(encoded) > 31 or "/" in ir_name or "\x00" in ir_name:
                 raise ValueError("IR key name must be 1–31 UTF-8 bytes without slash or NUL")
-            function, key_type, field = 0x07D3, 2, pad(encoded, 32)
+            function = int(key.get("function", 0x07D3))
+            if not 1 <= function <= 0xFFFF:
+                raise ValueError("IR button icon function must be nonzero and fit in two bytes")
+            key_type, field = 2, pad(encoded, 32)
         else:
             usage = bytes(key["hid_usage"])
             if len(usage) != 2:

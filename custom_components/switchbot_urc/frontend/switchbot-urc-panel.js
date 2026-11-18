@@ -1624,7 +1624,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     clearTimeout(this._activeTimer);
     this._add = null;
-    const panel = { entryId, busy: "read", rows: [], limit: 10, loaded: false, draft: null, error: "" };
+    const panel = { entryId, busy: "read", rows: [], limit: 10, loaded: false, draft: null,
+      drafts: new Map(previous?.drafts || []), error: "" };
     this._scenePanel = panel;
     this._render();
     try {
@@ -1633,6 +1634,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       panel.rows = result.scenes;
       panel.limit = result.limit;
       panel.loaded = true;
+      for (const index of panel.drafts.keys()) {
+        const before = previous?.rows.find((row) => row.index === index);
+        const after = panel.rows.find((row) => row.index === index);
+        const unchanged = before && after && JSON.stringify(before) === JSON.stringify(after);
+        if (index === "new" ? panel.rows.length >= panel.limit : !unchanged) {
+          panel.drafts.delete(index);
+        }
+      }
       if (addNew && panel.rows.length < panel.limit) {
         panel.draft = { name: "New scene", icon: 0, color: 5, actions: [] };
         panel.appearance = true;
@@ -2400,6 +2409,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.querySelector('[data-key-field="transport"]')?.addEventListener("change", (event) => {
       key.transport = event.target.value;
+      if (key.transport !== "ir" && this._physical.kind === "hid") delete key.glyph;
       if (key.transport === "hid") key.function ??= 0;
       this._render();
     });
@@ -2645,6 +2655,9 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._hidFunctionOptions(key.function)
       }</select></label>` : ""}
       ${key.transport === "ir" ? `
+        ${kind === "hid" && (page.index || key.index < 4)
+          ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? 0x07D3,
+            Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0)) : ""}
         ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
             <option value="">Choose…</option>${
             this._physicalSources.map((source, index) => `<option value="${index}" ${key.code_hex === source.code_hex ? "selected" : ""}>${escapeHtml(source.label)}</option>`).join("")

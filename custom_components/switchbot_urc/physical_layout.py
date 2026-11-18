@@ -434,9 +434,14 @@ def validate(remote: dict, draft: dict) -> dict:
             if "title" in key:
                 key["title"] = _menu_title(key["title"])
             if "glyph" in key:
-                if expected != "native" or (not number and index > 3):
+                supports_glyph = expected == "native" or (
+                    expected == "hid" and key.get("transport") == "ir"
+                )
+                if not supports_glyph or (not number and index > 3):
                     raise ValueError("This position does not support a screen icon")
                 _validate_glyph(key["glyph"])
+                if expected == "hid" and key["glyph"] == 0:
+                    raise ValueError("Choose a nonzero icon for an IR button")
             transport = key.get("transport")
             allowed = {"native"} if expected == "native" else {"hid", "ir"} if expected == "hid" else {"stored", "ir"}
             if transport not in allowed:
@@ -516,7 +521,12 @@ def compile_pages(
                 else:
                     uploads.extend((stage, packet, frozenset({1})) for stage, packet, _ in c.build_ir_transfer_sequence(
                         c.id_to_bytes(remote["device_id"]), code, data_type=3, transfer_name=name))
-                keys.append({"index": index, "ir_name": name, "function": int(key.get("function", 115))})
+                default_function = 0x07D3 if draft["kind"] == "hid" else 115
+                function = int(key.get("glyph", key.get("function", default_function)))
+                if draft["kind"] == "hid" and function == 0:
+                    function = default_function
+                keys.append({"index": index, "ir_name": name,
+                             "function": function})
             elif transport == "hid":
                 keys.append({"index": index, "hid_usage": key["function"].to_bytes(2, "big")})
             elif transport == "stored":
