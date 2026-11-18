@@ -1,6 +1,6 @@
 # SwitchBot Universal Remote for Home Assistant
 
-Use your SwitchBot Universal Remote (WoRWS) to control lights, start a robot vacuum, run scripts, or launch scenes in Home Assistant. **Remote Studio** lets you set this up by clicking buttons on a preview of the remote. You can also manage infrared and Bluetooth remotes from the same screen.
+Use your SwitchBot Universal Remote (WoRWS) to control lights, start a robot vacuum, run scripts, or launch scenes in Home Assistant. **Remote Studio** lets you set this up by clicking buttons on a preview of the remote. You can also manage infrared and Bluetooth remotes, the remote's own **scenes** and a **text remote** with four captioned buttons from the same screen.
 
 ![Remote Studio in Home Assistant](https://github.com/user-attachments/assets/b1b0f17c-04f7-4259-aac4-de6c5ecbd2ed)
 
@@ -11,8 +11,10 @@ Use your SwitchBot Universal Remote (WoRWS) to control lights, start a robot vac
 | **Bridge remote** | Home Assistant lights, scenes, scripts and automations | [SwitchBot URC Bridge](https://github.com/batareya16/switchbot-urc-addon) (add-on), a dedicated Bluetooth dongle and MQTT |
 | **IR from the catalog** or **IR saved in your account** | TVs, audio equipment and other infrared appliances | A SwitchBot account to download the codes |
 | **HID remote** | A TV, streaming box or computer that accepts a Bluetooth remote or keyboard | Bluetooth pairing with the TV, box or computer |
+| **Scene** | Run any Home Assistant scene, script or action sequence from the remote's scene list (up to 10) | A Bluetooth adapter or proxy that Home Assistant can use within range of the remote |
+| **Text remote** | Four buttons A–D with captions you choose, each running Home Assistant actions (one per Universal Remote) | A Bluetooth adapter or proxy that Home Assistant can use within range of the remote |
 
-One physical WoRWS can hold remotes of all three kinds. IR and HID send commands directly to the appliance. You can use both without a Bridge dongle or a SwitchBot Hub.
+One physical WoRWS can hold remotes of all these kinds. IR and HID send commands directly to the appliance. You can use both without a Bridge dongle or a SwitchBot Hub. Scenes and the text remote do not need the Bridge either: the integration listens for the remote's Bluetooth announcements through Home Assistant's own Bluetooth.
 
 **SwitchBot URC Bridge** is a Home Assistant add-on that runs in the background and passes button presses from the physical remote to Home Assistant. Install it once from **Settings → Apps** if you want to use Bridge remotes. You don't need a phone app for this step.
 
@@ -65,6 +67,28 @@ Studio picks a free address for new Bridge remotes. The Bridge remembers its add
 
 Use the pencil next to a remote's name on the preview to edit its name and appearance. To make a submenu, select an A–D key and choose **Turn key … into a page**. Open the new page and choose **Add row**. You can move or delete rows and choose from the remote's built-in button icons. Click **Save** to apply your edits.
 
+### Run Home Assistant scenes from the remote
+
+The Universal Remote has its own list of up to 10 scenes. Studio lets you fill it with Home Assistant actions.
+
+1. Choose **Add a remote → Scene**. Pick an icon and a background colour, enter the name that will appear on the remote, then choose **Install**.
+2. The new scene opens on the right. Under **Custom actions** choose what Home Assistant should do, for example **Scene: Turn on** or **Script: Turn on**. You can add several actions in order.
+3. Click **Save**. Use **Test saved actions** to try them from Studio, then pick the scene on the physical remote.
+
+Scenes appear in the same list as your other remotes, with a coloured icon. Select one and use the pencil, or the **Appearance** tab, to change its name, icon or background. **Scenes available** shows how many of the 10 slots are free. Pressing a scene is detected from the remote's Bluetooth announcement, so Home Assistant needs a Bluetooth adapter or proxy within range of the remote. The Bridge is not involved.
+
+### Add a text remote
+
+A text remote gives the Universal Remote four buttons, A to D, whose captions you choose. Each button runs its own Home Assistant actions.
+
+1. Choose **Add a remote → Text remote**, enter a name and the four captions, then choose **Install**. A caption can be up to 31 bytes; Cyrillic letters take two bytes each.
+2. Click a button on the preview and assign its actions under **Custom actions**, as for any other remote. Click **Save**.
+3. To change the name or captions later, select the remote and use the pencil next to its name.
+
+There can be only one text remote per Universal Remote, because the firmware draws the first one and shares the four buttons between all of them. **Text remotes available** shows whether the slot is free. Like scenes, button presses reach Home Assistant through the remote's Bluetooth announcements, so an adapter or proxy must be in range.
+
+After writing, Studio reads the remote's device table back. If the remote does not list the new text remote, Studio reports an error instead of success.
+
 ### Control an infrared appliance
 
 Choose **Add a remote → IR from the catalog** and select the device type, brand and model. Or choose **IR saved in your account** to install a remote you set up in the SwitchBot app. After installation, select it on the WoRWS and point the remote at the appliance.
@@ -88,6 +112,7 @@ Choose **Refresh** in Studio while the Universal Remote is awake and nearby. Stu
 | **Bridge remote** is unavailable | Check that Mosquitto is running, the MQTT integration is set up and **SwitchBot URC Bridge** is running under **Settings → Apps**. Reopen **Add a remote** to refresh availability. |
 | **Test saved mapping** works, but the physical button does nothing | Open the matching remote on the WoRWS, move closer to the Bridge and check that Home Assistant has released the dedicated dongle for the Bridge. |
 | Studio can't read or write the Universal Remote | Wake it, bring it closer and close the SwitchBot app if it is connected to the remote. If Studio reports an invalid communication key, open **SwitchBot account → Fetch a fresh key**. |
+| A scene or the text remote does nothing when pressed | Home Assistant needs a Bluetooth adapter or proxy within range of the remote; the Bridge dongle is not used for these. Use **Test saved actions** or **Test saved mapping** to check that the actions themselves run. |
 | The IR catalog or saved remotes are missing | Sign in under the integration's **Configure → SwitchBot cloud account**. The saved list only appears if the account has saved IR remotes. |
 
 This is a community project for the SwitchBot Universal Remote. Firmware updates can affect compatibility. [Report an issue](https://github.com/batareya16/SwitchbotURCHass/issues) · [Protocol and hardware notes](PROTOCOL.md) · [License](LICENSE)

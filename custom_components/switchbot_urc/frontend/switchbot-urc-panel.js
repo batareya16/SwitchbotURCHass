@@ -2088,7 +2088,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ["matter", "Text remote", !!sources.matter && !sources.matter.installed,
        sources.matter?.installed
          ? "This Universal Remote already has a text remote. Edit its captions instead."
-         : "Experimental. Four buttons A–D with captions you choose; presses reach Home Assistant over Bluetooth."],
+         : "Four buttons A–D with captions you choose; presses reach Home Assistant over Bluetooth."],
     ];
     const option = (value, label, selected) =>
       `<option value="${escapeHtml(String(value))}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
