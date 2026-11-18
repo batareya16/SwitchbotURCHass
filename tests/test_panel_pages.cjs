@@ -93,12 +93,70 @@ test('scene workspace renders through the normal Studio entry point', () => {
   instance._wireEvents = () => {};
   instance._wireScenes = () => {};
   instance._mountActionSelector = () => {};
-  instance.shadowRoot = {innerHTML: '', querySelector() {return null;}};
+  instance.shadowRoot = {innerHTML: '', querySelector() {return null;}, getElementById() {return null;}};
   instance._renderUnsafe();
   assert.match(instance.shadowRoot.innerHTML, /id="sceneRemoteSelect"/);
   assert.match(instance.shadowRoot.innerHTML, /data-edit-scene="0"/);
   assert.match(instance.shadowRoot.innerHTML, /viewBox="0 0 300 657"/);
   assert.doesNotMatch(instance.shadowRoot.innerHTML, /Back to remotes|sceneForm/);
+});
+
+test('remote settings reads the selected physical remote and saves only edited fields', async () => {
+  const instance = panel();
+  const values = {touch_wheel: false, key_sounds: true, lift_to_wake: true,
+    auto_brightness: true, screen_brightness: 50, key_brightness: 30,
+    screen_timeout: 15, temperature_unit: 0, language: 1, japan_model: false};
+  const requests = [];
+  instance._hass = {async callWS(request) {
+    requests.push(request);
+    return {settings: {...values, ...(request.changes || {})}};
+  }};
+  await instance._openDeviceSettings();
+  assert.equal(requests[0].entry_id, 'entry');
+  assert.equal(requests[0].changes, undefined);
+  assert.match(instance._renderDeviceSettings(), /data-remote-setting="touch_wheel"/);
+  assert.match(instance._renderDeviceSettings(), /data-remote-setting="screen_brightness"[^>]*disabled/);
+  instance._deviceSettings.draft.touch_wheel = true;
+  await instance._saveDeviceSettings();
+  assert.deepEqual({...requests[1].changes}, {touch_wheel: true});
+  assert.equal(instance._deviceSettings.status, 'Settings saved and verified.');
+  assert.equal(Object.keys(instance._deviceSettingsChanges()).length, 0);
+  instance._deviceSettings.draft.japan_model = true;
+  assert.doesNotMatch(instance._renderDeviceSettings(), /data-remote-setting="temperature_unit"/);
+});
+
+test('remote settings reports read and verification failures without claiming success', async () => {
+  const instance = panel();
+  instance._hass = {async callWS() {throw new Error('Read failed');}};
+  await instance._openDeviceSettings();
+  assert.equal(instance._deviceSettings.values, null);
+  assert.match(instance._renderDeviceSettings(), /Read failed/);
+  assert.match(instance._renderDeviceSettings(), /id="retryDeviceSettings"/);
+  instance._deviceSettings.values = {touch_wheel: false};
+  instance._deviceSettings.draft = {touch_wheel: true};
+  await instance._saveDeviceSettings();
+  assert.equal(instance._deviceSettings.status, '');
+  assert.equal(instance._deviceSettings.draft.touch_wheel, true);
+  assert.equal(instance._deviceSettings.values.touch_wheel, false);
+  const count = Object.keys(instance._deviceSettingsChanges()).length;
+  instance._entryId = 'another-entry';
+  await instance._saveDeviceSettings();
+  assert.equal(Object.keys(instance._deviceSettingsChanges()).length, count);
+});
+
+test('remote settings ignores a closed read and preserves the editor drafts', async () => {
+  const instance = panel();
+  const physical = instance._physical;
+  const actions = instance._draftActions;
+  let finish;
+  instance._hass = {callWS: () => new Promise(resolve => {finish = resolve;})};
+  const opening = instance._openDeviceSettings();
+  instance._deviceSettings = null;
+  finish({settings: {touch_wheel: true}});
+  await opening;
+  assert.equal(instance._deviceSettings, null);
+  assert.equal(instance._physical, physical);
+  assert.equal(instance._draftActions, actions);
 });
 
 test('scene selection preserves draft names and actions between rows', () => {

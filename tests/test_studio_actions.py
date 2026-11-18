@@ -417,6 +417,80 @@ def test_layout_write_reads_back_in_the_same_bridge_session(studio, readback_rec
     assert responses == ([b"\x01", raw_table] if readback_received else [b"\x01"])
 
 
+@pytest.mark.parametrize("battery", [1, 60])
+def test_settings_write_ignores_status_and_status_poll_accepts_low_battery(studio, battery):
+    from switchbot_urc.client import UrcClient
+
+    crypto = types.SimpleNamespace(ready=True, parse_notification=lambda raw: raw)
+    client = UrcClient(types.SimpleNamespace(address="B0:E9:FE:53:11:45"), crypto)
+    status = bytes([battery]) + bytes.fromhex("3001000132320f00010001002d2d01")
+
+    async def connect():
+        pass
+
+    async def send(command):
+        client._on_encrypted_notify(None, bytearray(status))
+        if command[:1] == b"\x03":
+            assert not client._response_fut.done()
+            client._on_encrypted_notify(None, bytearray(b"\x01"))
+
+    client.connect = connect
+    client.send_plaintext = send
+
+    async def run():
+        assert await client._send_command_locked(b"\x03" + b"\xff" * 10, 1) == b"\x01"
+        assert await client._send_command_locked(b"\x02", 1) == status
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("changes", [None, {"touch_wheel": True}])
+def test_studio_device_settings_uses_the_selected_client(studio, monkeypatch, changes):
+    module = studio.studio_settings
+    client = object()
+    calls = []
+    async def read(actual):
+        assert actual is client
+        calls.append("read")
+        return {"touch_wheel": False}
+    async def apply(actual, patch):
+        assert actual is client
+        calls.append(patch)
+        return patch
+    monkeypatch.setattr(module.device_settings, "read_settings", read)
+    monkeypatch.setattr(module.device_settings, "apply_settings", apply)
+    entry = types.SimpleNamespace(domain="switchbot_urc")
+    hass = types.SimpleNamespace(
+        data={"switchbot_urc": {"entry": {"client": client}}},
+        config_entries=types.SimpleNamespace(async_get_entry=lambda key: entry if key == "entry" else None))
+    results, errors = [], []
+    connection = types.SimpleNamespace(send_result=lambda *args: results.append(args),
+                                       send_error=lambda *args: errors.append(args))
+    message = {"id": 1, "entry_id": "entry"}
+    if changes is not None:
+        message["changes"] = changes
+    asyncio.run(module.ws_device_settings(hass, connection, message))
+    assert not errors
+    assert calls == (["read"] if changes is None else [changes])
+    assert results[0][1]["settings"] == ({"touch_wheel": False} if changes is None else changes)
+
+
+def test_studio_device_settings_surfaces_unverified_write(studio, monkeypatch):
+    module = studio.studio_settings
+    async def apply(client, changes):
+        raise module.device_settings.SettingsVerificationError("Readback failed")
+    monkeypatch.setattr(module.device_settings, "apply_settings", apply)
+    entry = types.SimpleNamespace(domain="switchbot_urc")
+    hass = types.SimpleNamespace(data={"switchbot_urc": {"entry": {"client": object()}}},
+        config_entries=types.SimpleNamespace(async_get_entry=lambda key: entry))
+    errors = []
+    connection = types.SimpleNamespace(send_error=lambda *args: errors.append(args),
+                                       send_result=lambda *args: pytest.fail("Must not report saved"))
+    asyncio.run(module.ws_device_settings(hass, connection,
+        {"id": 1, "entry_id": "entry", "changes": {"touch_wheel": True}}))
+    assert errors == [(1, "settings_unverified", "Readback failed")]
+
+
 def binding(remote_id="abc123", **actions):
     return {"remote_id": remote_id, "enabled": True, "button_actions": dict(actions)}
 

@@ -32,12 +32,13 @@ from . import studio_physical
 from .physical_layout import ir_screen_preview, native_appearance, remote_artwork_id
 from . import studio_remotes
 from . import studio_scenes
+from . import studio_settings
 
 _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.51.2-hid-ir-icons.2"
+FRONTEND_VERSION = "0.51.2-device-settings.1"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -619,6 +620,7 @@ async def async_register_studio(hass: HomeAssistant) -> None:
             studio_cloud.register(hass)
             studio_manage.register(hass)
             studio_scenes.register(hass)
+            studio_settings.register(hass)
             websocket_api.async_register_command(hass, ws_studio_save_button_action)
             websocket_api.async_register_command(hass, ws_studio_quick_bind)
             websocket_api.async_register_command(hass, ws_studio_test_button)

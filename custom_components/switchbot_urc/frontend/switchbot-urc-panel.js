@@ -288,6 +288,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     // Add-remote dialog: null when closed, otherwise the half-filled form.
     this._add = null;
     this._scenePanel = null;
+    this._deviceSettings = null;
     this._sources = null;
     // Which remote's appearance editor is open.
     this._iconPickerFor = null;
@@ -1233,6 +1234,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _renderUnsafe() {
+    const settingsFocus = this.shadowRoot.activeElement?.dataset?.remoteSetting;
     const entry = this._entry();
     const remote = this._remote();
     const page = this._page();
@@ -1265,6 +1267,7 @@ class SwitchBotUrcPanel extends HTMLElement {
               </span><span>${escapeHtml(battery)}%</span>
             </div>` : ""}
             <div class="live"><i></i> Live</div>
+            ${entry ? `<button class="secondary" id="remoteSettings" ${this._physicalBusy || this._saving || this._scenePanel?.busy ? "disabled" : ""}>Remote settings</button>` : ""}
             <button class="secondary" id="refresh" ${this._scenePanel?.busy ? "disabled" : ""} title="Re-read the remote and pick up anything created in the SwitchBot app">${this._physicalBusy || this._scenePanel?.busy === "read" ? "Refreshing…" : "Refresh"}</button>
           </div>
         </header>
@@ -1332,11 +1335,13 @@ class SwitchBotUrcPanel extends HTMLElement {
           ` : `<div class="empty"><b>No locally managed remotes.</b><br>Press Refresh to pick up remotes created in the SwitchBot app, or add one in the integration settings.</div>`}
           `}
         ` : ""}
-      </main>`;
+      </main>${this._renderDeviceSettings()}`;
     const screen = this.shadowRoot.querySelector(".scr-scroll");
     if (screen) screen.scrollTop = previousScroll;
     this._wireEvents();
     this._wireScenes();
+    this._wireDeviceSettings();
+    if (settingsFocus) this.shadowRoot.querySelector(`[data-remote-setting="${settingsFocus}"]`)?.focus();
     if (this._scenePanel) { this._mountActionSelector(); return; }
     this._wireAddRemote();
     this._wireDiagnostics();
@@ -1347,6 +1352,129 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._ensureCloud();
     // The diagnostics table reports each controller's capacity, which comes from here.
     if (!this._sourcesError) this._ensureSources();
+  }
+
+  async _openDeviceSettings() {
+    if (!this._entryId || this._physicalBusy || this._saving || this._scenePanel?.busy) return;
+    const state = { entryId: this._entryId, busy: "read", values: null, draft: null, error: "", status: "" };
+    this._deviceSettings = state;
+    this._render();
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/studio/device_settings`, entry_id: state.entryId });
+      state.values = result.settings;
+      state.draft = structuredClone(result.settings);
+    } catch (error) { state.error = error?.message || String(error); }
+    finally {
+      state.busy = "";
+      if (this._deviceSettings === state) this._render();
+    }
+  }
+
+  _deviceSettingsChanges() {
+    const state = this._deviceSettings;
+    if (!state?.values || !state.draft) return {};
+    return Object.fromEntries(Object.entries(state.draft).filter(
+      ([field, value]) => field !== "japan_model" && value !== state.values[field]));
+  }
+
+  _renderDeviceSettings() {
+    const state = this._deviceSettings;
+    if (!state) return "";
+    const values = state.draft;
+    const toggle = (field, label, hint = "") => `<label class="remote-setting-toggle"><span>${label}${hint ? `<small>${hint}</small>` : ""}</span>
+      <input type="checkbox" data-remote-setting="${field}" ${values[field] ? "checked" : ""}></label>`;
+    const brightness = (field, label) => `<label class="remote-setting-range"><span>${label}<output data-settings-value="${field}">${values[field]}%</output></span>
+      <input type="range" data-remote-setting="${field}" min="0" max="100" step="1" value="${values[field]}" ${values.auto_brightness ? "disabled" : ""}></label>`;
+    const select = (field, label, choices) => {
+      const current = String(values[field]);
+      if (!choices.some(([value]) => value === current)) choices.push([current, `Current setting (${current})`]);
+      return `<label>${label}<select data-remote-setting="${field}">${choices.map(([value, caption]) =>
+        `<option value="${escapeHtml(value)}" ${value === current ? "selected" : ""}>${escapeHtml(caption)}</option>`).join("")}</select></label>`;
+    };
+    return `<dialog id="deviceSettingsDialog" class="device-settings-dialog" aria-labelledby="deviceSettingsTitle">
+      <div class="editor-head"><div><h2 id="deviceSettingsTitle">Remote settings</h2><p class="small">Applies to this Universal Remote and all its device remotes and scenes.</p></div>
+        <button type="button" class="secondary compact" id="closeDeviceSettings" ${state.busy === "save" ? "disabled" : ""} aria-label="Close remote settings">Close</button></div>
+      ${state.busy === "read" ? '<p role="status">Reading settings from the remote…</p>' : ""}
+      ${values ? `<form id="deviceSettingsForm"><fieldset ${state.busy ? "disabled" : ""}>
+        ${toggle("touch_wheel", "Touch wheel scrolling", "Scroll through device and menu lists using the touch wheel.")}
+        ${toggle("lift_to_wake", "Wake when picked up")}
+        ${toggle("key_sounds", "Button sounds")}
+        ${toggle("auto_brightness", "Automatic brightness", "Adjust screen and button brightness to the ambient light.")}
+        ${brightness("screen_brightness", "Screen brightness")}
+        ${brightness("key_brightness", "Button backlight brightness")}
+        <div class="remote-setting-selects">
+        ${select("screen_timeout", "Turn off the screen after", [["15", "15 seconds"], ["30", "30 seconds"], ["60", "1 minute"], ["120", "2 minutes"]])}
+        ${values.japan_model ? "" : select("temperature_unit", "Temperature unit", [["0", "°C"], ["1", "°F"]])}
+        ${select("language", "Screen language", [["0", "简体中文"], ["1", "English"], ["2", "日本語"]])}
+        </div><p class="small">Changing the language may restart the remote.</p>
+        </fieldset><footer class="studio-save"><span role="status">${escapeHtml(state.status)}</span>
+          <button type="submit" class="primary compact" id="saveDeviceSettings" ${state.busy || !Object.keys(this._deviceSettingsChanges()).length ? "disabled" : ""}>${state.busy === "save" ? "Saving…" : "Save"}</button></footer></form>` : ""}
+      ${state.error ? `<p class="error" role="alert">${escapeHtml(state.error)}</p>` : ""}
+      ${!state.busy && (!values || state.error) ? '<button class="secondary" id="retryDeviceSettings">Read settings again</button>' : ""}
+    </dialog>`;
+  }
+
+  _wireDeviceSettings() {
+    const root = this.shadowRoot;
+    root.getElementById("remoteSettings")?.addEventListener("click", () => this._openDeviceSettings());
+    const dialog = root.getElementById("deviceSettingsDialog");
+    if (!dialog) return;
+    dialog.showModal?.();
+    const close = () => {
+      if (this._deviceSettings?.busy === "save") return;
+      this._deviceSettings = null;
+      this._render();
+      root.getElementById("remoteSettings")?.focus();
+    };
+    root.getElementById("closeDeviceSettings")?.addEventListener("click", close);
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
+    root.getElementById("retryDeviceSettings")?.addEventListener("click", () => this._openDeviceSettings());
+    root.querySelectorAll("[data-remote-setting]").forEach((input) => input.addEventListener("input", () => {
+      const state = this._deviceSettings;
+      const field = input.dataset.remoteSetting;
+      state.draft[field] = input.type === "checkbox" ? input.checked : Number(input.value);
+      state.status = "";
+      const status = root.querySelector("#deviceSettingsForm [role=status]");
+      if (status) status.textContent = "";
+      const output = root.querySelector(`[data-settings-value="${field}"]`);
+      if (output) output.textContent = `${input.value}%`;
+      if (field === "auto_brightness") {
+        for (const name of ["screen_brightness", "key_brightness"]) {
+          root.querySelector(`[data-remote-setting="${name}"]`).disabled = input.checked;
+          if (input.checked) {
+            state.draft[name] = state.values[name];
+            root.querySelector(`[data-remote-setting="${name}"]`).value = state.values[name];
+            root.querySelector(`[data-settings-value="${name}"]`).textContent = `${state.values[name]}%`;
+          }
+        }
+      }
+      root.getElementById("saveDeviceSettings").disabled = !Object.keys(this._deviceSettingsChanges()).length;
+    }));
+    root.getElementById("deviceSettingsForm")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this._saveDeviceSettings();
+    });
+  }
+
+  async _saveDeviceSettings() {
+    const state = this._deviceSettings;
+    if (!state || state.busy || state.entryId !== this._entryId) return;
+    const changes = this._deviceSettingsChanges();
+    if (!Object.keys(changes).length) return;
+    state.busy = "save";
+    state.error = "";
+    state.status = "";
+    this._render();
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/studio/device_settings`, entry_id: state.entryId, changes });
+      state.values = result.settings;
+      state.draft = structuredClone(result.settings);
+      state.status = "Settings saved and verified.";
+    } catch (error) { state.error = error?.message || String(error); }
+    finally {
+      state.busy = "";
+      if (this._deviceSettings === state) this._render();
+    }
   }
 
   async _openPhysical() {
@@ -3344,6 +3472,24 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _styles() {
     return `
+      .device-settings-dialog{box-sizing:border-box;width:min(620px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:26px;border:1px solid var(--divider-color,#ddd);border-radius:22px;background:var(--card-background-color,#fff);color:var(--primary-text-color,#17202a);box-shadow:0 24px 80px #0005;overflow:auto}
+      .device-settings-dialog::backdrop{background:#0008}
+      .device-settings-dialog h2{margin:0;font-size:24px;letter-spacing:-.02em}
+      .device-settings-dialog .editor-head{margin-bottom:14px}
+      .device-settings-dialog .small{line-height:1.5;color:var(--secondary-text-color,#68727d)}
+      .device-settings-dialog fieldset{min-width:0;padding:0;margin:0;border:0;display:grid;gap:0}
+      .remote-setting-toggle{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:15px 0;border-bottom:1px solid var(--divider-color,#ddd);font-size:14px;font-weight:600;cursor:pointer}
+      .remote-setting-toggle small{display:block;margin-top:5px;font-size:12px;font-weight:400;line-height:1.5;color:var(--secondary-text-color,#68727d)}
+      .remote-setting-toggle input{flex:none;width:20px;height:20px;accent-color:var(--primary-color,#03a9f4)}
+      .remote-setting-range{display:grid;gap:12px;padding-top:20px;font-size:14px;font-weight:600}
+      .remote-setting-range>span{display:flex;justify-content:space-between;gap:16px}
+      .remote-setting-range output{font-variant-numeric:tabular-nums;color:var(--secondary-text-color,#68727d)}
+      .remote-setting-range input{width:100%;margin:0;accent-color:var(--primary-color,#03a9f4)}
+      .remote-setting-range:has(input:disabled){opacity:.5}
+      .remote-setting-selects{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-top:22px}
+      .remote-setting-selects label{display:grid;gap:8px;font-size:13px;font-weight:600}
+      .remote-setting-selects select{width:100%;min-width:0}
+      .device-settings-dialog .studio-save{margin-top:12px}
       .scene-icon{width:32px;height:32px;object-fit:contain}
       .remote-screen-tabs{display:flex;gap:6px;margin:10px 0;padding:0 4px}
       .remote-screen-tabs button{flex:1;border:0;border-radius:6px;background:#222;color:#aaa;font-size:11px;padding:8px 4px}

@@ -26,6 +26,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.script import async_validate_actions_config
 
 from . import commands
+from . import device_settings
 from . import install
 from . import targets
 from .bindings import (
@@ -321,6 +322,7 @@ class UrcOptionsFlow(OptionsFlow):
         self._pending_binding: dict[str, Any] | None = None
         self._selected_binding_remote_id: str | None = None
         self._selected_button_id: str | None = None
+        self._device_settings: dict[str, Any] | None = None
 
     # -- helpers -----------------------------------------------------------------------------
 
@@ -455,9 +457,70 @@ class UrcOptionsFlow(OptionsFlow):
             menu_options=[
                 "add_remote_menu", "manage_existing_remote", "remote_manager",
                 "remote_bindings", "refresh_all_remotes", "cloud_account",
-                "update_credentials", "diagnostics_menu",
+                "device_settings", "update_credentials", "diagnostics_menu",
             ],
         )
+
+    async def async_step_device_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Read and change settings on the physical Universal Remote."""
+        from .studio_remotes import remote_management_lock
+
+        errors = {}
+        values = self._device_settings
+        client = self._client()
+        if client is None:
+            errors["base"] = "not_connected"
+        else:
+            try:
+                async with remote_management_lock(self.hass):
+                    if user_input is not None and values is not None:
+                        submitted = {
+                            field: (bool(value) if field in device_settings.BOOLEAN_SETTINGS else int(value))
+                            for field, value in user_input.items()
+                            if field in device_settings.SETTING_OFFSETS
+                        }
+                        changes = {field: value for field, value in submitted.items() if value != values[field]}
+                        self._device_settings = await device_settings.apply_settings(client, changes)
+                        return self.async_create_entry(title="", data=dict(self._entry.options))
+                    self._device_settings = await device_settings.read_settings(client)
+                    values = self._device_settings
+            except device_settings.SettingsVerificationError:
+                _LOGGER.warning("Could not verify Universal Remote settings", exc_info=True)
+                errors["base"] = "device_settings_unverified"
+            except ValueError as err:
+                _LOGGER.warning("Invalid Universal Remote settings: %s", err)
+                errors["base"] = "device_settings_invalid"
+            except Exception:
+                _LOGGER.exception("Could not read or write Universal Remote settings")
+                errors["base"] = "device_settings_failed"
+        if values is None:
+            schema = vol.Schema({vol.Required("retry", default=True): cv.boolean})
+        else:
+            defaults = {**values, **(user_input or {})}
+            fields = {
+                vol.Required(field, default=defaults[field]): cv.boolean
+                for field in ("touch_wheel", "key_sounds", "lift_to_wake", "auto_brightness")
+            }
+            for field in ("screen_brightness", "key_brightness"):
+                fields[vol.Required(field, default=defaults[field])] = selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=0, max=100, step=1, unit_of_measurement="%")
+                )
+            timeouts = {"15": "15 seconds", "30": "30 seconds", "60": "1 minute", "120": "2 minutes"}
+            timeout = str(defaults["screen_timeout"])
+            timeouts.setdefault(timeout, f"Current setting ({timeout})")
+            fields[vol.Required("screen_timeout", default=timeout)] = _searchable_select(timeouts)
+            if not values["japan_model"]:
+                fields[vol.Required("temperature_unit", default=str(defaults["temperature_unit"]))] = _searchable_select(
+                    {"0": "°C", "1": "°F"}
+                )
+            languages = {"0": "简体中文", "1": "English", "2": "日本語"}
+            language = str(defaults["language"])
+            languages.setdefault(language, f"Current setting ({language})")
+            fields[vol.Required("language", default=language)] = _searchable_select(languages)
+            schema = vol.Schema(fields)
+        return self.async_show_form(step_id="device_settings", data_schema=schema, errors=errors)
 
     async def async_step_diagnostics_menu(
         self, user_input: dict[str, Any] | None = None

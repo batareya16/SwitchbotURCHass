@@ -61,7 +61,8 @@
           "refresh_all_remotes": "Refresh all remotes from device + cloud",
           "cloud_account": "SwitchBot cloud account",
           "update_credentials": "Update WoRWS communication key",
-          "diagnostics_menu": "Diagnostics and maintenance"
+          "diagnostics_menu": "Diagnostics and maintenance",
+          "device_settings": "Physical remote settings"
         }
       },
       "remote_bindings": {
@@ -367,6 +368,22 @@
           "native_diagnostics": "Native diagnostics (read-only)",
           "pair_host": "HID-pair to a host"
         }
+      },
+      "device_settings": {
+        "title": "Physical remote settings",
+        "description": "These settings apply to the whole Universal Remote. Touch wheel scrolls the device and menu lists. Turn off automatic brightness to set brightness levels manually. Changing the language may restart the remote.",
+        "data": {
+          "touch_wheel": "Touch wheel scrolling",
+          "key_sounds": "Button sounds",
+          "lift_to_wake": "Wake when picked up",
+          "auto_brightness": "Automatic brightness",
+          "screen_brightness": "Screen brightness",
+          "key_brightness": "Button backlight brightness",
+          "screen_timeout": "Turn off the screen after",
+          "temperature_unit": "Temperature unit",
+          "language": "Screen language",
+          "retry": "Read settings again"
+        }
       }
     },
     "error": {
@@ -424,7 +441,10 @@
       "cloud_home_failed": "The selected home could not be validated.",
       "cloud_update_failed": "The local change succeeded, but the SwitchBot cloud update failed. Refresh the list before retrying.",
       "cloud_refresh_token_required": "Enter a refresh token.",
-      "invalid_actions": "Home Assistant could not validate this action sequence."
+      "invalid_actions": "Home Assistant could not validate this action sequence.",
+      "device_settings_failed": "Could not read or save the remote settings. Wake the remote and try again.",
+      "device_settings_invalid": "The remote settings are invalid. Turn off automatic brightness before adjusting brightness levels.",
+      "device_settings_unverified": "The remote accepted the settings, but the readback did not confirm them. If the language changed, allow the remote to restart, then reopen settings to read its current values."
     },
     "abort": {
       "no_remotes": "No remotes to remove.",

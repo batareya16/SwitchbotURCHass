@@ -31,9 +31,8 @@ ManagementProxyCallback = Callable[
 # 0x00 is the successful per-part acknowledgement used by the IR bank uploader. Normal
 # commands still validate their stage-specific accepted codes in send_command_sequence.
 _STATUS_RESPONSES = frozenset({0x00, 0x01, 0x02, 0x04, 0x05, 0x10, 0x11})
-# Observed decrypted status packets start with 0x3C, 0x4A, 0x4C, 0x4D, 0x4E or 0x4F: the first
-# byte is not fixed, so an allowlist of it keeps going stale. Every capture so far is sixteen
-# bytes whose second byte is 0x2D or 0x30, which is what is matched instead.
+# Status starts with battery percentage, including low values also used as ACK codes.
+# Its length and firmware-version byte distinguish it from a command acknowledgement.
 _STATUS_POLL_RESPONSES = frozenset({0x3C, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F})
 
 
@@ -45,7 +44,7 @@ def is_status_packet(plaintext: bytes) -> bool:
     """
     if len(plaintext) != 16 or plaintext[1] not in (0x2D, 0x30):
         return False
-    return plaintext[0] not in _STATUS_RESPONSES
+    return plaintext[0] <= 100
 
 
 class UrcResponseDecodeError(RuntimeError):
@@ -676,17 +675,17 @@ class UrcClient:
         _LOGGER.debug("notify [%s] raw=%s plain=%s", CHAR_NOTIFY, raw.hex(), plaintext.hex())
         # Deliver a command response to any waiter.
         if self._response_fut is not None and not self._response_fut.done() and plaintext:
-            if (
+            if is_status_packet(plaintext) and not self._expect_status_reply:
+                _LOGGER.debug(
+                    "ignored unsolicited status notify while waiting for command response: %s",
+                    plaintext.hex(),
+                )
+            elif (
                 self._expected_response_codes is None
                 or plaintext[0] in self._expected_response_codes
                 or (self._expect_status_reply and is_status_packet(plaintext))
             ):
                 self._response_fut.set_result(plaintext)
-            elif is_status_packet(plaintext):
-                _LOGGER.debug(
-                    "ignored unsolicited status notify while waiting for command response: %s",
-                    plaintext.hex(),
-                )
             else:
                 self._unexpected_response = (raw, plaintext)
                 _LOGGER.warning(
@@ -745,6 +744,8 @@ class UrcClient:
         elif plaintext.startswith(HID_PAIR_STATUS_COMMAND):
             self._expected_response_codes = frozenset({0x01, 0x02, 0x03, 0x04})
         elif plaintext.startswith(bytes([0x0F])):
+            self._expected_response_codes = _STATUS_RESPONSES
+        elif plaintext.startswith(b"\x03"):
             self._expected_response_codes = _STATUS_RESPONSES
         else:
             self._expected_response_codes = None
