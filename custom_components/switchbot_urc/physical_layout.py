@@ -183,6 +183,18 @@ def _hid_ir_wire_fields(remote: dict) -> tuple[int, int, int] | None:
     return device_type, icon, mode
 
 
+def page_icon_editable(remote: dict) -> bool:
+    """True when the saved pages are the ones Studio itself wrote to the remote.
+
+    A remote imported from the SwitchBot account has pages that Studio rebuilt from the cloud
+    profile. They are not what the app wrote to the remote (key glyphs and code-bank references can
+    differ), so sending them back only to change the icon byte can break the remote.
+    """
+    return bool(remote.get("physical_packets")
+                and not remote.get("imported_from_cloud")
+                and not remote.get("ir_profile_pending"))
+
+
 def remote_artwork_id(remote: dict) -> int | None:
     """Resolve the illustration from the cached wire fields for Native, HID or IR."""
     if str(remote.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
@@ -192,6 +204,20 @@ def remote_artwork_id(remote: dict) -> int | None:
             appearance["icon_code"], appearance["control_mode"])
     fields = _hid_ir_wire_fields(remote)
     return None if fields is None else c.native_artwork_id(*fields)
+
+
+def remote_original_artwork_id(remote: dict) -> int | None:
+    """Picture of the icon an HID or IR remote had before Studio first changed it.
+
+    That is what "Original" gives back: the remembered byte, or the current one when Studio never
+    changed it, resolved for this device type and mode.
+    """
+    fields = _hid_ir_wire_fields(remote)
+    if fields is None:
+        return None
+    device_type, icon, mode = fields
+    original = remote.get("icon_code_original")
+    return c.native_artwork_id(device_type, int(original) if original is not None else icon, mode)
 
 
 def remote_wire_icon(remote: dict) -> int | None:

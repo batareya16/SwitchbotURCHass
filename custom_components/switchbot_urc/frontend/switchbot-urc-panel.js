@@ -970,10 +970,20 @@ class SwitchBotUrcPanel extends HTMLElement {
         ? ` · ${draft} in draft` : ""}</title>${body}</g>`;
   }
 
+  // Compare the chosen icon with the byte the remote carries, not with a name: a name can be the
+  // app's placeholder, and "Type default" must count as a change from any nonzero icon.
+  _iconChanged(remote, draft) {
+    if (!remote || draft?.icon == null) return false;
+    const codes = this._entry()?.icon_codes || {};
+    const chosen = codes[draft.icon];
+    if (Number.isInteger(remote.icon_code) && Number.isInteger(chosen)) return chosen !== remote.icon_code;
+    return draft.icon !== remote.icon;
+  }
+
   _hasAppearanceChanges() {
     const remote = this._remote();
     const draft = this._appearanceDraftsByRemote?.get(this._draftScope());
-    return Boolean(remote && draft && (draft.name.trim() !== remote.name || draft.icon !== remote.icon
+    return Boolean(remote && draft && (draft.name.trim() !== remote.name || this._iconChanged(remote, draft)
       || this._captionsChanged(remote, draft) || this._intervalChanged(remote, draft)));
   }
 
@@ -1023,7 +1033,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       // The text remote's screen draws no picture, but its list tile reads the same wire icon
       // byte as every other tile, and a caption rewrite resends the whole record, so both
       // travel in one save.
-      const iconChanged = icon !== remote.icon;
+      const iconChanged = this._iconChanged(remote, draft);
       const intervalChanged = this._intervalChanged(remote, draft);
       if (this._captionsChanged(remote, draft) || iconChanged || intervalChanged) {
         const captions = (draft.captions || remote.matter.fields || remote.matter.captions)
@@ -1050,15 +1060,17 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._appearanceDraftsByRemote.delete(scope);
       return result?.warning;
     }
-    if (icon !== remote.icon) {
+    if (this._iconChanged(remote, draft)) {
       const isPageRemote = remote.device_type in HID_PROFILE_ARTWORK
         || String(remote.device_type).startsWith("IR_");
       if (isPageRemote) {
         // HID and IR pages are resent from the saved Main-page data with only the icon changed.
         result = await this._hass.callWS({ ...request, type: `${DOMAIN}/studio/remote/update_page_icon`, icon });
-        remote.icon = icon;
+        // "Original" gives back the icon the remote had; the answer says which one that was.
+        remote.icon = result?.icon ?? icon;
+        remote.icon_code = result?.icon_code ?? remote.icon_code;
         // null lets the HID/IR artwork helpers fall back to the type's own picture (icon 0).
-        remote.artwork_id = (this._entry()?.icon_artwork || {})[icon] ?? null;
+        remote.artwork_id = (this._entry()?.icon_artwork || {})[remote.icon] ?? null;
         this._appearanceDraftsByRemote.delete(scope);
         return result?.warning;
       }
@@ -1158,10 +1170,16 @@ class SwitchBotUrcPanel extends HTMLElement {
     const firmwareIcons = isNative || isMatter || isHid || isIr;
     const canChooseIcon = true;
     const iconChoices = firmwareIcons ? ["device", ...choices] : choices;
-    const iconLabel = (name) => name === "device" ? "Type default" : (APP_ICON_LABELS[name] || name);
+    const pageRemote = isHid || isIr;
+    const iconEditable = remote.icon_editable !== false;
+    const iconLabel = (name) => name === "device" ? (pageRemote ? "Original" : "Type default")
+      : (APP_ICON_LABELS[name] || name);
+    // "Type default" / "Original" shows the picture it gives back, not a placeholder.
+    const defaultSrc = remote.default_artwork_id == null ? ""
+      : `/switchbot_urc_static/artwork/profile-${Number(remote.default_artwork_id).toString(16).padStart(2, "0")}.png`;
     const iconTile = (name) => {
       if (!firmwareIcons) return this._iconImage(name);
-      const src = this._firmwareIconSrc(name);
+      const src = name === "device" ? defaultSrc : this._firmwareIconSrc(name);
       return src ? `<img class="ic-art" src="${src}" alt="" aria-hidden="true">`
         : `<span class="ic-art ic-art-default" aria-hidden="true">↺</span>`;
     };
@@ -1200,7 +1218,11 @@ class SwitchBotUrcPanel extends HTMLElement {
           value="${escapeHtml(draft?.name ?? remote.name)}"></label>
         ${isMatter ? this._renderMatterCaptionFields(matterCaptions, remote.matter.max_bytes, remote.matter.captions) : ""}
         ${isMatter ? this._renderMatterInterval(draft?.interval ?? remote.matter.min_interval, remote.matter.interval_range) : ""}
-        ${canChooseIcon ? `<span class="appearance-field-label">${firmwareIcons ? "Illustration" : "Device icon"}</span>
+        ${canChooseIcon && !iconEditable ? `<span class="appearance-field-label">Illustration</span>
+        <p class="appearance-note">This remote was imported from the SwitchBot account, so Studio does not hold
+          the pages that are on it and will not rewrite them. To choose its icon, install it again with
+          <b>Add a remote</b> and <b>Replace an existing copy</b>.</p>` : ""}
+        ${canChooseIcon && iconEditable ? `<span class="appearance-field-label">${firmwareIcons ? "Illustration" : "Device icon"}</span>
         ${firmwareIcons ? `<p class="appearance-note">${isMatter
           ? "The remote list shows the picture this icon selects."
           : isIr ? "A chosen icon overrides the picture that the IR type selects. Confirmed on real HID and IR remotes."
@@ -1852,11 +1874,92 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._deviceTable = { loading: true };
     this._render();
     try {
-      this._deviceTable = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/table`,
+      const table = await this._hass.callWS({ type: `${DOMAIN}/studio/physical/table`,
         entry_id: this._entryId });
+      // `order` is the order the list is being arranged into; it starts as the remote's own.
+      this._deviceTable = { ...table, open: true, order: (table.rows || []).map((row) => row.slot) };
       this._sources = null;
     } catch (error) { this._deviceTable = { error: error?.message || String(error) }; }
     this._render();
+  }
+
+  _orderChanged(table = this._deviceTable) {
+    const rows = table?.rows || [];
+    return Boolean(table?.order && rows.some((row, index) => table.order[index] !== row.slot));
+  }
+
+  // New order after `slot` is dropped next to `targetSlot` (after it when `placeAfter`).
+  _reorderSlots(order, slot, targetSlot, placeAfter) {
+    if (slot === targetSlot || !order.includes(slot) || !order.includes(targetSlot)) return order;
+    const rest = order.filter((item) => item !== slot);
+    rest.splice(rest.indexOf(targetSlot) + (placeAfter ? 1 : 0), 0, slot);
+    return rest;
+  }
+
+  // Drag a row by its handle. Pointer events, so it works with a mouse and with touch. The rows are
+  // moved in the DOM while dragging (re-rendering would drop the pointer) and the list is drawn
+  // again once the handle is released.
+  _startRowDrag(event, slot) {
+    const table = this._deviceTable;
+    const handle = event.currentTarget;
+    const body = handle.closest("tbody");
+    const row = handle.closest("tr");
+    if (!table?.order || this._physicalBusy || !body || !row) return;
+    event.preventDefault();
+    handle.setPointerCapture?.(event.pointerId);
+    row.classList.add("dragging");
+    const move = (moveEvent) => {
+      const under = this.shadowRoot.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
+        ?.closest?.("tr[data-row-slot]");
+      if (!under || under === row || under.parentElement !== body) return;
+      const box = under.getBoundingClientRect();
+      const after = moveEvent.clientY > box.top + box.height / 2;
+      body.insertBefore(row, after ? under.nextSibling : under);
+      table.order = this._reorderSlots(table.order, slot, Number(under.dataset.rowSlot), after);
+    };
+    const finish = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      row.classList.remove("dragging");
+      this._render();
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+  }
+
+  _moveTableRow(slot, direction) {
+    const table = this._deviceTable;
+    if (!table?.order || this._physicalBusy) return;
+    const index = table.order.indexOf(slot);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= table.order.length) return;
+    [table.order[index], table.order[target]] = [table.order[target], table.order[index]];
+    this._render();
+  }
+
+  async _applyTableOrder() {
+    const table = this._deviceTable;
+    if (!this._orderChanged(table) || this._physicalBusy) return;
+    if (!confirm("Change the order of the tiles in the Universal Remote's list? The remote applies it "
+      + "as a whole; the tiles themselves are not touched.")) return;
+    this._physicalBusy = true;
+    this._render();
+    try {
+      await this._hass.callWS({ type: `${DOMAIN}/studio/physical/reorder`, entry_id: this._entryId,
+        order: table.order,
+        expected: table.rows.map((row) => ({ slot: row.slot, device_type: parseInt(row.device_type, 16),
+          control_type: row.control_type, device_id: row.device_id })) });
+      this._notify("The order of the tiles was changed on the remote", "success");
+    } catch (error) {
+      this._notify(error?.message || String(error), "error");
+    } finally {
+      this._physicalBusy = false;
+      this._sources = null;
+      await this._load();
+      await this._readDeviceTable();
+    }
   }
 
   async _deleteTableRow(data) {
@@ -1901,23 +2004,43 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<details class="device-table" open><summary>Installed on the remote</summary>
         ${this._feedback(table.error, "error", "Device table")}</details>`;
     }
-    const rows = (table.rows || []).map((row) => `<tr>
-        <td>${row.slot}</td><td>${escapeHtml(row.kind)}</td>
+    const bySlot = new Map((table.rows || []).map((row) => [row.slot, row]));
+    const order = (table.order || (table.rows || []).map((row) => row.slot)).filter((slot) => bySlot.has(slot));
+    const dirty = this._orderChanged(table);
+    const busy = this._physicalBusy ? "disabled" : "";
+    const rows = order.map((slot, position) => {
+      const row = bySlot.get(slot);
+      return `<tr data-row-slot="${row.slot}">
+        <td class="drag-handle" data-drag-handle="${row.slot}" title="Drag to move" aria-hidden="true">⠿</td>
+        <td>${position + 1}</td><td>${row.slot}</td>
+        <td>${escapeHtml(row.name || "")}</td><td>${escapeHtml(row.kind)}</td>
         <td>${escapeHtml(row.device_type)}</td><td>${escapeHtml(row.target_mac)}</td>
-        <td><button class="secondary compact destructive" type="button" data-delete-row="${row.slot}"
-          data-row-type="${escapeHtml(row.device_type)}" data-row-control="${row.control_type}"
-          data-row-id="${escapeHtml(row.device_id)}" ${this._physicalBusy ? "disabled" : ""}
-          title="Delete this row from the remote, even if Studio has no record of it">Delete</button></td>
-      </tr>`).join("");
+        <td class="row-actions">
+          <button class="secondary compact" type="button" data-move-row="${row.slot}" data-move-dir="-1"
+            ${busy || position === 0 ? "disabled" : ""} aria-label="Move up" title="Move up in the remote's list">▲</button>
+          <button class="secondary compact" type="button" data-move-row="${row.slot}" data-move-dir="1"
+            ${busy || position === order.length - 1 ? "disabled" : ""} aria-label="Move down" title="Move down in the remote's list">▼</button>
+          <button class="secondary compact destructive" type="button" data-delete-row="${row.slot}"
+            data-row-type="${escapeHtml(row.device_type)}" data-row-control="${row.control_type}"
+            data-row-id="${escapeHtml(row.device_id)}" ${busy || dirty ? "disabled" : ""}
+            title="Delete this row from the remote, even if Studio has no record of it">Delete</button></td>
+      </tr>`;
+    }).join("");
     const warnings = (table.warnings || []).map(
       (text) => this._feedback(text, "warning", "Device table")).join("");
-    return `<details class="device-table">
+    return `<details class="device-table" ${table.open ? "open" : ""}>
       <summary>Installed on the remote (${(table.rows || []).length}, next free slot ${table.next_free_slot ?? "none"})</summary>
-      <table><thead><tr><th>Slot</th><th>Kind</th><th>Type</th><th>Target</th><th></th></tr></thead>
+      <table><thead><tr><th></th><th>List</th><th>Slot</th><th>Name</th><th>Kind</th><th>Type</th><th>Target</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>
+      ${dirty ? `<div class="key-actions">
+        <button class="primary compact" id="applyOrder" ${busy}>Apply order</button>
+        <button class="secondary compact" id="resetOrder" ${busy}>Reset</button>
+        <span class="small">The tiles change places in the remote's own list; nothing else about them changes.</span>
+      </div>` : ""}
       ${warnings}
-      <p class="small">A row is identified by its slot, not by its target address. Delete removes the
-        row from the remote itself, also when Studio has no record of it; the slots after it move up.</p>
+      <p class="small">A row is identified by its slot, not by its target address. ▲ and ▼ arrange the
+        remote's list and <b>Apply order</b> sends it. Delete removes the row from the remote itself, also
+        when Studio has no record of it; the slots after it move up.</p>
     </details>`;
   }
 
@@ -2158,17 +2281,16 @@ class SwitchBotUrcPanel extends HTMLElement {
         value="${escapeHtml(value)}" spellcheck="false"
         placeholder="Caption for ${letter}"><small>${escapeHtml(this._captionCounter(value, maxBytes, shown[index]))}</small></label>`;
     }).join("")}
-      <p class="small">Captions are written to the remote's screen. Each fits ${maxBytes} bytes;
-      Cyrillic letters take two bytes each. A caption with a Home Assistant template, such as
-      <code>Battery {{ states('sensor.vacuum_battery') }}%</code>, is kept up to date.</p></div>`;
+      <p class="small">These words show on the remote's screen. Each fits ${maxBytes} bytes (Russian letters
+      count double). To show a live value from Home Assistant, put it in double curly braces, like
+      <code>Battery {{ states('sensor.vacuum_battery') }}%</code>.</p></div>`;
   }
 
   _renderMatterInterval(value, range = [0, 3600]) {
-    return `<label class="matter-interval">Update a templated caption at most every
+    return `<label class="matter-interval"><span>Refresh live captions at most with interval</span>
       <input type="number" data-matter-interval="1" min="${range[0]}" max="${range[1]}" step="1"
-        value="${escapeHtml(String(value ?? 60))}"> seconds
-      <small>Each update pauses the bridge for a few seconds and rewrites the remote's flash. 0 means
-        as soon as the previous update is done; how often is up to you.</small></label>`;
+        value="${escapeHtml(String(value ?? 60))}"><span>seconds</span>
+      <small>Every refresh briefly pauses the bridge, so a longer time is gentler. 0 = as often as possible.</small></label>`;
   }
 
   _renderAddRemote() {
@@ -2273,6 +2395,11 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderAddIconPicker(add) {
     const picked = add.icon || "device";
     const names = ["device", ...(this._entry()?.icons || [])];
+    // The picture "Type default" gives back for what is being added, where it is known.
+    const defaultSrc = add.kind === "native"
+      ? this._nativeArtworkSrc(this._nativeProfile(add.nativeType || add.deviceType))
+      : add.kind === "hid" ? this._hidArtworkSrc(add.deviceType)
+        : add.kind === "matter" ? MATTER_ARTWORK : "";
     const note = add.kind === "catalog" || add.kind === "cloud"
       ? "Type default keeps the picture of the IR model. A chosen icon replaces it."
       : add.kind === "matter"
@@ -2282,7 +2409,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       <span class="appearance-field-label">Illustration</span>
       <p class="appearance-note">${escapeHtml(note)}</p>
       <div class="appearance-icon-grid">${names.map((name) => {
-        const src = this._firmwareIconSrc(name);
+        const src = name === "device" ? defaultSrc : this._firmwareIconSrc(name);
         const label = name === "device" ? "Type default" : (APP_ICON_LABELS[name] || name);
         return `<button class="appearance-icon-choice${name === picked ? " selected" : ""}" type="button"
           data-add-icon="${escapeHtml(name)}" aria-label="${escapeHtml(label)}" aria-pressed="${name === picked}">${
@@ -3318,6 +3445,21 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     });
     root.getElementById("readDeviceTable")?.addEventListener("click", () => this._readDeviceTable());
+    root.querySelector(".device-table")?.addEventListener("toggle", (event) => {
+      if (this._deviceTable && !this._deviceTable.loading) this._deviceTable.open = event.target.open;
+    });
+    root.querySelectorAll("[data-drag-handle]").forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => this._startRowDrag(event, Number(handle.dataset.dragHandle)));
+    });
+    root.querySelectorAll("[data-move-row]").forEach((button) => {
+      button.addEventListener("click", () =>
+        this._moveTableRow(Number(button.dataset.moveRow), Number(button.dataset.moveDir)));
+    });
+    root.getElementById("applyOrder")?.addEventListener("click", () => this._applyTableOrder());
+    root.getElementById("resetOrder")?.addEventListener("click", () => {
+      if (this._deviceTable) { this._deviceTable.order = (this._deviceTable.rows || []).map((row) => row.slot); }
+      this._render();
+    });
     root.querySelectorAll("[data-delete-row]").forEach((button) => {
       button.addEventListener("click", () => this._deleteTableRow(button.dataset));
     });
@@ -3899,9 +4041,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       .matter-captions label small{font-weight:500;font-size:11px;font-variant-numeric:tabular-nums}
       .matter-captions>.small{grid-column:1/-1;margin:0}
       .appearance-editor .matter-captions{margin:0}
-      .matter-interval{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;font-weight:700}
+      .device-table .drag-handle{cursor:grab;touch-action:none;user-select:none;text-align:center;width:24px;color:var(--secondary-text-color,#68727d)}
+      .device-table tr.dragging{opacity:.6;background:color-mix(in srgb,var(--primary-color,#03a9f4) 12%,transparent)}
+      .device-table .row-actions{white-space:nowrap}
+      .matter-interval{display:flex;flex-wrap:wrap;align-items:center;gap:8px;white-space:nowrap;font-size:12px;font-weight:700}
       .matter-interval input{width:84px;height:36px;padding:0 10px;border:1px solid var(--divider-color,#dfe3e8);border-radius:10px;background:var(--card-background-color,#fff);color:inherit;font:inherit}
-      .matter-interval small{flex-basis:100%;font-weight:500;font-size:11px;color:var(--secondary-text-color,#68727d)}
+      .matter-interval small{flex-basis:100%;white-space:normal;font-weight:500;font-size:11px;color:var(--secondary-text-color,#68727d)}
       /* The three read-only panels are a group of cards, not stray rows of text. */
       details.device-table{margin:8px 0;padding:12px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;background:var(--card-background-color,#fff)}
       details.device-table>summary{font-size:13px;font-weight:600;color:var(--primary-text-color,#17202a)}

@@ -100,9 +100,12 @@ and had to be withdrawn.
 | `0F 63 04` | list scenes |
 | `0F 41 02 …` | push AC state to the screen |
 
-`0F 62 0A` sends a complete order table `[count] + count × [remoteIndex][devType][idKind][id11]`.
-It may answer `01` while changing the ordering or visibility of existing remotes, and it plays no
-part in a normal create. Do not send a one-entry table.
+`0F 62 0A` is the official `sortDevice`: `0F 62 0A <length16 BE> <crc16-MODBUS BE> <count> <records>`
+with one 14-byte record per installed remote, `[new slot][device type][id kind][id11]`. The id kind
+is `1` for IR (the DSP finds the row by its 11-byte id) and `0` for everything else (by the six-byte
+address). ARM `0x3930` requires the count to equal the number of installed remotes and `0x58ac`
+moves each matching entry (matched by its full id) to its new slot, so send every remote exactly
+once with new slots forming 0..n-1. It plays no part in a normal create. Do not send a partial list.
 
 ## Scenes on WoRWS V48
 

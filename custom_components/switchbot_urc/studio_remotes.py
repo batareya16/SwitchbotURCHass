@@ -29,7 +29,8 @@ from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
 from .inventory import stable_id_for_local
 from .studio_catalog import cloud_client
-from .studio_physical import cached_device_table, read_device_table, resolve, store_device_table
+from .studio_physical import (
+    cached_device_table, local_identity_bytes, read_device_table, resolve, store_device_table)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -277,18 +278,6 @@ async def _delete_remote(hass, connection, msg):
         connection.send_error(msg["id"], "remote_delete_failed", str(err))
 
 
-def _local_identity_bytes(remote: dict[str, Any]) -> bytes | None:
-    """The table id a saved remote answers to, or None when it carries no usable address."""
-    identity = remote.get("physical_device_id") or remote.get("device_id")
-    if not identity:
-        return None
-    try:
-        text = str(identity)
-        return c.id_to_bytes(text) if len(text) in (12, 17) else bytes.fromhex(text)
-    except ValueError:
-        return None
-
-
 @websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/physical/delete_row",
@@ -343,7 +332,7 @@ async def _delete_table_row(hass, connection, msg):
         # table, so the slots after it moved: Refresh puts the remaining records right.
         forgotten = 0
         for item in entry.options.get("remotes", []):
-            if (isinstance(item, dict) and _local_identity_bytes(item) == wanted[3]
+            if (isinstance(item, dict) and local_identity_bytes(item) == wanted[3]
                     and item.get("index") in (None, slot)):
                 forgotten += 1 + _forget_remote(
                     hass, entry, str(item.get("remote_id") or item.get("device_id") or ""))
@@ -352,6 +341,87 @@ async def _delete_table_row(hass, connection, msg):
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio table row delete failed")
         connection.send_error(msg["id"], "table_row_delete_failed", str(err))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/physical/reorder",
+    vol.Required("entry_id"): str,
+    # Current slots, listed in the order they should have afterwards.
+    vol.Required("order"): [int],
+    # The table the panel showed; nothing is sent if the remote no longer holds exactly this.
+    vol.Required("expected"): [vol.Schema({
+        vol.Required("slot"): int, vol.Required("device_type"): int,
+        vol.Required("control_type"): int, vol.Required("device_id"): str,
+    })],
+})
+@websocket_api.async_response
+async def ws_reorder_table(hass, connection, msg):
+    async with remote_management_lock(hass):
+        await _reorder_table(hass, connection, msg)
+
+
+async def _reorder_table(hass, connection, msg):
+    """Set the order of the remote's tiles with the official `sortDevice` command (`0F 62 0A`).
+
+    The order is the whole device table, so the panel's view is checked against the remote first,
+    the command is only sent for a clean permutation, and the table is read back afterwards.
+    """
+    try:
+        entry = hass.config_entries.async_get_entry(msg["entry_id"])
+        if entry is None or entry.domain != DOMAIN:
+            raise ValueError("Integration not found")
+        client = _client(hass, entry)
+        table = await read_device_table(hass, entry, client)
+        snapshot = [tuple(row[:4]) for row in table]
+        shown = sorted((item["slot"], item["device_type"], item["control_type"],
+                        bytes.fromhex(item["device_id"])) for item in msg["expected"])
+        if sorted(snapshot) != shown:
+            raise ValueError("The remote changed since the table was read; read it again")
+        order = list(msg["order"])
+        if sorted(order) != sorted(row[0] for row in snapshot):
+            raise ValueError("The new order must list every installed remote exactly once")
+        if order == sorted(order):
+            raise ValueError("The order is unchanged")
+        by_slot = {row[0]: row for row in snapshot}
+        # The DSP finds a native, HID or text row by its six-byte address, so two rows that share
+        # one address cannot be told apart and their order cannot be set.
+        macs = [by_slot[slot][3][:6] for slot in order if by_slot[slot][2] != c.CTRL_IR]
+        if len(set(macs)) != len(macs):
+            raise ValueError(
+                "Two remotes share one Bluetooth address, so the remote cannot tell them apart "
+                "when ordering; the order of this table cannot be set")
+        rows = [(position, by_slot[slot][1], by_slot[slot][2], by_slot[slot][3])
+                for position, slot in enumerate(order)]
+        command = c.build_sort_devices(rows)
+
+        def _unchanged(raw: bytes) -> bool:
+            return [tuple(row[:4]) for row in c.parse_added_devices(raw)] == snapshot
+
+        _before, response = await client.send_command_with_preflight_query(
+            command, subcommand=0x07, preflight_check=_unchanged,
+        )
+        if response and response[0] != RESP_OK:
+            raise ValueError(f"the remote rejected the new order with 0x{response[0]:02X}")
+        after = await read_device_table(hass, entry, client)
+        wanted = {row[3]: row[0] for row in rows}
+        if {row[3]: row[0] for row in after} != wanted:
+            raise ValueError(
+                "The remote did not take the new order; its table now reads: "
+                + ", ".join(f"{row[0]}:0x{row[1]:02X}/{row[2]}" for row in after))
+        # Saved records follow their tile to its new slot.
+        options = deepcopy(dict(entry.options))
+        for item in options.get("remotes", []):
+            identity = local_identity_bytes(item) if isinstance(item, dict) else None
+            if identity in wanted:
+                item["index"] = wanted[identity]
+        hass.config_entries.async_update_entry(entry, options=options)
+        connection.send_result(msg["id"], {"rows": [
+            {"slot": row[0], "device_type": row[1], "control_type": row[2], "device_id": row[3].hex()}
+            for row in sorted(after)]})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio reorder failed")
+        connection.send_error(msg["id"], "reorder_failed", str(err))
 
 
 @websocket_api.require_admin
@@ -697,6 +767,7 @@ async def ws_remote_sources(hass, connection, msg):
 def register(hass) -> None:
     websocket_api.async_register_command(hass, ws_remote_delete)
     websocket_api.async_register_command(hass, ws_delete_table_row)
+    websocket_api.async_register_command(hass, ws_reorder_table)
     websocket_api.async_register_command(hass, ws_remote_create)
     websocket_api.async_register_command(hass, ws_remote_install_ir)
     websocket_api.async_register_command(hass, ws_remote_sources)

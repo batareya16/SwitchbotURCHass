@@ -752,11 +752,22 @@ async def ws_page_icon_update(hass, connection, msg):
             raise ValueError(
                 "Studio has no saved pages for this remote, so it cannot rewrite them safely; "
                 "refresh the remote first")
+        if not physical_layout.page_icon_editable(managed):
+            raise ValueError(
+                "This remote was imported from the SwitchBot account, so Studio does not hold the "
+                "pages that are on the remote and would replace them with its own copy. Install it "
+                "again with Add a remote and Replace an existing copy to choose its icon.")
         slot = int(item["index"])
         type_bytes = c.device_type_bytes(int(item["device_type_byte"]))
         control_offset = 1 + len(type_bytes)
         id_offset = control_offset + 3
-        icon_code = c.ICON[msg["icon"].lower()]
+        # "device" gives back the icon the remote had before Studio first changed it.
+        original = managed.get("icon_code_original")
+        if original is None:
+            first = bytes.fromhex(saved[0])[7:]
+            original = first[control_offset + 2] if len(first) > control_offset + 2 else 0
+        icon_code = int(original) if msg["icon"].lower() == "device" else c.ICON[msg["icon"].lower()]
+        icon_name = next((name for name, value in c.ICON.items() if value == icon_code), "device")
         packets = []
         for value in saved:
             packet = bytes.fromhex(value)
@@ -788,12 +799,12 @@ async def ws_page_icon_update(hass, connection, msg):
         for remote in remotes:
             if str(remote.get("remote_id") or remote.get("device_id") or "") == identity:
                 remote.update({
-                    "icon": msg["icon"], "icon_code": icon_code,
+                    "icon": icon_name, "icon_code": icon_code, "icon_code_original": int(original),
                     "physical_packets": [packet.hex() for packet in packets],
                 })
                 break
         _save_remotes(hass, entry, remotes)
-        connection.send_result(msg["id"], {"slot": slot, "icon": msg["icon"]})
+        connection.send_result(msg["id"], {"slot": slot, "icon": icon_name, "icon_code": icon_code})
     except Exception as err:  # noqa: BLE001 - the panel displays device and transport failures
         _LOGGER.exception("Remote Studio page icon update failed")
         connection.send_error(msg["id"], "page_icon_update_failed", str(err))

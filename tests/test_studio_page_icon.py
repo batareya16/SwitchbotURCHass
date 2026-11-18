@@ -121,3 +121,46 @@ def test_ir_install_passes_the_chosen_icon_to_the_profile_and_keeps_its_own_othe
     errors, kwargs, record = run_install()
     assert errors == {} and "icon" not in kwargs
     assert record["icon_code"] == 4  # the profile's own icon
+
+
+def test_imported_ir_pages_are_never_rewritten_to_change_an_icon(studio):
+    hass, entry, connection, out, client = setup(studio)
+    entry.options["remotes"][0]["imported_from_cloud"] = True
+    update(studio, hass, connection, "washer")
+    assert out["errors"] and "imported from the SwitchBot account" in out["errors"][0][1]
+    assert client.sent == []
+
+
+def test_device_gives_back_the_icon_the_remote_had_before_studio_changed_it(studio):
+    packets = [commands.rewrite_native_page_icon(hid_page(), 10).hex()]  # the remote started with icon 10
+    hass, entry, connection, out, client = setup(studio, packets=packets)
+    update(studio, hass, connection, "washer")
+    saved = entry.options["remotes"][0]
+    assert saved["icon_code"] == 14 and saved["icon_code_original"] == 10
+    update(studio, hass, connection, "device")
+    assert out["errors"] == []
+    assert client.sent[1] == commands.rewrite_native_page_icon(hid_page(), 10)
+    saved = entry.options["remotes"][0]
+    assert (saved["icon"], saved["icon_code"], saved["icon_code_original"]) == ("tv", 10, 10)
+    assert out["results"][-1]["icon_code"] == 10
+
+
+def test_serialised_remotes_say_which_picture_type_default_or_original_gives_back(studio, monkeypatch):
+    import types
+
+    # An HID remote the app made with icon 10 (tv) and Studio then changed to the washer.
+    changed = commands.rewrite_native_page_icon(hid_page(), 14).hex()
+    hid = {"index": 2, "name": "HID", "device_type": "UNIVERSAL_BLE", "device_id": DEVICE_ID,
+           "remote_id": "hid1", "icon": "washer", "buttons": [], "physical_packets": [changed],
+           "icon_code_original": 10}
+    matter = {"index": 3, "name": "Text", "device_type": "MATTER_TEXT", "device_id": "4d5400000001",
+              "remote_id": "mt1", "buttons": [], "matter_captions": ["a", "b", "c", "d"], "icon_code": 14}
+    hass, entry, _, _ = make(studio, FakeClient([]), [hid, matter])
+    monkeypatch.setattr(studio, "_repair_identities", lambda *_: None)
+    monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
+        async_get_entity_id=lambda *_: None))
+    rows = {row["remote_id"]: row for row in studio._serialize_entry(hass, entry)["remotes"]}
+    # "Original" is the remembered icon 10 (TV, picture 0x24), not the washer it shows now
+    assert rows["hid1"]["icon"] == "washer" and rows["hid1"]["default_artwork_id"] == 0x24
+    # the text remote's "Type default" is the firmware's own text-remote picture
+    assert rows["mt1"]["default_artwork_id"] == 0x1B

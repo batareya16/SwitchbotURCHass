@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.53.1
+
+- Reorder the tiles in the Universal Remote's own list: under **Installed on the remote**, move rows with ▲ and ▼ and choose **Apply order**. Studio sends the remote's `sortDevice` command (`0F 62 0A`) with the whole table, checks first that the remote still holds exactly the table you saw, refuses a list that is not a clean permutation or whose rows share one Bluetooth address, reads the table back afterwards and moves its saved records to the new slots. The rows now also show the name Studio knows them by. Rows can also be dragged by their handle (⠿), with a mouse or by touch.
+- Fix choosing an icon for an IR remote that was imported from the SwitchBot account. Studio rewrote the pages it had rebuilt from the account instead of the ones the app had put on the remote, which could stop the remote from sending and lose its on-screen icons. Studio now refuses to rewrite such a remote and says how to change its icon (install it again with **Replace an existing copy**).
+- Fix **Original** (formerly **Type default**) on HID and IR remotes: it now gives back the icon the remote had before Studio first changed it instead of writing icon 0.
+- The **Type default** / **Original** tile now shows the picture it gives back (the device type's own picture, or the picture of the icon the remote had before Studio changed it) instead of a placeholder arrow, in the appearance editor and in the Add dialog.
+- Fix Save staying disabled after switching from a custom icon back to the default: the chosen icon is compared with the icon byte the remote carries, not with a name.
+- The Bridge add-on is unchanged in this release.
+
 ## 0.53.0
 
 - Choose an icon for every kind of remote in Remote Studio: native, text, HID and IR remotes now offer the firmware's own pictures (washing machine, bathtub, fridge and the rest) and **Type default** to give the picture back to the device type. A nonzero icon replaces the type's picture on the remote's list. Confirmed on a real Universal Remote for native, text, HID and IR remotes.

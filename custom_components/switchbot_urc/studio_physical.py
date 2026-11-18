@@ -389,6 +389,9 @@ async def ws_physical_table(hass, connection, msg):
             "kind": kinds.get(control_type, str(control_type)),
             "device_id": device_id.hex(),
             "target_mac": ":".join(f"{byte:02X}" for byte in reversed(address)),
+            # The name Studio knows this row by, so the order list can say which remote is which.
+            "name": next((str(item.get("name") or "") for item in entry.options.get("remotes", [])
+                          if isinstance(item, dict) and local_identity_bytes(item) == device_id), ""),
         })
     warnings = [
         "Slots " + ", ".join(str(slot) for slot in slots)
@@ -621,6 +624,18 @@ def register(hass):
     websocket_api.async_register_command(hass, ws_physical_import)
     websocket_api.async_register_command(hass, ws_physical_table)
     websocket_api.async_register_command(hass, ws_rename_menu_item)
+
+
+def local_identity_bytes(remote: dict[str, Any]) -> bytes | None:
+    """The table id a saved remote answers to, or None when it carries no usable address."""
+    identity = remote.get("physical_device_id") or remote.get("device_id")
+    if not identity:
+        return None
+    try:
+        text = str(identity)
+        return c.id_to_bytes(text) if len(text) in (12, 17) else bytes.fromhex(text)
+    except ValueError:
+        return None
 
 
 def _adopt_native_remotes(table, remotes, catalogue) -> int:

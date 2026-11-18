@@ -1124,6 +1124,36 @@ def build_delete(
     )
 
 
+def sort_id_kind(control_type: int) -> int:
+    """How V48 finds a row for the order command: 1 = by the 11-byte id (IR), 0 = by the 6-byte MAC."""
+    return 1 if control_type == CTRL_IR else 0
+
+
+def build_sort_devices(rows: list[tuple[int, int, int, bytes]]) -> bytes:
+    """The official ``sortDevice`` command, `0F 62 0A`: the complete order of the device table.
+
+    ``rows`` is one ``(new_slot, device_type, control_type, id11)`` per installed remote, every row
+    exactly once, with the new slots forming 0..n-1. ARM ``0x3930`` checks the length and CRC and that
+    the count equals the number of installed remotes, then ``0x58ac`` moves each matching entry
+    (matched by its full id) to its new slot; DSP ``0x20020d94`` sets the same slot in its rows
+    (matched by the six-byte MAC, or by the id for IR). A partial or repeated list would leave
+    duplicates, so it is refused here.
+    """
+    count = len(rows)
+    if not 2 <= count <= MAX_REMOTE_SLOTS:
+        raise ValueError("a reorder needs between 2 and 25 remotes")
+    if sorted(row[0] for row in rows) != list(range(count)):
+        raise ValueError("the new slots must be each of 0..n-1 exactly once")
+    if len({bytes(row[3]) for row in rows}) != count:
+        raise ValueError("two remotes carry the same id, so their order cannot be set")
+    body = bytearray([count])
+    for slot, device_type, control_type, identifier in rows:
+        if len(identifier) != 11 or not 0 <= device_type <= 0xFF:
+            raise ValueError("each remote needs a one-byte device type and an 11-byte id")
+        body += bytes([slot, device_type, sort_id_kind(control_type)]) + bytes(identifier)
+    return b"\x0f\x62\x0a" + s16(len(body)) + s16(crc16_modbus(bytes(body))) + bytes(body)
+
+
 def build_rename(
     *, remote_index: int, device_type: int | bytes, control_type: int,
     device_id: bytes, name: str,

@@ -807,7 +807,7 @@ test('native and text remotes offer firmware illustrations as icons, HID and IR 
     const page = render({device_type});
     assert.match(page, /data-pick-icon="washer"/);
     assert.match(page, /profile-28\.png/);
-    assert.match(page, /Type default/);
+    assert.match(page, /Original/);
   }
   assert.match(render({device_type: 'IR_24'}), /Confirmed on real HID and IR remotes/);
 });
@@ -902,6 +902,112 @@ test('a templated caption has no byte limit, shows what is on the remote and sav
   assert.deepEqual(sent[0].captions, remote.matter.fields);  // the template travels, not its text
   assert.equal(remote.matter.min_interval, 120);
   assert.equal(remote.matter.captions[1], 'Battery 80%');  // unchanged until it is rendered again
+});
+
+test('Type default counts as a change from any nonzero icon, compared by wire code', () => {
+  const instance = panel();
+  instance._entry = () => ({icon_codes: {device: 0, tv: 10, washer: 14}});
+  instance._draftScope = () => 'r';
+  const check = (remote, icon) => {
+    instance._remote = () => remote;
+    instance._appearanceDraftsByRemote = new Map([['r', {name: remote.name, icon}]]);
+    return instance._hasAppearanceChanges();
+  };
+  // The name can be a placeholder; the byte is what the remote carries.
+  assert.equal(check({remote_id: 'r', name: 'TV', icon: 'device', icon_code: 10}, 'device'), true);
+  assert.equal(check({remote_id: 'r', name: 'TV', icon: 'tv', icon_code: 10}, 'tv'), false);
+  assert.equal(check({remote_id: 'r', name: 'TV', icon: 'washer', icon_code: 14}, 'device'), true);
+  assert.equal(check({remote_id: 'r', name: 'TV', icon: 'device', icon_code: 0}, 'device'), false);
+});
+
+test('an IR remote imported from the account does not offer an icon it cannot write safely', () => {
+  const instance = panel();
+  instance._entry = () => ({icons: ['light', 'washer'], icon_artwork: {washer: 0x28}});
+  instance._draftScope = () => 'r';
+  instance._appearanceDraftsByRemote = new Map();
+  instance._iconPickerFor = 'r';
+  instance._physical = null;
+  instance._nativeProfiles = [];
+  const html = instance._renderAppearance({remote_id: 'r', name: 'TV', icon: 'tv', device_type: 'IR_2', icon_editable: false});
+  assert.doesNotMatch(html, /data-pick-icon/);
+  assert.match(html, /imported from the SwitchBot account/);
+  const own = instance._renderAppearance({remote_id: 'r', name: 'TV', icon: 'tv', device_type: 'IR_2', icon_editable: true});
+  assert.match(own, /data-pick-icon="washer"/);
+});
+
+test('Type default and Original show the picture they give back', () => {
+  const instance = panel();
+  instance._entry = () => ({icons: ['light', 'washer'], icon_artwork: {light: 0x0c, washer: 0x28}});
+  instance._draftScope = () => 'r';
+  instance._appearanceDraftsByRemote = new Map();
+  instance._iconPickerFor = 'r';
+  instance._physical = null;
+  instance._nativeProfiles = [];
+  const render = (remote) => instance._renderAppearance({remote_id: 'r', name: 'R', icon: 'washer', ...remote});
+  // native: the picture the device type has; HID/IR: the picture of the remembered original icon
+  const native = render({device_type: 'STRIP', can_test_native_icon: true, default_artwork_id: 0x16});
+  assert.match(native, /data-pick-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-16\.png"/);
+  const hid = render({device_type: 'APPLE_TV', default_artwork_id: 0x0c});
+  assert.match(hid, /data-pick-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-0c\.png"/);
+  // nothing known: the placeholder stays
+  const unknown = render({device_type: 'IR_24'});
+  assert.match(unknown, /data-pick-icon="device"[^>]*>\s*<span class="ic-art ic-art-default"/);
+  // Add dialog: native type default and the text remote's own picture
+  instance._sources = {native_options: {screen_profiles: []}};
+  const matter = instance._renderAddIconPicker({kind: 'matter', icon: 'device'});
+  assert.match(matter, /data-add-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-1b\.png"/);
+});
+
+test('tiles can be moved in the installed table and the order is sent as a whole', async () => {
+  const instance = panel();
+  const rows = [
+    {slot: 0, kind: 'ir', device_type: '0x18', control_type: 1, device_id: 'aa', target_mac: 'x', name: 'TV'},
+    {slot: 1, kind: 'native', device_type: '0x72', control_type: 0, device_id: 'bb', target_mac: 'y', name: 'Strip'},
+    {slot: 2, kind: 'hid', device_type: '0xF2', control_type: 4, device_id: 'cc', target_mac: 'z', name: ''},
+  ];
+  instance._physicalBusy = false;
+  instance._render = () => {};
+  instance._deviceTable = {rows, order: [0, 1, 2], open: true};
+  assert.equal(instance._orderChanged(), false);
+  assert.doesNotMatch(instance._renderDeviceTable(), /id="applyOrder"/);
+
+  instance._moveTableRow(2, -1);          // the HID remote moves above the strip
+  instance._moveTableRow(0, -1);          // the first tile cannot move up: ignored
+  assert.deepEqual(instance._deviceTable.order, [0, 2, 1]);
+  const html = instance._renderDeviceTable();
+  assert.match(html, /id="applyOrder"/);
+  assert.match(html, /data-delete-row="1"[^>]*disabled/);  // no delete while an order is pending
+  assert.match(html, /<td>Strip<\/td>/);
+
+  const sent = [];
+  instance._entryId = 'entry';
+  instance._hass = {callWS: async (msg) => { sent.push(msg); return {rows}; }};
+  instance._load = async () => {};
+  instance._notify = () => {};
+  context.confirm = () => false;
+  await instance._applyTableOrder();
+  assert.equal(sent.length, 0);           // not confirmed: nothing is sent
+  context.confirm = () => true;
+  await instance._applyTableOrder();
+  const request = sent.find((msg) => msg.type.endsWith('/physical/reorder'));
+  assert.deepEqual(request.order, [0, 2, 1]);
+  assert.deepEqual(request.expected.map((item) => [item.slot, item.device_type, item.control_type]),
+    [[0, 0x18, 1], [1, 0x72, 0], [2, 0xF2, 4]]);
+});
+
+test('dropping a row next to another gives the same order the buttons would', () => {
+  const instance = panel();
+  assert.deepEqual(instance._reorderSlots([0, 1, 2, 3], 3, 0, false), [3, 0, 1, 2]);  // above the first
+  assert.deepEqual(instance._reorderSlots([0, 1, 2, 3], 0, 3, true), [1, 2, 3, 0]);   // below the last
+  assert.deepEqual(instance._reorderSlots([0, 1, 2, 3], 1, 2, true), [0, 2, 1, 3]);   // after a neighbour
+  assert.deepEqual(instance._reorderSlots([0, 1, 2, 3], 2, 2, true), [0, 1, 2, 3]);   // onto itself: unchanged
+  assert.deepEqual(instance._reorderSlots([0, 1, 2], 9, 1, true), [0, 1, 2]);         // unknown slot: unchanged
+  instance._deviceTable = {rows: [{slot: 0, kind: 'ir', device_type: '0x18', control_type: 1, device_id: 'a', target_mac: 'x'},
+    {slot: 1, kind: 'ir', device_type: '0x02', control_type: 1, device_id: 'b', target_mac: 'y'}], order: [0, 1]};
+  instance._physicalBusy = false;
+  const html = instance._renderDeviceTable();
+  assert.match(html, /data-drag-handle="0"/);
+  assert.match(html, /<tr data-row-slot="1">/);
 });
 
 test('adding a scene is checked against the scene limit like any other install', () => {

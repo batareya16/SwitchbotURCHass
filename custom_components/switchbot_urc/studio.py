@@ -30,7 +30,8 @@ from . import studio_cloud
 from . import studio_manage
 from . import studio_physical
 from .physical_layout import (
-    ir_screen_preview, native_appearance, remote_artwork_id, remote_wire_icon)
+    ir_screen_preview, native_appearance, page_icon_editable, remote_artwork_id,
+    remote_original_artwork_id, remote_wire_icon)
 from . import studio_remotes
 from . import studio_matter
 from . import studio_scenes
@@ -48,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.0"
+FRONTEND_VERSION = "0.53.1"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -423,6 +424,15 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                    if remote.get("device_type") == STUDIO_MATTER_TYPE else {}),
             }
         )
+        # The picture the "Type default" / "Original" tile gives back, so the editor can show it.
+        if str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE:
+            remotes[-1]["default_artwork_id"] = commands.native_artwork_id(
+                commands.NATIVE_DEVTYPE[str(remote["device_type"]).upper()], 0,
+                appearance["control_mode"])
+        elif remote.get("device_type") == STUDIO_MATTER_TYPE:
+            remotes[-1]["default_artwork_id"] = commands.DEVICE_ARTWORK[0x27]
+        else:
+            remotes[-1]["default_artwork_id"] = remote_original_artwork_id(remote)
         if remote.get("device_type") == STUDIO_MATTER_TYPE:
             # The text remote's placeholder icon name says nothing about the wire byte, which is
             # what the home list reads (V48 0x2002ee50), so report the byte's own name and art.
@@ -434,7 +444,10 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         elif (wire_icon := remote_wire_icon(remote)) is not None:
             # HID and IR tiles carry the byte in their saved Main page; the name stored beside
             # it is only the app's placeholder.
-            remotes[-1].update({"icon": _icon_name(wire_icon), "icon_code": wire_icon})
+            remotes[-1].update({
+                "icon": _icon_name(wire_icon), "icon_code": wire_icon,
+                "icon_editable": page_icon_editable(remote),
+            })
     remotes.extend(studio_scenes.serialized_remotes(hass, entry))
     runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
     return {
@@ -449,6 +462,9 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         "icons": list(ICONS),
         # Firmware illustration (profile id) that each nonzero wire icon selects on a native or
         # text-remote tile; "device" is icon 0, which keeps the device type's own artwork.
+        # Wire byte of every icon name, so the panel can compare what is chosen with what the
+        # remote carries instead of comparing names.
+        "icon_codes": dict(commands.ICON),
         "icon_artwork": {name: commands.NATIVE_ICON_ARTWORK[code]
                          for name, code in commands.ICON.items()
                          if code in commands.NATIVE_ICON_ARTWORK},
