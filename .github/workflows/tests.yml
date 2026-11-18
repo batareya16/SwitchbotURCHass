@@ -9,7 +9,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: batareya16/switchbot-urc-addon
-          ref: e982ed51a3012a29d12edff2c8191d104a2caa16
+          ref: 7a2272c3b636bc6d119823009c33dfe81ecf5523
           path: addons
           persist-credentials: false
       - uses: actions/setup-python@v5
