@@ -1115,7 +1115,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   // Tiles that live in the remote's own list (everything but scenes), identified by slot.
   _isListTile(item) {
-    return item?.kind !== "scene" && Number.isInteger(item?.index);
+    return item?.kind !== "scene" && Number.isInteger(item?.remote_slot);
   }
 
   // The remotes as drawn on the screen: the pending order replaces the tiles' places, scenes stay.
@@ -1124,8 +1124,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const tiles = remotes.filter((item) => this._isListTile(item));
     const order = this._screenOrder;
     if (!order || order.length !== tiles.length
-        || !tiles.every((item) => order.includes(item.index))) return remotes;
-    const queue = order.map((slot) => tiles.find((item) => item.index === slot));
+        || !tiles.every((item) => order.includes(item.remote_slot))) return remotes;
+    const queue = order.map((slot) => tiles.find((item) => item.remote_slot === slot));
     return remotes.map((item) => (this._isListTile(item) ? queue.shift() : item));
   }
 
@@ -1133,8 +1133,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const tiles = (this._entry()?.remotes || []).filter((item) => this._isListTile(item));
     const order = this._screenOrder;
     return Boolean(order && order.length === tiles.length
-      && tiles.every((item) => order.includes(item.index))
-      && tiles.some((item, index) => order[index] !== item.index));
+      && tiles.every((item) => order.includes(item.remote_slot))
+      && tiles.some((item, index) => order[index] !== item.remote_slot));
   }
 
   // Drag a tile on the remote's screen by its grip (pointer events: mouse and touch). The rows are
@@ -1183,6 +1183,15 @@ class SwitchBotUrcPanel extends HTMLElement {
     this._render();
   }
 
+  // The new-order bar sits above the remote's picture, so it never takes room from the tile list.
+  _renderScreenOrderBar() {
+    if (!this._screenOrderChanged()) return "";
+    const off = this._physicalBusy ? "disabled" : "";
+    return `<div class="order-bar" role="status"><span>New order</span>
+      <button class="primary compact" type="button" id="applyScreenOrder" ${off}>Apply order</button>
+      <button class="secondary compact" type="button" id="resetScreenOrder" ${off}>Reset</button></div>`;
+  }
+
   _renderScreen(page) {
     // Real HTML inside the SVG screen, so the list scrolls like the device's own does instead
     // of silently cutting off whatever does not fit.
@@ -1207,17 +1216,12 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const remotes = this._screenRemotes();
     if (!remotes.length && !this._scenePanel?.draft) return `<p class="scr-empty">No remotes yet</p>`;
-    const orderBar = this._screenOrderChanged()
-      ? `<div class="scr-order"><span>New order</span>
-          <button class="k" type="button" id="applyScreenOrder" ${this._physicalBusy ? "disabled" : ""}>Apply</button>
-          <button class="k" type="button" id="resetScreenOrder" ${this._physicalBusy ? "disabled" : ""}>Reset</button></div>`
-      : "";
-    return orderBar + remotes.map((item) => {
+    return remotes.map((item) => {
       const current = item.remote_id === this._remoteId;
       // A tile on the remote's own list is moved by its grip; the rest of the row picks it.
       const grip = this._isListTile(item)
-        ? `<span class="grip" data-screen-grip="${item.index}" title="Drag to move this tile in the remote's list">⠿</span>` : "";
-      const slotAttr = this._isListTile(item) ? ` data-screen-slot="${item.index}"` : "";
+        ? `<span class="grip" data-screen-grip="${item.remote_slot}" title="Drag to move this tile in the remote's list">⠿</span>` : "";
+      const slotAttr = this._isListTile(item) ? ` data-screen-slot="${item.remote_slot}"` : "";
       if (item.kind === "scene") {
         const preview = current && this._scenePanel?.draft ? this._scenePanel.draft : item;
         return `<div class="scr-row${current ? " on" : ""}"><button class="k pick-remote" type="button" data-remote="${escapeHtml(item.remote_id)}" title="${escapeHtml(item.name)} · Scene">
@@ -1560,6 +1564,7 @@ class SwitchBotUrcPanel extends HTMLElement {
             <nav class="pages" ${this._saving ? "inert" : ""}>${this._pages().map((item) => `<button data-page="${item.index}" class="${item.index === page?.index ? "selected" : ""}">${escapeHtml(item.name)}${item.draft_only ? " •" : ""}</button>`).join("")}</nav>
             <div class="workspace">
               <section class="remote-stage" ${this._saving ? "inert" : ""}>
+                ${this._renderScreenOrderBar()}
                 <div class="device-wrap">${this._renderFace(page)}</div>
                 <div class="legend"><span><i class="preset"></i>Quick bind</span><span><i class="custom"></i>Custom</span><span><i class="disabled"></i>Disabled</span>${this._physical ? '<span><i class="unsaved"></i>Unsaved change</span>' : ""}</div>
               </section>
@@ -4160,10 +4165,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row{display:flex;align-items:center;gap:4px;min-height:30px;border-radius:5px;margin-bottom:3px}
       .mode-tabs.sub-tabs{margin-top:-4px;padding-left:10px}
       .scr-row.on{background:#ffffff1f}
-      .scr-row .grip{flex:0 0 16px;cursor:grab;touch-action:none;user-select:none;text-align:center;color:#ffffff7a}
+      .scr-row .grip{flex:0 0 9px;width:9px;overflow:hidden;font-size:12px;line-height:1;cursor:grab;touch-action:none;user-select:none;text-align:center;color:#ffffff7a}
+      .scr-row .grip+.k{padding-left:3px}
       .scr-row.dragging{opacity:.6;background:#ffffff2e}
-      .scr-order{display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:11px;color:#ffffffb8}
-      .scr-order>.k{flex:0 0 auto;padding:3px 8px;cursor:pointer}
+      .order-bar{display:flex;align-items:center;flex-wrap:nowrap;gap:6px;justify-content:center;margin-bottom:8px;font-size:12px;font-weight:700;white-space:nowrap}
+      .order-bar>button.primary,.order-bar>button.secondary{height:26px;min-height:0;padding:0 10px;font-size:12px;line-height:1;border-radius:8px;flex:0 0 auto}
       .scr-row>.k{flex:1;display:flex;align-items:center;gap:9px;padding:6px 7px;cursor:pointer;
         border-radius:5px;min-width:0;pointer-events:auto}
       .scr-row>.pick-remote{border:0;background:transparent;color:inherit;text-align:left;font-weight:inherit}

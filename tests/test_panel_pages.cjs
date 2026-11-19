@@ -974,10 +974,10 @@ test('tiles dragged on the remote screen are sent as one order, with unknown row
   ];
   // Studio knows slots 0, 1 and 3 (and a scene); slot 2 is a row it has no record of.
   const remotes = [
-    {remote_id: 'tv', kind: 'ir', index: 0, name: 'TV', device_type: 'IR_2'},
+    {remote_id: 'tv', kind: 'ir', remote_slot: 0, name: 'TV', device_type: 'IR_2'},
     {remote_id: 'scene:1', kind: 'scene', scene_index: 1, name: 'Movie', color: 1, icon: 1},
-    {remote_id: 'strip', kind: 'native', index: 1, name: 'Strip', device_type: '0x72'},
-    {remote_id: 'lamp', kind: 'ir', index: 3, name: 'Lamp', device_type: 'IR_14'},
+    {remote_id: 'strip', kind: 'native', remote_slot: 1, name: 'Strip', device_type: '0x72'},
+    {remote_id: 'lamp', kind: 'ir', remote_slot: 3, name: 'Lamp', device_type: 'IR_14'},
   ];
   instance._entry = () => ({entry_id: 'entry', remotes});
   instance._physicalBusy = false;
@@ -986,7 +986,7 @@ test('tiles dragged on the remote screen are sent as one order, with unknown row
   instance._remoteId = 'tv';
   instance._screenOrder = null;
   assert.equal(instance._screenOrderChanged(), false);
-  assert.doesNotMatch(instance._renderScreen({index: 0}), /id="applyScreenOrder"/);
+  assert.equal(instance._renderScreenOrderBar(), '');
   assert.match(instance._renderScreen({index: 0}), /data-screen-grip="3"/);
   assert.doesNotMatch(instance._renderScreen({index: 0}), /data-screen-grip="[^"]*"[^>]*>[^<]*<\/span>\s*<button[^>]*scene/);
 
@@ -995,8 +995,10 @@ test('tiles dragged on the remote screen are sent as one order, with unknown row
   assert.deepEqual(instance._screenRemotes().map((item) => item.remote_id),
     ['lamp', 'scene:1', 'tv', 'strip']);  // the scene keeps its place
   const screen = instance._renderScreen({index: 0});
-  assert.match(screen, /id="applyScreenOrder"/);
-  assert.match(screen, /id="resetScreenOrder"/);
+  const bar = instance._renderScreenOrderBar();                      // above the remote, not inside its screen
+  assert.match(bar, /id="applyScreenOrder"/);
+  assert.match(bar, /id="resetScreenOrder"/);
+  assert.doesNotMatch(screen, /id="applyScreenOrder"/);
   assert.ok(screen.indexOf('data-screen-slot="3"') < screen.indexOf('data-screen-slot="0"'));
   assert.doesNotMatch(screen, /data-screen-grip="[^"]*"[^>]*>[^<]*<\/span>\s*<button class="k pick-remote" type="button" data-remote="scene/);
 

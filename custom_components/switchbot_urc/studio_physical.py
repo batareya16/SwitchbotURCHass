@@ -204,6 +204,7 @@ async def ws_physical_import(hass, connection, msg):
         appearance_error = await _refresh_native_appearances(client, table, remotes)
         await _refresh_page_remote_icons(client, table, remotes)
         dropped = _drop_absent_remotes(table, remotes)
+        _follow_device_order(table, remotes)
         selected = next((item for item in remotes if remote_identity(item) == msg.get("remote_id")), None)
         native_readback = None
         if selected and str(selected.get("device_type", "")).upper() in c.NATIVE_DEVTYPE:
@@ -719,6 +720,28 @@ def _adopt_native_remotes(table, remotes, catalogue) -> int:
         })
         adopted += 1
     return adopted
+
+
+def _follow_device_order(table, remotes) -> None:
+    """Give every record the slot its row has on the device now, and list them in that order.
+
+    The remote's list can be reordered elsewhere (the app, another tool, Studio itself), which
+    moves rows to other slots. Records kept their old slot and their place in the list, so the
+    picture of the remote no longer matched the remote after Refresh.
+    """
+    slots = {row[3]: row[0] for row in table}
+    for item in remotes:
+        identity = item.get("physical_device_id") or item.get("device_id")
+        if not identity:
+            continue
+        try:
+            stored = c.id_to_bytes(str(identity)) if len(str(identity)) in (12, 17) \
+                else bytes.fromhex(str(identity))
+        except ValueError:
+            continue
+        if stored in slots:
+            item["index"] = slots[stored]
+    remotes.sort(key=lambda item: item["index"] if type(item.get("index")) is int else 1 << 16)
 
 
 def _drop_absent_remotes(table, remotes) -> int:

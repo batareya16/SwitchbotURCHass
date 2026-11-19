@@ -49,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.7"
+FRONTEND_VERSION = "0.53.8"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -453,6 +453,8 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "icon": _icon_name(wire_icon), "icon_code": wire_icon,
                 "icon_editable": page_icon_editable(remote),
             })
+    # The remote's own list order, whatever order the records were saved in.
+    remotes.sort(key=lambda item: item["remote_slot"] if type(item["remote_slot"]) is int else 1 << 16)
     remotes.extend(studio_scenes.serialized_remotes(hass, entry))
     runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
     return {

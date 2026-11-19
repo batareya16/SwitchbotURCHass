@@ -219,6 +219,8 @@ def test_a_native_remote_studio_never_wrote_is_flagged_as_an_assumed_layout(stud
     rows = {row["remote_id"]: row for row in studio._serialize_entry(hass, entry)["remotes"]}
     assert rows["strip1"]["layout_assumed"] is True        # the app wrote it; Studio shows the stock pages
     assert rows["strip2"]["layout_assumed"] is False       # Studio holds the pages it wrote
+    # The panel moves tiles by this field; it must reach it under this name, as an integer slot.
+    assert (rows["strip1"]["remote_slot"], rows["strip2"]["remote_slot"]) == (1, 2)
 
 
 def test_recreate_compiles_in_the_executor_and_is_defined_once(studio):
@@ -249,3 +251,27 @@ def test_recreate_compiles_in_the_executor_and_is_defined_once(studio):
         hass, entry, client, item, remote, "Edited TV", None, connection, 7, kind="ir"))
     assert out["errors"] == [] and out["results"] == [{"slot": 2, "kind": "ir"}]
     assert jobs == ["compile_recreate"]
+
+
+def test_refresh_follows_the_order_the_remote_has_now(studio, monkeypatch):
+    import types
+
+    ids = {name: commands.id_to_bytes(f"0200000e0e{n:02x}") for n, name in enumerate("abc")}
+    remotes = [
+        {"index": 0, "name": "A", "device_type": "STRIP", "device_id": ids["a"].hex(), "remote_id": "a"},
+        {"index": 1, "name": "B", "device_type": "STRIP", "device_id": ids["b"].hex(), "remote_id": "b"},
+        {"index": 2, "name": "C", "device_type": "STRIP", "device_id": ids["c"].hex(), "remote_id": "c"},
+        {"name": "Unknown row", "device_type": "STRIP", "remote_id": "x"},
+    ]
+    # The remote was reordered elsewhere: C is first now, then A, then B.
+    table = [(0, 0x72, 0, ids["c"]), (1, 0x72, 0, ids["a"]), (2, 0x72, 0, ids["b"])]
+    studio.studio_physical._follow_device_order(table, remotes)
+    assert [(r["name"], r.get("index")) for r in remotes] == [
+        ("C", 0), ("A", 1), ("B", 2), ("Unknown row", None)]
+
+    hass, entry, _, _ = make(studio, FakeClient([]), list(reversed(remotes)))
+    monkeypatch.setattr(studio, "_repair_identities", lambda *_: None)
+    monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
+        async_get_entity_id=lambda *_: None))
+    names = [row["name"] for row in studio._serialize_entry(hass, entry)["remotes"]]
+    assert names == ["C", "A", "B", "Unknown row"]         # shown in the remote's order whatever was saved

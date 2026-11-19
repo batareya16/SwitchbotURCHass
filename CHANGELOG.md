@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.8
+
+- Fix the drag grips (⠿) of the tile order never appearing in Studio: the panel looked for a tile's slot in a field the server does not send. Tiles on the remote's screen can now be dragged, as 0.53.6 described.
+- The grip is narrow now, so the tile's name follows it right away, and the **New order** bar with **Apply order** and **Reset** sits above the remote's picture in one compact row instead of inside its screen.
+- Fix the picture of the remote not following the remote's own order after Refresh. Refresh now gives every saved remote the slot its row has on the device and lists them in that order, and Studio draws them in the slot order whatever order they were saved in.
+- The Bridge add-on is unchanged in this release.
+
 ## 0.53.7
 
 - Recreating an installed IR or HID remote (rewriting its edited key pages) no longer checks glyph files on disk on the Home Assistant event loop: the compile step now runs in the executor. Adding an HID remote and importing an HID layout from the account did the same check on the loop and now use the executor too.
