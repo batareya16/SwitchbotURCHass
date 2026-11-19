@@ -219,3 +219,33 @@ def test_a_native_remote_studio_never_wrote_is_flagged_as_an_assumed_layout(stud
     rows = {row["remote_id"]: row for row in studio._serialize_entry(hass, entry)["remotes"]}
     assert rows["strip1"]["layout_assumed"] is True        # the app wrote it; Studio shows the stock pages
     assert rows["strip2"]["layout_assumed"] is False       # Studio holds the pages it wrote
+
+
+def test_recreate_compiles_in_the_executor_and_is_defined_once(studio):
+    # The compile step stats glyph files, so it must not run on the event loop.
+    source = (INTEGRATION / "studio_manage.py").read_text()
+    assert source.count("async def _recreate_physical_layout(") == 1
+
+    device_id = "00112233445566778899aa"
+    pages = commands.build_ir_pages(remote_index=2, device_type=2, remote_id=bytes.fromhex(device_id),
+                                    name="TV", key_map=[(5, 0, 3)], icon=0)
+    physical = load(INTEGRATION / "physical_layout.py")
+    remote = {"device_type": "IR_2", "device_id": device_id, "remote_id": "ir1", "name": "TV",
+              "index": 2, "physical_packets": [packet.hex() for packet in pages]}
+    remote["physical_layout"] = physical.draft_for(remote)
+    row = (2, 2, commands.CTRL_IR, bytes.fromhex(device_id))
+    client = FakeClient([row])
+    hass, entry, connection, out = make(studio, client, [remote])
+    jobs = []
+
+    async def executor(function, *args):
+        jobs.append(getattr(function, "func", function).__name__)
+        return function(*args)
+
+    hass.async_add_executor_job = executor
+    item = {"index": 2, "device_type_byte": 2, "control_type": commands.CTRL_IR,
+            "device_id_bytes": bytes.fromhex(device_id)}
+    run(studio.studio_manage._recreate_physical_layout(
+        hass, entry, client, item, remote, "Edited TV", None, connection, 7, kind="ir"))
+    assert out["errors"] == [] and out["results"] == [{"slot": 2, "kind": "ir"}]
+    assert jobs == ["compile_recreate"]

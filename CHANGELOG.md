@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.53.7
+
+- Recreating an installed IR or HID remote (rewriting its edited key pages) no longer checks glyph files on disk on the Home Assistant event loop: the compile step now runs in the executor. Adding an HID remote and importing an HID layout from the account did the same check on the loop and now use the executor too.
+- Removed a duplicate definition of the recreate function and a few unused imports.
+- The Bridge add-on is unchanged in this release.
+
 ## 0.53.6
 
 - Reorder the tiles by dragging them on the remote's own screen in Studio: drag a tile by its grip (⠿) and press **Apply** in the **New order** bar (or **Reset**). Apply reads the remote's table, asks for confirmation and sends the order as a whole; rows Studio does not know keep their place. The ▲/▼ buttons and the drag handles in the "Installed on the remote" table are gone. Dragging did not work before: moving a row in the list made the browser stop sending the pointer's events to the grip, so the release was never seen.

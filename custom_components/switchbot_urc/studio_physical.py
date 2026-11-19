@@ -194,7 +194,9 @@ async def ws_physical_import(hass, connection, msg):
             remote = {"index": slot, "device_id": device_id.hex(), "remote_id": device_id.hex(),
                       "name": record.get("remoteName") or meta.get("thirdPartyDeviceName") or f"HID remote {slot}",
                       "device_type": native_type, "buttons": []}
-            remote["physical_layout"] = physical.validate(remote, physical.hid_draft_from_cloud(native_type, record["buttonList"]))
+            remote["physical_layout"] = await hass.async_add_executor_job(
+                physical.validate, remote,
+                physical.hid_draft_from_cloud(native_type, record["buttonList"]))
             remotes.append(remote)
             imported += 1
         imported += await _adopt_ir_remotes(cloud, table, remotes, metadata)

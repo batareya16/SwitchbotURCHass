@@ -14,7 +14,6 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from dataclasses import asdict
 

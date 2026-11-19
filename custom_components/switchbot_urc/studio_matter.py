@@ -33,7 +33,7 @@ from .matter_text import (
     normalize_captions,
     normalize_interval,
 )
-from .studio_physical import read_device_table, store_device_table
+from .studio_physical import read_device_table
 from .studio_remotes import new_remote_id, remote_management_lock
 
 _LOGGER = logging.getLogger(__name__)
