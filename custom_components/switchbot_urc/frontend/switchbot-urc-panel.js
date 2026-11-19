@@ -1175,9 +1175,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     await this._readDeviceTable();
     const table = this._deviceTable;
     if (!table?.rows?.length) return;
+    // The screen lists the rows from the highest slot down; the table is ordered from slot 0 up.
     const wanted = this._screenOrder.filter((slot) => table.rows.some((row) => row.slot === slot));
     const known = new Set(wanted);
-    const queue = [...wanted];
+    const queue = [...wanted].reverse();
     table.order = table.rows.map((row) => (known.has(row.slot) ? queue.shift() : row.slot));
     if (await this._applyTableOrder()) this._screenOrder = null;
     this._render();

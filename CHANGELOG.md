@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.9
+
+- Studio now draws the remote's tiles in the order the remote lists them, from the highest slot down, in the picture of the remote and in the Remote selector. Dragging tiles and **Apply order** follow the same order: the order shown from top to bottom is the order the remote ends up with. Not confirmed on a real Universal Remote yet.
+- The Bridge add-on is unchanged in this release.
+
 ## 0.53.8
 
 - Fix the drag grips (⠿) of the tile order never appearing in Studio: the panel looked for a tile's slot in a field the server does not send. Tiles on the remote's screen can now be dragged, as 0.53.6 described.

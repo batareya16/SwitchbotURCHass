@@ -1014,7 +1014,9 @@ test('tiles dragged on the remote screen are sent as one order, with unknown row
   context.confirm = () => true;
   await instance._applyScreenOrder();
   const request = sent.find((msg) => msg.type.endsWith('/physical/reorder'));
-  assert.deepEqual(request.order, [3, 0, 2, 1]);   // the unknown row stays where it was (third)
+  // The screen lists rows from the highest slot down, so the dragged order is reversed for the table;
+  // the unknown row (slot 2) stays where it was.
+  assert.deepEqual(request.order, [1, 0, 2, 3]);
   assert.deepEqual(request.expected.map((item) => [item.slot, item.device_type, item.control_type]),
     [[0, 0x18, 1], [1, 0x72, 0], [2, 0xF2, 4], [3, 0x02, 1]]);
   assert.equal(instance._screenOrder, null);       // applied: the pending order is gone

@@ -274,4 +274,5 @@ def test_refresh_follows_the_order_the_remote_has_now(studio, monkeypatch):
     monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
         async_get_entity_id=lambda *_: None))
     names = [row["name"] for row in studio._serialize_entry(hass, entry)["remotes"]]
-    assert names == ["C", "A", "B", "Unknown row"]         # shown in the remote's order whatever was saved
+    # the remote lists rows from the highest slot down (B is slot 2), whatever order was saved
+    assert names == ["B", "A", "C", "Unknown row"]
