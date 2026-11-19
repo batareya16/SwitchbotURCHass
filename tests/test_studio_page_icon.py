@@ -121,6 +121,15 @@ def test_ir_install_passes_the_chosen_icon_to_the_profile_and_keeps_its_own_othe
     errors, kwargs, record = run_install()
     assert errors == {} and "icon" not in kwargs
     assert record["icon_code"] == 4  # the profile's own icon
+    # The sync boundary counts the remotes sent now (one), never the device-table size.
+    assert kwargs["remote_count"] == 1
+
+    async def three_remotes(self, _subcommand):
+        return table_response([(slot, 0x72, 0, bytes([slot]) * 11) for slot in range(3)])
+
+    Client.query = three_remotes
+    errors, kwargs, _ = run_install()
+    assert errors == {} and kwargs["remote_index"] == 3 and kwargs["remote_count"] == 1
 
 
 def test_imported_ir_pages_are_never_rewritten_to_change_an_icon(studio):

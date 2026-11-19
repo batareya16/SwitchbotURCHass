@@ -368,8 +368,11 @@ async def install_ir_profile(
             return {"base": "ir_device_table_full"}, None, None
         if not commands.remaining_remote_kind_slots(entries, commands.CTRL_IR):
             return {"base": "ir_capacity_full"}, None, None
-        install_kwargs = {"remote_index": remote_index, "name": name,
-                          "remote_count": len(entries) + 1}
+        # The sync boundary carries the number of remotes sent in this synchronisation, not
+        # the size of the device table. The official app sends the length of its list of
+        # remotes waiting to be written (one for a single new remote); announcing the table
+        # size made the remote wait for remotes that never came and end in "sync error".
+        install_kwargs = {"remote_index": remote_index, "name": name, "remote_count": 1}
         if icon_code is not None:
             install_kwargs["icon"] = icon_code
         stages = profile.build_install(**install_kwargs)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.4
+
+- Fix an IR remote install ending in "sync error" on the remote's screen. The sync boundary of an install carries the number of remotes sent in this synchronisation, and Studio announced the size of the device table instead, so the remote waited for remotes that never came. It now announces one remote, as the official app does for a single new remote. Not confirmed on a real Universal Remote yet.
+- Bridge add-on 0.53.4 (update it as well): the link to the remote now tolerates 20 seconds of silence instead of 4, so an install is no longer cut off with `central disconnected: 0x08` while the remote is busy, and the add-on log shows how long the remote took to answer each install step.
+
 ## 0.53.3
 
 - Fix the buttons of an IR TV installed from Studio doing nothing. Studio laid the key pages out its own way, with the SwitchBot cloud's key ids and keys in cloud order, while the remote looks keys up by the firmware's function ids and expects each main-page key on its own position. A TV now gets the layout the official app writes: Power on both ON and OFF, volume, channel, arrows, OK, back and menu on their own positions, and the digits, playback, inputs and extra keys on the sub-pages behind the A-D soft keys (a soft key without keys is switched off). Not confirmed on a real Universal Remote yet. The other IR types (air conditioner, fan, light, set-top box and so on) are still laid out the old way.
