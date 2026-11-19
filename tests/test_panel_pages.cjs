@@ -964,41 +964,58 @@ test('Type default and Original show the picture they give back', () => {
     /data-add-icon="device"[^>]*>\s*<img class="ic-art" src="[^"]*profile-18\.png"/);
 });
 
-test('tiles can be moved in the installed table and the order is sent as a whole', async () => {
+test('tiles dragged on the remote screen are sent as one order, with unknown rows kept in place', async () => {
   const instance = panel();
   const rows = [
     {slot: 0, kind: 'ir', device_type: '0x18', control_type: 1, device_id: 'aa', target_mac: 'x', name: 'TV'},
     {slot: 1, kind: 'native', device_type: '0x72', control_type: 0, device_id: 'bb', target_mac: 'y', name: 'Strip'},
     {slot: 2, kind: 'hid', device_type: '0xF2', control_type: 4, device_id: 'cc', target_mac: 'z', name: ''},
+    {slot: 3, kind: 'ir', device_type: '0x02', control_type: 1, device_id: 'dd', target_mac: 'w', name: 'Lamp'},
   ];
+  // Studio knows slots 0, 1 and 3 (and a scene); slot 2 is a row it has no record of.
+  const remotes = [
+    {remote_id: 'tv', kind: 'ir', index: 0, name: 'TV', device_type: 'IR_2'},
+    {remote_id: 'scene:1', kind: 'scene', scene_index: 1, name: 'Movie', color: 1, icon: 1},
+    {remote_id: 'strip', kind: 'native', index: 1, name: 'Strip', device_type: '0x72'},
+    {remote_id: 'lamp', kind: 'ir', index: 3, name: 'Lamp', device_type: 'IR_14'},
+  ];
+  instance._entry = () => ({entry_id: 'entry', remotes});
   instance._physicalBusy = false;
   instance._render = () => {};
-  instance._deviceTable = {rows, order: [0, 1, 2], open: true};
-  assert.equal(instance._orderChanged(), false);
-  assert.doesNotMatch(instance._renderDeviceTable(), /id="applyOrder"/);
+  instance._entryId = 'entry';
+  instance._remoteId = 'tv';
+  instance._screenOrder = null;
+  assert.equal(instance._screenOrderChanged(), false);
+  assert.doesNotMatch(instance._renderScreen({index: 0}), /id="applyScreenOrder"/);
+  assert.match(instance._renderScreen({index: 0}), /data-screen-grip="3"/);
+  assert.doesNotMatch(instance._renderScreen({index: 0}), /data-screen-grip="[^"]*"[^>]*>[^<]*<\/span>\s*<button[^>]*scene/);
 
-  instance._moveTableRow(2, -1);          // the HID remote moves above the strip
-  instance._moveTableRow(0, -1);          // the first tile cannot move up: ignored
-  assert.deepEqual(instance._deviceTable.order, [0, 2, 1]);
-  const html = instance._renderDeviceTable();
-  assert.match(html, /id="applyOrder"/);
-  assert.match(html, /data-delete-row="1"[^>]*disabled/);  // no delete while an order is pending
-  assert.match(html, /<td>Strip<\/td>/);
+  instance._screenOrder = [3, 0, 1];      // the lamp is dragged to the top
+  assert.equal(instance._screenOrderChanged(), true);
+  assert.deepEqual(instance._screenRemotes().map((item) => item.remote_id),
+    ['lamp', 'scene:1', 'tv', 'strip']);  // the scene keeps its place
+  const screen = instance._renderScreen({index: 0});
+  assert.match(screen, /id="applyScreenOrder"/);
+  assert.match(screen, /id="resetScreenOrder"/);
+  assert.ok(screen.indexOf('data-screen-slot="3"') < screen.indexOf('data-screen-slot="0"'));
+  assert.doesNotMatch(screen, /data-screen-grip="[^"]*"[^>]*>[^<]*<\/span>\s*<button class="k pick-remote" type="button" data-remote="scene/);
 
   const sent = [];
-  instance._entryId = 'entry';
   instance._hass = {callWS: async (msg) => { sent.push(msg); return {rows}; }};
   instance._load = async () => {};
   instance._notify = () => {};
+  instance._readDeviceTable = async () => { instance._deviceTable = {rows, order: rows.map((row) => row.slot), open: true}; };
   context.confirm = () => false;
-  await instance._applyTableOrder();
-  assert.equal(sent.length, 0);           // not confirmed: nothing is sent
+  await instance._applyScreenOrder();
+  assert.equal(sent.length, 0);           // not confirmed: nothing is sent, the pending order stays
+  assert.deepEqual(instance._screenOrder, [3, 0, 1]);
   context.confirm = () => true;
-  await instance._applyTableOrder();
+  await instance._applyScreenOrder();
   const request = sent.find((msg) => msg.type.endsWith('/physical/reorder'));
-  assert.deepEqual(request.order, [0, 2, 1]);
+  assert.deepEqual(request.order, [3, 0, 2, 1]);   // the unknown row stays where it was (third)
   assert.deepEqual(request.expected.map((item) => [item.slot, item.device_type, item.control_type]),
-    [[0, 0x18, 1], [1, 0x72, 0], [2, 0xF2, 4]]);
+    [[0, 0x18, 1], [1, 0x72, 0], [2, 0xF2, 4], [3, 0x02, 1]]);
+  assert.equal(instance._screenOrder, null);       // applied: the pending order is gone
 });
 
 test('dropping a row next to another gives the same order the buttons would', () => {
@@ -1012,7 +1029,7 @@ test('dropping a row next to another gives the same order the buttons would', ()
     {slot: 1, kind: 'ir', device_type: '0x02', control_type: 1, device_id: 'b', target_mac: 'y'}], order: [0, 1]};
   instance._physicalBusy = false;
   const html = instance._renderDeviceTable();
-  assert.match(html, /data-drag-handle="0"/);
+  assert.doesNotMatch(html, /data-drag-handle|data-move-row/);  // the order is set on the remote's screen
   assert.match(html, /<tr data-row-slot="1">/);
 });
 
@@ -1053,4 +1070,63 @@ test('the catalog brand search keeps its text and filter while a brand or model 
   assert.deepEqual(instance._catalogBrands(), ['Sony']);
   instance._catalog.search = '';
   assert.equal(instance._catalogBrands().length, 4);
+});
+
+test('the IR ways to add a remote sit in one IR tab, with an empty remote among them', () => {
+  const instance = panel();
+  instance._entry = () => ({entry_id: 'entry', remotes: [], icons: []});
+  instance._sources = {native: true, catalog: true, cloud: true, cloud_remotes: [], hid: {device_types: ['APPLE_TV']},
+    matter: {installed: false}, remote_capacity: {ir: {available: 5}}};
+  instance._catalog = {available: true, types: [{value: 2, label: 'TV'}], remoteType: 2, brands: [], brand: '',
+    search: '', models: [], hxd: '', buttons: []};
+  instance._add = {kind: 'native', name: '', icon: 'device', deviceType: ''};
+  let html = instance._renderAddRemote();
+  assert.equal((html.match(/data-add-group="ir"/g) || []).length, 1);
+  assert.doesNotMatch(html, /data-add-kind="(catalog|cloud|blank)"/);       // no sub-tabs outside the IR tab
+  instance._add = {kind: 'blank', name: '', icon: 'device', blankType: 6};
+  html = instance._renderAddRemote();
+  for (const kind of ['catalog', 'cloud', 'blank']) assert.match(html, new RegExp(`data-add-kind="${kind}"`));
+  assert.match(html, /data-add-field="blank_type"/);
+  assert.match(html, /<option value="6" selected>Fan<\/option>/);
+  assert.match(html, /profile-09\.png/);                                       // the fan's own picture
+  instance._sources.remote_capacity.ir.available = 0;
+  assert.match(instance._installCapacityError(instance._add), /IR remotes/);   // an empty one counts as IR
+});
+
+test('a removed main-page key is empty on the face, not drawn with the stock profile picture', () => {
+  const instance = panel();
+  instance._remote = () => ({remote_id: 'strip', pages: [], device_type: 'STRIP'});
+  instance._nativeProfile = () => ({main_positions: [0, 1, 2, 3, 4, 5],
+    main_keys: [{index: 2, function: 322}, {index: 0, function: 321}], subpages: []});
+  // Key C (index 2) was removed from the layout; key A (index 0) is still there.
+  instance._physical = {kind: 'native', template: 'STRIP', pages: [
+    {index: 0, buttons: [{index: 0, transport: 'native', function: 321}, {index: 4, transport: 'native', function: 5}]}]};
+  instance._physicalBaseline = structuredClone(instance._physical);
+  instance._physicalOrigins = {};
+  instance._profileFunctionLabel = () => 'Function';
+  instance._layoutState = () => 'unchanged';
+  const main = instance._pages().find((page) => page.index === 0).buttons;
+  assert.equal(main.find((item) => item.button_index === 2).layout_empty, true);
+  assert.equal(main.find((item) => item.button_index === 0).layout_empty, false);
+  // the stock function is still known (to assign something), but it is not what the face draws
+  assert.equal(main.find((item) => item.button_index === 2).button_function, 322);
+});
+
+test('a submenu row is captioned like the remote does, from the picture it carries', () => {
+  const instance = panel();
+  instance._remote = () => ({remote_id: 'strip', pages: [], device_type: 'STRIP'});
+  instance._nativeProfile = () => ({main_positions: [0, 1, 2, 3, 4, 5], main_keys: [], subpages: []});
+  instance._physical = {kind: 'native', template: 'STRIP', pages: [
+    {index: 0, buttons: []},
+    {index: 4, buttons: [
+      {index: 0, transport: 'native', function: 333, glyph: 331},   // picture of "Color 1"
+      {index: 1, transport: 'native', function: 21, glyph: 332},
+      {index: 2, transport: 'native', function: 22},                  // no picture of its own
+      {index: 3, transport: 'native', function: 22, glyph: 332, title: 'Mine'}]}]};
+  instance._physicalBaseline = structuredClone(instance._physical);
+  instance._physicalOrigins = {};
+  instance._profileFunctionLabel = (fn) => `Function ${fn}`;
+  instance._layoutState = () => 'unchanged';
+  const rows = instance._pages().find((page) => page.index === 4).buttons.map((item) => item.label);
+  assert.deepEqual(rows, ['Color 1', 'Color 2', 'Function 22', 'Mine']);
 });

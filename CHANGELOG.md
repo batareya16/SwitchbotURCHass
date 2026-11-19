@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.53.6
+
+- Reorder the tiles by dragging them on the remote's own screen in Studio: drag a tile by its grip (⠿) and press **Apply** in the **New order** bar (or **Reset**). Apply reads the remote's table, asks for confirmation and sends the order as a whole; rows Studio does not know keep their place. The ▲/▼ buttons and the drag handles in the "Installed on the remote" table are gone. Dragging did not work before: moving a row in the list made the browser stop sending the pointer's events to the grip, so the release was never seen.
+- **Add a remote** now has one **IR remote** tab with three ways inside it: **From the catalog**, **From your account** and the new **Empty remote**. An empty IR remote of the type you choose (TV, air conditioner, light, fan, audio, IPTV, set-top box, DVD, projector, air purifier, water heater, robot vacuum, camera) is installed on the remote with its main page and no codes; give its buttons IR codes afterwards in the button editor. It counts towards the ten IR remotes and is not saved to the SwitchBot account. Not confirmed on a real Universal Remote yet.
+- Fix installed IR remotes that were made of learned keys (an account remote of a custom type, such as an audio soundbar, comes with `no_data` instead of a code bank and all its keys in `keyDetail`). Refresh failed on them with "Only base64 data is allowed". They are now laid out from their key list: free-named keys go to page D (at most 15), learned copies of default keys go to their own page, and an empty key map is accepted by every layout. Not confirmed on a real Universal Remote yet.
+- Studio now reads the real icon and screen mode of HID and IR remotes from the remote when you press Refresh. A remote Studio found on the device used to show a placeholder icon (the TV icon), which is why "Original" could show a picture the remote did not have.
+- Fix a main-page key that was removed from a layout still showing the stock profile's picture on the remote's face (key C of a light strip showed the warm-white ring although the remote does not draw it).
+- Fix the captions of submenu rows: the remote captions a row from the picture it carries, and Studio used the name of the row's command, so rows showed "Color 1…" where the remote shows "Color 7", "Color Bulb" and so on.
+- Remotes the SwitchBot app set up (Studio holds no pages it wrote) now say that Studio cannot read their pages back, so the pages shown are the standard ones for the type.
+
 ## 0.53.5
 
 - Every IR remote type is now laid out the way the official app lays it out, not only TVs. The remote finds a key by the firmware's function id next to a screen position, and each type has its own main-page positions, sub-pages behind the A-D soft keys and Power handling. Covered: air conditioner, air purifier, IPTV, set-top box, DVD, fan, projector, light, audio, water heater, robot vacuum and camera. DIY remotes are not covered. Built from the app's own code and checked by tests only; not confirmed on a real Universal Remote yet.

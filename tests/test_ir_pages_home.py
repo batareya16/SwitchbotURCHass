@@ -269,6 +269,132 @@ def test_light_custom_key_is_referenced_by_name():
     assert rows[1][:3] == (ON, 5, BANK)
 
 
+# ------------------------------------------------------------------------ LEARNED KEYS ---
+# keyDetail loop of getDefaultKeysCmd: (keyName, keyType) in keyDetail order; keyType "key" is a
+# learned replacement for the default key with that id, "text" a free-named key.
+
+def named(row):
+    return row[:3] + (row[3].rstrip(b"\0"),)
+
+
+def test_light_with_an_empty_key_map_and_only_text_keys():
+    pages = build(27, [], learned_keys=(("Warm", "text"), ("Cozy", "text")))
+    assert [page_number(p) for p in pages] == [0, 4]
+    # D shows (page 4 has two keys); A, B and C are empty placeholders (91, 311, 312)
+    assert triples(pages[0]) == [(D, 100, SOFT), (A, 91, EMPTY), (B, 311, EMPTY), (C, 312, EMPTY)]
+    # text keys: kind 2, function 115, positions 0, 1, ... and the name in the payload
+    assert [named(row) for row in parse(pages[1])] == [
+        (0, 115, CUSTOM, b"Warm"), (1, 115, CUSTOM, b"Cozy"),
+    ]
+
+
+def test_fan_with_an_empty_key_map_hides_c_and_shows_d_for_text_keys():
+    pages = build(20, [], learned_keys=(("Boost", "text"),))
+    assert [page_number(p) for p in pages] == [0, 4]
+    assert triples(pages[0]) == [(C, 70, EMPTY), (D, 100, SOFT), (A, 90, EMPTY), (B, 89, EMPTY)]
+    assert [named(row) for row in parse(pages[1])] == [(0, 115, CUSTOM, b"Boost")]
+
+
+def test_projector_with_an_empty_key_map_and_no_keys_has_only_hidden_soft_keys():
+    pages = build(21, [], learned_keys=(("12", "key"),))
+    assert [page_number(p) for p in pages] == [0]
+    # the learned Back key (12) goes to BACK on the main page, by name
+    assert [named(row) for row in parse(pages[0])] == [
+        (BACK, 12, CUSTOM, b"12"), (D, 100, EMPTY, fun_payload(100).rstrip(b"\0")),
+        (A, 700, EMPTY, fun_payload(700).rstrip(b"\0")), (B, 21, EMPTY, b"\x00\x15"),
+        (C, 22, EMPTY, b"\x00\x16"),
+    ]
+
+
+def test_text_keys_follow_the_key_map_keys_on_page_4_and_stop_at_fifteen():
+    # fan: ANION 6 and MUTE 8 from the key map take positions 0 and 1; 17 text keys follow, but
+    # a page holds 15 (the loop stops once the counter reaches 15)
+    texts = tuple((f"k{i}", "text") for i in range(17))
+    pages = build(6, [(6, 0, 5), (8, 5, 5)], learned_keys=texts)
+    assert [page_number(p) for p in pages] == [0, 4]
+    rows = parse(pages[1])
+    assert len(rows) == 15
+    assert [row[:3] for row in rows[:2]] == [(0, 113, BANK), (1, 19, BANK)]
+    assert [(row[0], row[1], row[2], row[3].rstrip(b"\0")) for row in rows[2:]] == [
+        (i + 2, 115, CUSTOM, f"k{i}".encode()) for i in range(13)
+    ]
+    assert (D, 100, SOFT) in triples(pages[0])
+
+
+def test_text_keys_alone_fill_a_light_page_4_to_fifteen():
+    pages = build(14, [(1, 0, 1)], learned_keys=tuple((f"t{i}", "text") for i in range(20)))
+    rows = parse(pages[1])
+    assert [row[0] for row in rows] == list(range(15))
+    assert rows[14][3].rstrip(b"\0") == b"t14"
+
+
+def test_a_learned_default_key_found_only_in_key_detail_goes_to_its_page_by_name():
+    # fan: key map has ON; keyDetail adds a learned wind speed (WIN_2 = 41) and a learned timer (9)
+    pages = build(6, [(2, 0, 10)], learned_keys=(("41", "key"), ("9", "key")))
+    assert [page_number(p) for p in pages] == [0, 3]
+    # main page: ON from the bank, the learned timer on A by name (fun 90); C soft shows because
+    # a wind speed exists; D hidden; only B (auto direction) is an empty slot
+    assert [named(row)[:3] for row in parse(pages[0])] == [
+        (ON, 5, BANK), (A, 90, CUSTOM), (C, 70, SOFT), (D, 100, EMPTY), (B, 89, EMPTY),
+    ]
+    assert named(parse(pages[0])[1])[3] == b"9"
+    assert [named(row) for row in parse(pages[1])] == [(0, 73, CUSTOM, b"41")]
+
+
+def test_a_key_map_key_that_is_also_learned_is_written_once_by_name():
+    pages = build(14, [(5, 0, 10), (1, 10, 10)], learned_keys=(("5", "key"),))
+    rows = parse(pages[0])
+    assert [named(row)[:3] for row in rows[:2]] == [(UP, 300, CUSTOM), (ON, 5, BANK)]
+    assert named(rows[0])[3] == b"5"
+    assert len([row for row in rows if row[1] == 300]) == 1
+
+
+def test_learned_power_alone_goes_on_on_and_off_and_leaves_page_4_empty():
+    pages = build(27, [], learned_keys=(("2", "key"),))
+    assert [page_number(p) for p in pages] == [0]
+    rows = parse(pages[0])
+    assert [named(row)[:3] for row in rows] == [
+        (D, 100, EMPTY), (A, 91, EMPTY), (B, 311, EMPTY), (C, 312, EMPTY),
+        (ON, 105, CUSTOM), (OFF, 105, CUSTOM),
+    ]
+    assert rows[4][3].rstrip(b"\0") == rows[5][3].rstrip(b"\0") == b"2"
+
+
+def test_learned_power_is_skipped_on_page_4_when_it_is_the_only_power_key():
+    pages = build(27, [], learned_keys=(("2", "key"), ("Mood", "text")))
+    assert [page_number(p) for p in pages] == [0, 4]
+    assert (D, 100, SOFT) in triples(pages[0])
+    assert [named(row) for row in parse(pages[1])] == [(0, 115, CUSTOM, b"Mood")]
+    assert triples(pages[0])[-2:] == [(ON, 105, CUSTOM), (OFF, 105, CUSTOM)]
+
+
+def test_learned_power_stays_a_page_4_key_beside_an_on_key():
+    pages = build(7, [(1, 0, 10)], learned_keys=(("2", "key"),))
+    assert [page_number(p) for p in pages] == [0, 4]
+    assert [named(row) for row in parse(pages[1])] == [(0, 105, CUSTOM, b"2")]
+
+
+def test_a_text_key_named_like_a_default_key_of_the_type_is_not_a_page_4_key():
+    # light page 4 skips names that are page-0 keys of the type (checkCustomKeysIsDefaultKey);
+    # an unrelated id such as TIMEADD (13) has no function id, so it is function 115
+    pages = build(14, [], learned_keys=(("13", "text"), ("Mood", "text")))
+    assert [named(row) for row in parse(pages[1])] == [
+        (0, 115, CUSTOM, b"13"), (1, 115, CUSTOM, b"Mood"),
+    ]
+
+
+def test_key_names_lose_slashes_and_keep_31_bytes():
+    pages = build(14, [], learned_keys=(("A/B", "text"), ("x" * 40, "text")))
+    rows = parse(pages[1])
+    assert rows[0][3].rstrip(b"\0") == b"AB"
+    assert rows[1][3] == b"x" * 31 + b"\0"
+
+
+def test_a_blank_remote_without_any_key_is_valid():
+    pages = build(20, [])
+    assert pages and pages[0]
+
+
 # ---------------------------------------------------------------------------- ALL TYPES ---
 
 @pytest.mark.parametrize("device_type", sorted(home.LAYOUT_TYPES))
@@ -295,9 +421,6 @@ def test_invalid_input_is_rejected():
     with pytest.raises(ValueError):
         home.build_fan_pages(remote_index=0, device_type=6, remote_id=b"short", name="x",
                              key_map=[(2, 0, 1)])
-    with pytest.raises(ValueError):
-        home.build_light_pages(remote_index=0, device_type=14, remote_id=REMOTE_ID, name="x",
-                               key_map=[])
     with pytest.raises(ValueError):
         home.build_projector_pages(remote_index=0, device_type=7, remote_id=REMOTE_ID, name="x",
                                    key_map=[(6, 0, 0)])

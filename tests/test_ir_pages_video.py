@@ -91,8 +91,6 @@ def test_bad_arguments_are_rejected():
     for builder in (video.build_iptv_pages, video.build_tvbox_pages, video.build_dvd_pages):
         with pytest.raises(ValueError):
             builder(remote_index=0, device_type=3, remote_id=b"short", name="x", key_map=[(1, 0, 1)])
-        with pytest.raises(ValueError):
-            builder(remote_index=0, device_type=3, remote_id=REMOTE_ID, name="x", key_map=[])
 
 
 # ---- IPTV ---------------------------------------------------------------------------------
@@ -360,3 +358,153 @@ def test_dvd_custom_keys_and_custom_power():
 def test_dvd_unknown_keys_are_left_out():
     pages = dvd([(11, 0, 10), (999, 10, 5), (22, 15, 5)])
     assert {fun for _, fun, _, _ in records(pages[0])} == {39, 20, 100, 111, 105}
+
+
+# ---- Learned / custom keys from the cloud's keyDetail ----------------------------------------
+
+
+def name_payload(text):
+    return text.encode() + bytes(32 - len(text))
+
+
+def listing(pages, index):
+    return [(pos, fun, kind, payload) for pos, fun, kind, payload in records(pages[index])]
+
+
+def test_empty_key_map_still_gets_soft_keys_and_placeholders():
+    pages = iptv([])
+    assert page_numbers(pages) == [0]
+    assert listing(pages, 0) == [
+        (A, 39, 254, fn_payload(39)),
+        (D, 100, 254, fn_payload(100)),
+        (B, 802, 254, fn_payload(802)),
+        (C, 116, 254, fn_payload(116)),
+    ]
+    assert [(pos, fun, kind) for pos, fun, kind, _ in records(tvbox([])[0])] == [
+        (A, 39, 254), (D, 100, 254), (B, 802, 254), (C, 109, 254),
+    ]
+    assert [(pos, fun, kind) for pos, fun, kind, _ in records(dvd([])[0])] == [
+        (A, 39, 254), (B, 20, 254), (D, 100, 254), (C, 111, 254),
+    ]
+
+
+def test_iptv_text_keys_go_to_the_d_page_with_function_115_and_show_d():
+    pages = iptv([], learned_keys=(("Netflix", "text"), ("Apps", "text")))
+    assert page_numbers(pages) == [0, 4]
+    assert listing(pages, 0) == [
+        (A, 39, 254, fn_payload(39)),
+        (D, 100, 4, fn_payload(100)),       # page 4 has keys
+        (B, 802, 254, fn_payload(802)),
+        (C, 116, 254, fn_payload(116)),
+    ]
+    assert listing(pages, 1) == [
+        (0, 115, 2, name_payload("Netflix")),
+        (1, 115, 2, name_payload("Apps")),
+    ]
+
+
+def test_d_page_takes_at_most_fifteen_records():
+    texts = tuple((f"K{i}", "text") for i in range(17))
+    pages = iptv([], learned_keys=texts)
+    d_page = listing(pages, 1)
+    assert len(d_page) == 15
+    assert [pos for pos, *_ in d_page] == list(range(15))
+    assert d_page[-1][3] == name_payload("K14")
+    # the key-map keys of the page count against the cap: TV on is record 0, text keys follow
+    pages = iptv([(6, 0, 10)], learned_keys=texts)
+    d_page = listing(pages, 1)
+    assert len(d_page) == 15
+    assert d_page[0] == (0, 800, 1, code(0, 10))
+    assert d_page[1][3] == name_payload("K0") and d_page[-1][3] == name_payload("K13")
+    # same cap on the other two types
+    assert len(listing(tvbox([(16, 0, 10)], learned_keys=texts), 1)) == 15
+    assert len(listing(dvd([(24, 0, 10)], learned_keys=texts), 1)) == 15
+
+
+def test_learned_default_key_only_in_key_detail_goes_to_its_own_page_as_a_name_reference():
+    pages = iptv([], learned_keys=(("5", "key"), ("25", "key")))    # Volume add, Number1
+    assert page_numbers(pages) == [0, 1]
+    assert listing(pages, 0) == [
+        (VOLADD, 15, 2, name_payload("5")),
+        (A, 39, 4, fn_payload(39)),
+        (D, 100, 254, fn_payload(100)),
+        (B, 802, 254, fn_payload(802)),
+        (C, 116, 254, fn_payload(116)),
+    ]
+    assert listing(pages, 1) == [(0, 41, 2, name_payload("25"))]
+
+
+def test_learned_keys_keep_their_order_and_custom_keys_without_order_are_sorted():
+    ordered = iptv([], learned_keys=(("43", "key"), ("25", "key")))
+    assert [fun for _, fun, _, _ in records(ordered[1])] == [40, 41]
+    reverse = iptv([], learned_keys=(("25", "key"), ("43", "key")))
+    assert [fun for _, fun, _, _ in records(reverse[1])] == [41, 40]
+    legacy = iptv([], custom_keys=frozenset({"43", "25"}))
+    assert [fun for _, fun, _, _ in records(legacy[1])] == [41, 40]
+
+
+def test_learned_key_replaces_a_key_map_key_with_a_name_reference_once():
+    pages = iptv([(5, 0, 10)], learned_keys=(("5", "key"),))
+    volume = [r for r in records(pages[0]) if r[1] == 15]
+    assert volume == [(VOLADD, 15, 2, name_payload("5"))]
+
+
+def test_tvbox_learned_power_and_text_key():
+    pages = tvbox([], learned_keys=(("1", "key"), ("Remote", "text")))
+    assert page_numbers(pages) == [0, 4]
+    main = listing(pages, 0)
+    assert main == [
+        (A, 39, 254, fn_payload(39)),
+        (D, 100, 4, fn_payload(100)),
+        (B, 802, 254, fn_payload(802)),
+        (C, 109, 254, fn_payload(109)),
+        (ON, 105, 2, name_payload("1")),
+        (OFF, 105, 2, name_payload("1")),
+    ]
+    # Power is not repeated on the D page, only the text key is
+    assert listing(pages, 1) == [(0, 115, 2, name_payload("Remote"))]
+
+
+def test_tvbox_power_alone_in_key_detail_keeps_d_hidden():
+    pages = tvbox([], learned_keys=(("1", "key"),))
+    assert page_numbers(pages) == [0]
+    assert {pos: kind for pos, _, kind, _ in records(pages[0])}[D] == 254
+
+
+def test_a_text_key_named_like_a_function_uses_that_function_id():
+    # Number("16") is the set-top box List key, so the D-page text key gets [0, 116]
+    pages = tvbox([], learned_keys=(("16", "text"),))
+    assert listing(pages, 1) == [(0, 116, 2, name_payload("16"))]
+
+
+def test_dvd_learned_keys_follow_the_dvd_rules():
+    pages = dvd([], learned_keys=(("11", "key"), ("Subtitle", "text"), ("24", "key")))
+    assert page_numbers(pages) == [0, 4]
+    assert listing(pages, 0) == [
+        (A, 39, 254, fn_payload(39)),
+        (B, 20, 254, fn_payload(20)),
+        (D, 100, 4, fn_payload(100)),
+        (C, 111, 254, fn_payload(111)),
+        (ON, 105, 2, name_payload("11")),
+        (OFF, 105, 2, name_payload("11")),
+    ]
+    # Power (a default DVD key) stays off the D page; the text key and the learned List go there
+    assert listing(pages, 1) == [
+        (0, 115, 2, name_payload("Subtitle")),
+        (1, 116, 2, name_payload("24")),
+    ]
+
+
+def test_dvd_learned_transport_key_opens_the_b_page():
+    pages = dvd([(11, 0, 10)], learned_keys=(("17", "key"), ("4", "key")))    # Play, Stop
+    assert page_numbers(pages) == [0, 2]
+    assert {pos: kind for pos, _, kind, _ in records(pages[0])}[B] == 4
+    assert listing(pages, 1) == [
+        (0, 21, 2, name_payload("17")),
+        (1, 23, 2, name_payload("4")),
+    ]
+
+
+def test_key_names_lose_slashes_and_are_cut_to_31_bytes():
+    pages = iptv([], learned_keys=(("A/B" + "x" * 40, "text"),))
+    assert listing(pages, 1)[0][3] == b"AB" + b"x" * 29 + b"\0"

@@ -188,11 +188,9 @@ def test_air_page_four_stops_at_fifteen_records():
     assert [r[3].rstrip(b"\0") for r in records(pages[4])][:2] == [b"100", b"101"]
 
 
-def test_air_unknown_keys_are_left_out_and_empty_input_is_rejected():
+def test_air_unknown_keys_are_left_out_and_a_short_remote_id_is_rejected():
     pages = air([(2, 0, 5), (999, 5, 5)])
     assert all(fun != 115 for _, fun, _ in short(records(pages[0])))
-    with pytest.raises(ValueError):
-        air([])
     with pytest.raises(ValueError):
         ac.build_air_pages(remote_index=1, device_type=10, remote_id=b"short", name="x", key_map=FULL)
 
@@ -309,3 +307,97 @@ def test_arc_with_fast_config_data_ignores_learned_keys():
 def test_arc_rejects_a_bad_remote_id():
     with pytest.raises(ValueError):
         ac.build_arc_pages(remote_index=1, device_type=1, remote_id=b"x", name="AC", key_map=[])
+
+
+# ---- learned keys in the cloud keyDetail order (learned_keys) -------------------------------
+
+def test_air_learned_keys_keep_the_cloud_order_instead_of_sorting():
+    learned = (("zeta", "text"), ("100", "key"), ("4", "key"))
+    pages = by_page(air([(2, 0, 5)], learned_keys=learned))
+    main = records(pages[0])
+    assert short(main)[:2] == [(ON, 5, 1), (OFF, 6, 2)]            # "4" is OFF, learned by name
+    assert main[1][3].rstrip(b"\0") == b"4"
+    # page four lists the unknown names in keyDetail order, as kind 2, function 115
+    d = records(pages[4])
+    assert short(d) == [(0, 115, 2), (1, 115, 2)]
+    assert [r[3].rstrip(b"\0") for r in d] == [b"zeta", b"100"]
+    # the old behaviour for custom_keys alone: numeric names first
+    old = by_page(air([(2, 0, 5)], custom_keys=frozenset({"zeta", "100", "4"})))
+    assert [r[3].rstrip(b"\0") for r in records(old[4])] == [b"100", b"zeta"]
+
+
+def test_air_learned_keys_replace_custom_keys_and_repeat_names_once():
+    pages = by_page(air([(2, 0, 5)], custom_keys=frozenset({"4"}),
+                        learned_keys=(("zz", "key"), ("zz", "text"))))
+    assert short(records(pages[0]))[:1] == [(ON, 5, 1)]
+    assert all(fun != 6 for _, fun, _ in short(records(pages[0])))   # custom_keys was ignored
+    assert short(records(pages[4])) == [(0, 115, 2)]
+
+
+def test_air_a_text_entry_does_not_make_a_mapped_key_custom():
+    text = air([(9, 30, 10)], learned_keys=(("9", "text"),))
+    assert records(text[0])[0] == (B, 56, 1, code(30, 10))
+    key = air([(9, 30, 10)], learned_keys=(("9", "key"),))
+    mode = records(key[0])[0]
+    assert (mode[0], mode[1], mode[2], mode[3].rstrip(b"\0")) == (B, 56, 2, b"9")
+
+
+def test_air_empty_key_map_with_every_key_learned():
+    names = ["2", "4", "15", "9", "16", "8", "3"]
+    pages = by_page(air([], learned_keys=tuple((n, "key") for n in names)))
+    assert sorted(pages) == [0, 1, 4]
+    main = records(pages[0])
+    # learned order; Mode and Timer are present, so there are no placeholders
+    assert short(main) == [
+        (ON, 5, 2), (OFF, 6, 2), (SOUNDOFF, 19, 2), (B, 56, 2), (C, 90, 2), (A, 70, 4), (D, 100, 4),
+    ]
+    assert [r[3].rstrip(b"\0") for r in main[:5]] == [b"2", b"4", b"15", b"9", b"16"]
+    assert short(records(pages[1])) == [(0, 73, 2)]
+    assert short(records(pages[4])) == [(0, 117, 2)]
+    assert_well_formed(pages.values())
+
+
+def test_air_power_only_from_the_learned_keys_with_an_empty_key_map():
+    pages = by_page(air([], learned_keys=(("1", "key"), ("6", "key")), device_type=23))
+    assert sorted(pages) == [0, 1]
+    assert body(pages[0])[1] == 23
+    main = records(pages[0])
+    assert short(main) == [(A, 70, 4), (D, 100, 254), (B, 56, 254), (C, 90, 254), (ON, 105, 2), (OFF, 105, 2)]
+    assert main[4][3].rstrip(b"\0") == main[5][3].rstrip(b"\0") == b"1"
+    assert short(records(pages[1])) == [(0, 72, 2)]
+
+
+def test_air_text_entry_named_like_a_default_key_is_still_placed_on_its_page():
+    pages = by_page(air([], learned_keys=(("2", "text"),)))
+    main = records(pages[0])
+    assert short(main)[0] == (ON, 5, 2)
+    # counted for page four (a text entry), so D is shown and the page exists, but never written
+    assert {pos: kind for pos, fun, kind in short(main) if fun == 100} == {D: 4}
+    assert records(pages[4]) == []
+
+
+def test_air_with_no_keys_at_all_is_a_valid_blank_remote():
+    pages = air([], learned_keys=())
+    assert [page_number(p) for p in pages] == [0]       # only the main page, its soft keys hidden
+    assert_well_formed(pages)
+
+
+def test_arc_custom_on_off_takes_the_learned_keys_in_cloud_order_whatever_their_type():
+    learned = (("ON_b", "text"), ("ON_a", "key"), ("OFF_x", "text"), ("OFF", "key"))
+    pages = arc([], device_type=15, learned_keys=learned, fast_config_bin=b"")
+    assert [page_number(p) for p in pages] == [0]
+    main = records(pages[0])
+    assert short(main) == [(ON, 5, 2), (OFF, 6, 2)]
+    assert [r[3].rstrip(b"\0") for r in main] == [b"ON_b", b"OFF_x"]
+    assert body(pages[0])[1] == 15
+    assert_well_formed(pages)
+
+
+def test_arc_learned_keys_without_on_off_names_write_nothing():
+    assert arc([], learned_keys=(("volume", "key"), ("note", "text")), fast_config_bin=b"") == ()
+
+
+def test_arc_learned_keys_are_ignored_when_the_model_has_fast_config_data():
+    learned = (("ON_a", "key"),)
+    assert arc([], learned_keys=learned) == arc()
+    assert arc([], learned_keys=learned, fast_config_bin=b"\x01") == arc()

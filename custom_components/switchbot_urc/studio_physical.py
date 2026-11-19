@@ -200,6 +200,7 @@ async def ws_physical_import(hass, connection, msg):
         imported += await _adopt_ir_remotes(cloud, table, remotes, metadata)
         imported += _adopt_native_remotes(table, remotes, metadata)
         appearance_error = await _refresh_native_appearances(client, table, remotes)
+        await _refresh_page_remote_icons(client, table, remotes)
         dropped = _drop_absent_remotes(table, remotes)
         selected = next((item for item in remotes if remote_identity(item) == msg.get("remote_id")), None)
         native_readback = None
@@ -255,6 +256,50 @@ async def _refresh_native_appearances(client, table, remotes):
         remote["native_appearance_readback"] = {
             "slot": identity[0], "device_type": identity[1], "mode": mode, "icon": icon,
         }
+
+
+async def _refresh_page_remote_icons(client, table, remotes):
+    """Take the icon and screen mode of HID and IR remotes from the device itself.
+
+    Studio only knows what it saved or guessed (an adopted remote carries a placeholder icon
+    name), so a remote whose icon was changed elsewhere showed the wrong picture. The device
+    details name the real bytes for every row. A failure here changes nothing.
+    """
+    wanted = {(slot, device_type, device_id) for slot, device_type, control, device_id in table
+              if control in (c.CTRL_HID, c.CTRL_IR)}
+    if not wanted:
+        return
+    try:
+        appearances = c.parse_device_appearances(
+            await client.query(5, timeout=8, timeout_retries=0), (c.CTRL_HID, c.CTRL_IR))
+    except Exception as err:  # noqa: BLE001 - the icon stays as Studio had it
+        _LOGGER.warning("Could not read HID and IR icons from WoRWS: %s", err)
+        return
+    for remote in remotes:
+        name = str(remote.get("device_type", "")).upper()
+        if not remote.get("device_id") or not (name in c.DEVTYPE or name.startswith("IR_")):
+            continue
+        try:
+            device_id = c.id_to_bytes(remote["device_id"])
+        except (TypeError, ValueError):
+            continue
+        row = next(((slot, kind, ident) for slot, kind, ident in wanted if ident == device_id), None)
+        if row is None or row not in appearances:
+            continue
+        mode, icon = appearances[row]
+        if remote.get("icon_code") == icon and remote.get("control_mode") == mode:
+            continue
+        remote["icon_code"] = icon
+        remote["control_mode"] = mode
+        remote["icon"] = next((key for key, value in c.ICON.items() if value == icon), f"0x{icon:02x}")
+        # The saved pages must say the same, or the next icon edit would send the old byte back.
+        packets = remote.get("physical_packets")
+        if packets:
+            try:
+                remote["physical_packets"] = [
+                    c.rewrite_native_page_icon(bytes.fromhex(value), icon).hex() for value in packets]
+            except ValueError as err:
+                _LOGGER.warning("could not update the saved pages of %s: %s", remote.get("name"), err)
 
 
 async def _adopt_ir_remotes(cloud, table, remotes, catalogue) -> int:

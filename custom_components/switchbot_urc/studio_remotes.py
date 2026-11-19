@@ -25,7 +25,7 @@ from . import ir_catalog
 from . import targets
 from .catalog import DEVICE_TYPES, ICON_CHOICES, ICONS
 from .cloud import CloudError
-from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
+from .cloud_ir import blank_profile, find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
 from .inventory import stable_id_for_local
 from .studio_catalog import cloud_client
@@ -533,7 +533,7 @@ async def _create_native_remote(hass, connection, msg):
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/remote/install_ir",
     vol.Required("entry_id"): str,
-    vol.Required("source"): vol.In(("catalog", "cloud")),
+    vol.Required("source"): vol.In(("catalog", "cloud", "blank")),
     vol.Required("name"): str,
     vol.Optional("hxd_index"): str,
     vol.Optional("remote_type"): int,
@@ -563,7 +563,10 @@ async def _install_ir_remote(hass, connection, msg):
         cloud = None
         cloud_item = None
 
-        if source == "catalog":
+        if source == "blank":
+            # No codes and no account record: an empty remote the user fills in key by key.
+            profile = blank_profile(int(msg.get("remote_type", 0)), name)
+        elif source == "catalog":
             metadata = await hass.async_add_executor_job(
                 ir_catalog.profile_by_index, str(msg.get("hxd_index", ""))
             )

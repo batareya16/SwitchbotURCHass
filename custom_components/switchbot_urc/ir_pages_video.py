@@ -19,6 +19,10 @@ What differs from the TV layout:
 * Power: when the key map has Power but no On/Off key (always for DVD, which has no On/Off), the
   Power code goes on both ON and OFF and Power is kept out of every sub-page. When the key map
   has On/Off keys too, they take ON/OFF and Power goes to the D page.
+* ``learned_keys`` is the cloud's ``keyDetail`` as ordered ``(keyName, keyType)`` pairs. Like the
+  app's second pass, a "key" entry that replaces a default key is a name reference (kind 2) on the
+  page that supports it, and the D page also takes free-named keys (function 115, at most 15
+  records). The key map may be empty (an account remote of a custom type has code "no_data").
 * Function ids are two bytes in the app; the TV-box/IPTV "TV on/power/off" keys use the 3xx
   range (for example ``[3, 34]`` is 802).
 """
@@ -59,6 +63,14 @@ class _Layout:
     # (position, function id, key id) single-key soft keys: written only (as kind 254) when
     # the key is missing; when present the key itself sits on that position.
     soft_single: tuple[tuple[int, int, int], ...]
+    # DVD's keyDetail pass differs from IPTV/set-top box: a "text" key always goes to the D page and
+    # Power is skipped on the other pages (not on the D page, where IPTV/set-top box skip it).
+    dvd_rules: bool = False
+
+    @property
+    def default_keys(self) -> frozenset[int]:
+        """checkCustomKeysIsDefaultKey: the keys of every page but D (Power/TV on/off/list are not)."""
+        return frozenset(key for page, keys in self.pages.items() if page != _PAGE_D for key in keys)
 
 
 # ---- IPTV (type 3, custom 17): WOIPTVTAG_* ids from the app's constants table ----------------
@@ -185,10 +197,28 @@ _DVD_LAYOUT = _Layout(
         (TAG["D"], _FN_SOFT_D, _PAGE_D),
     ),
     soft_single=((TAG["C"], _DVD_FUNCTION[_DVD_TAKE_OUT], _DVD_TAKE_OUT),),
+    dvd_rules=True,
 )
 
 # Sub-pages are numbered by their soft key plus one in the page header (A = 1, B = 2, D = 4).
 _PAGE_ORDER = (0, 1, 2, 3, 4)
+
+
+_FN_UNKNOWN = 115     # getXxx_fun_key_name default: [0, 115]
+_D_PAGE_CAP = 15      # keyDetail keys written on the D page, running counter < 15
+
+
+def _function_for(layout: _Layout, name: str) -> int:
+    """getXxx_fun_key_name(name): ``switch (Number(name))``, anything else is [0, 115]."""
+    try:
+        return layout.function.get(int(name), _FN_UNKNOWN)
+    except ValueError:
+        return _FN_UNKNOWN
+
+
+def _name_payload(name: str) -> bytes:
+    """getKeyNameBytes_32: the name without "/" and cut to 31 bytes, zero padded to 32."""
+    return name.replace("/", "").encode("utf-8")[:31].ljust(32, b"\0")
 
 
 def _build(
@@ -201,18 +231,29 @@ def _build(
     key_map: list[tuple[int, int, int]],
     icon: int = 0,
     custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     if len(remote_id) != 11:
         raise ValueError("IR remote id must be exactly 11 bytes")
-    if not key_map:
-        raise ValueError("IR key map must not be empty")
     name_bytes = bytearray(commands.pad(name.encode("utf-8"), 64))
     name_bytes[63] = 0
 
+    # The cloud's keyDetail, in order: (keyName, keyType). Names in ``custom_keys`` that the
+    # caller did not list are learned replacements of a default key ("key"), appended in numeric
+    # order because a set has none.
+    detail: list[tuple[str, str]] = list(learned_keys)
+    listed = {key_name for key_name, _type in detail}
+    detail += [
+        (label, "key")
+        for label in sorted((label for label in custom_keys if label.isdecimal()), key=int)
+        if label not in listed
+    ]
+    # checkIsCustomKey: a key whose replacement was uploaded on its own is referenced by name.
+    named = {key_name for key_name, key_type in detail if key_type == "key"} | set(custom_keys)
+
     def block(key: int, start: int, length: int) -> tuple[int, bytes]:
-        # checkIsCustomKey: a key uploaded on its own is referenced by name (kind 2)
-        if str(key) in custom_keys:
-            return _KIND_NAME, str(key).encode("utf-8")[:31].ljust(32, b"\0")
+        if str(key) in named:
+            return _KIND_NAME, _name_payload(str(key))
         if not 0 <= start <= 0xFFFFFFFF or not 0 < length <= 0xFFFF:
             raise ValueError("IR code-bank reference is out of range")
         return _KIND_CODE, (start.to_bytes(4, "big") + length.to_bytes(2, "big")).ljust(32, b"\0")
@@ -224,35 +265,53 @@ def _build(
         # the app puts the soft key's function id in the first two payload bytes
         return record(position, function, kind, function.to_bytes(2, "big"))
 
-    # Keys from the key map first, in map order, then keys that only exist as separate uploads
-    # (the app's second pass over keyDetail), each once.
-    entries: list[tuple[int, int, int]] = []
+    entries: list[tuple[int, int, int]] = []     # key map, once per key, in map order
     seen: set[int] = set()
     for key, start, length in key_map:
         if key not in seen:
             seen.add(key)
             entries.append((key, start, length))
-    for label in sorted(label for label in custom_keys if label.isdecimal()):
-        if int(label) not in seen:
-            seen.add(int(label))
-            entries.append((int(label), 0, 0))
-    present = seen
+    map_names = {str(key) for key in seen}
 
-    power_entry = next((entry for entry in entries if entry[0] == layout.power), None)
-    has_power = layout.power in present
-    # getIsOnlyPower: Power without any On/Off key
-    only_power = has_power and not any(key in present for key in layout.on_off)
+    power = str(layout.power)
+    on_off = {str(key) for key in layout.on_off}
+    keyed = {key_name for key_name, key_type in detail if key_type == "key"}
+    # getIsOnlyPower: Power, from the key map or a "key" detail, and no On/Off key
+    has_power = power in map_names or power in keyed
+    only_power = has_power and not (on_off & (map_names | keyed))
+    # haveRemoteTag_default looks at key map ids and at every detail name, whatever its type
+    tags = map_names | {key_name for key_name, _type in detail}
+    defaults = {str(key) for key in layout.default_keys}
+
+    def supports(page: int, key_name: str) -> bool:
+        return key_name in {str(key) for key in layout.pages.get(page, ())}
 
     def page_count(page: int) -> int:
-        # getDefaultKeysCount(page): the page's keys present, less Power when it is moved
-        count = sum(1 for key in layout.pages.get(page, ()) if key in present)
-        if only_power and layout.power in layout.pages.get(page, ()):
+        """getDefaultKeysCount(page)."""
+        counted: set[str] = set()
+        for key, _start, _length in entries:
+            if supports(page, str(key)):
+                counted.add(str(key))
+        for key_name, key_type in detail:
+            if page == _PAGE_D:
+                if key_name in counted or (key_type != "text" and key_name in defaults):
+                    continue
+                counted.add(key_name)
+            elif supports(page, key_name):
+                counted.add(key_name)
+        count = len(counted)
+        if page == _PAGE_D and only_power and layout.power in layout.pages.get(page, ()):
             count -= 1
         return count
 
+    power_entry = next((entry for entry in entries if entry[0] == layout.power), None)
+
     pages: list[bytes] = []
     for page in _PAGE_ORDER:
+        if page and page_count(page) <= 0:
+            continue
         records: list[bytes] = []
+        used: set[str] = set()
         wanted = layout.pages.get(page, ())
         for key, start, length in entries:
             if key not in wanted or (key == layout.power and only_power):
@@ -260,19 +319,43 @@ def _build(
             kind, payload = block(key, start, length)
             position = layout.main_position[key] if page == 0 else len(records)
             records.append(record(position, layout.function[key], kind, payload))
+            used.add(str(key))
+        # the second pass over keyDetail, in order
+        for key_name, key_type in detail:
+            if key_name in used:
+                continue
+            if page == _PAGE_D:
+                if len(records) >= _D_PAGE_CAP:
+                    continue
+                if layout.dvd_rules:
+                    allowed = key_type == "text" or key_name not in defaults
+                else:
+                    allowed = key_name not in defaults and not (
+                        key_name == power and key_type == "key" and only_power
+                    )
+                position = len(records)
+            else:
+                allowed = supports(page, key_name) and not (
+                    layout.dvd_rules and key_name == power and key_type == "key" and only_power
+                )
+                position = layout.main_position[int(key_name)] if page == 0 and allowed else len(records)
+            if not allowed:
+                continue
+            records.append(
+                record(position, _function_for(layout, key_name), _KIND_NAME, _name_payload(key_name))
+            )
+            used.add(key_name)
         if page == 0:
             for position, function, soft_page in layout.soft_pages:
                 shown = page_count(soft_page) > 0
                 records.append(soft(position, function, _KIND_SHOWN if shown else _KIND_HIDDEN))
             for position, function, key in layout.soft_single:
-                if key not in present:
+                if str(key) not in tags:
                     records.append(soft(position, function, _KIND_HIDDEN))
             if only_power:
                 kind, payload = block(*(power_entry or (layout.power, 0, 1)))
                 for position in (TAG["ON"], TAG["OFF"]):
                     records.append(record(position, _FN_POWER, kind, payload))
-        elif not records:
-            continue
         body = bytes([remote_index & 0xFF, device_type & 0xFF, commands.CTRL_IR, 0, icon & 0xFF]) \
             + remote_id + bytes(name_bytes) + bytes([0, page, len(records)]) + b"".join(records)
         pages.append(
@@ -290,11 +373,12 @@ def build_iptv_pages(
     key_map: list[tuple[int, int, int]],
     icon: int = 0,
     custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     """Pages for an IPTV remote (type 3 or custom 17), laid out like the official app."""
     return _build(
         _IPTV_LAYOUT, remote_index=remote_index, device_type=device_type, remote_id=remote_id, name=name,
-        key_map=key_map, icon=icon, custom_keys=custom_keys,
+        key_map=key_map, icon=icon, custom_keys=custom_keys, learned_keys=learned_keys,
     )
 
 
@@ -307,11 +391,12 @@ def build_tvbox_pages(
     key_map: list[tuple[int, int, int]],
     icon: int = 0,
     custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     """Pages for a set-top box remote (type 4 or custom 18), laid out like the official app."""
     return _build(
         _STB_LAYOUT, remote_index=remote_index, device_type=device_type, remote_id=remote_id, name=name,
-        key_map=key_map, icon=icon, custom_keys=custom_keys,
+        key_map=key_map, icon=icon, custom_keys=custom_keys, learned_keys=learned_keys,
     )
 
 
@@ -324,11 +409,12 @@ def build_dvd_pages(
     key_map: list[tuple[int, int, int]],
     icon: int = 0,
     custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     """Pages for a DVD remote (type 5 or custom 19), laid out like the official app."""
     return _build(
         _DVD_LAYOUT, remote_index=remote_index, device_type=device_type, remote_id=remote_id, name=name,
-        key_map=key_map, icon=icon, custom_keys=custom_keys,
+        key_map=key_map, icon=icon, custom_keys=custom_keys, learned_keys=learned_keys,
     )
 
 

@@ -18,6 +18,13 @@ handlers in the app's React Native bundle (urc-bundle.js) share one skeleton, po
 Unlike a TV, the app writes the function id of a soft key or placeholder into the first two
 payload bytes of its record; it does so here too.
 
+Learned keys (``learned_keys``, the cloud ``keyDetail`` as ordered ``(keyName, keyType)``) follow
+the second loop of ``getDefaultKeysCmd``: a name the key map did not write goes, as a kind-2 name
+reference, to the page that supports it (position from the key index on page 0, a running counter
+elsewhere); every other name that is not a default key of the type goes to page 4 with function
+115, up to 15 records on that page. The key map may be empty (a custom remote with code
+"no_data"). Without ``learned_keys`` the default-id names in ``custom_keys`` act in id order.
+
 Soft-key gating assumes a remote whose BLE version is >= 21 (the V48 firmware we target): the
 soft keys then show only when their sub-page has keys (``urcIsSupport_FE_D`` /
 ``remoteTag_default``).
@@ -169,7 +176,23 @@ _LIGHT = _Layout(
 )
 
 
+def _name_bytes(name: str) -> bytes:
+    """``getKeyNameBytes_32``: slashes dropped, UTF-8, the last of the 32 bytes stays zero."""
+    return name.replace("/", "").encode("utf-8")[:31].ljust(32, b"\0")
+
+
 def _make_builder(layout: _Layout, doc: str) -> Callable[..., tuple[bytes, ...]]:
+    # checkIs<Type>DefaultSupport by page, as key-id strings (the app compares strings)
+    support = {page: {str(key) for key in keys} for page, keys in layout.pages.items()}
+    # checkCustomKeysIsDefaultKey: the keys of every page but 4 (fan: on, off, timer, auto
+    # direction, wind speeds; projector and light: the page-0 keys)
+    default_keys = {name for page, names in support.items() if page != 4 for name in names}
+    power_name, on_name, off_name = str(layout.power), str(layout.on), str(layout.off)
+
+    def function_of(name: str) -> int:
+        """``get<Type>_fun_key_name``: unknown or non-numeric key names are function 115."""
+        return layout.function.get(int(name), 115) if name.isdigit() else 115
+
     def build(
         *,
         remote_index: int,
@@ -179,17 +202,42 @@ def _make_builder(layout: _Layout, doc: str) -> Callable[..., tuple[bytes, ...]]
         key_map: list[tuple[int, int, int]],
         icon: int = 0,
         custom_keys: frozenset[str] = frozenset(),
+        learned_keys: tuple[tuple[str, str], ...] = (),
     ) -> tuple[bytes, ...]:
+        """``learned_keys`` are the cloud ``keyDetail`` entries as ordered ``(keyName, keyType)``.
+
+        ``keyType`` "key" is a learned replacement for the default key with that id, "text" a
+        free-named key. The key map may be empty (a custom remote whose keys are all learned).
+        """
         if len(remote_id) != 11:
             raise ValueError("IR remote id must be exactly 11 bytes")
-        if not key_map:
-            raise ValueError("IR key map must not be empty")
         name_bytes = bytearray(commands.pad(name.encode("utf-8"), 64))
         name_bytes[63] = 0
 
-        def block(key: int, start: int, length: int) -> tuple[int, bytes]:
-            if str(key) in custom_keys:
-                return _KIND_CUSTOM, str(key).encode("utf-8")[:31].ljust(32, b"\0")
+        if learned_keys:
+            details = [(str(key_name), str(key_type)) for key_name, key_type in learned_keys]
+        else:
+            # no keyDetail order known: the default-id custom keys, by id
+            details = [
+                (label, "key")
+                for label in sorted((x for x in custom_keys if x.isdigit()), key=int)
+                if int(label) in layout.function
+            ]
+        # checkIsCustomKey: a keyDetail entry of type "key" turns a key-map key into a name reference
+        custom = set(custom_keys) | {key_name for key_name, key_type in details if key_type == "key"}
+        entries = [(str(key), start, length) for key, start, length in key_map]
+        map_names = {entry[0] for entry in entries}
+        # remoteTag_default looks at the key map and at every keyDetail name
+        tag_names = map_names | {key_name for key_name, _ in details}
+        # getIsOnlyPower: a power key with no ON/OFF key beside it (keyDetail counts for "key")
+        typed = {key_name for key_name, key_type in details if key_type == "key"}
+        has_power = power_name in map_names or power_name in typed
+        has_on_off = bool({on_name, off_name} & (map_names | typed))
+        only_power = has_power and not has_on_off
+
+        def block(key_name: str, start: int, length: int) -> tuple[int, bytes]:
+            if key_name in custom:
+                return _KIND_CUSTOM, _name_bytes(key_name)
             if not 0 <= start <= 0xFFFFFFFF or not 0 < length <= 0xFFFF:
                 raise ValueError("IR code-bank reference is out of range")
             return _KIND_BANK, (start.to_bytes(4, "big") + length.to_bytes(2, "big")).ljust(32, b"\0")
@@ -203,41 +251,64 @@ def _make_builder(layout: _Layout, doc: str) -> Callable[..., tuple[bytes, ...]]
         def function_payload(function: int) -> bytes:
             return function.to_bytes(2, "big")
 
-        # The cloud key map, then the custom keys the app adds from ``keyDetail`` that the key
-        # map does not carry (a learned key named after a default key id).
-        keys = [entry for entry in key_map if entry[0] in layout.function]
-        present = {entry[0] for entry in keys}
-        for label in sorted(custom_keys):
-            if label.isdigit() and int(label) in layout.function and int(label) not in present:
-                keys.append((int(label), 0, 0))
-                present.add(int(label))
-        # getIsOnlyPower: a power key with no ON/OFF key beside it
-        only_power = layout.power in present and layout.on not in present and layout.off not in present
-
         def count(page: int) -> int:
             """``getDefaultKeysCount``: the sub-page's distinct keys, minus the lone power key."""
-            if page not in layout.pages:
+            if page not in support:
                 return 0
-            total = len(present & set(layout.pages[page]))
-            return total - 1 if page == 4 and only_power else total
+            seen: list[str] = []
+            for key_name, _start, _length in entries:
+                if key_name in support[page] and key_name not in seen:
+                    seen.append(key_name)
+            for key_name, key_type in details:
+                if page == 4:
+                    if key_name in seen or (key_type != "text" and key_name in default_keys):
+                        continue
+                    seen.append(key_name)
+                elif key_name in support[page] and key_name not in seen:
+                    seen.append(key_name)
+            return len(seen) - 1 if page == 4 and only_power else len(seen)
+
+        def position_of(page: int, key_name: str, counter: int) -> int:
+            return layout.main_position[int(key_name)] if page == 0 else counter
 
         pages: list[bytes] = []
         for page in (0, *sorted(number for number in layout.pages if number)):
             if page and count(page) <= 0:
                 continue
             records: list[bytes] = []
-            for key, start, length in keys:
-                if key == layout.power and only_power:
+            written: set[str] = set()
+            for key_name, start, length in entries:
+                if key_name == power_name and only_power:
                     continue
-                if key not in layout.pages[page]:
+                if key_name not in support[page]:
                     continue
-                kind, payload = block(key, start, length)
-                position = layout.main_position[key] if page == 0 else len(records)
-                records.append(record(position, layout.function[key], kind, payload))
+                kind, payload = block(key_name, start, length)
+                records.append(record(
+                    position_of(page, key_name, len(records)), function_of(key_name), kind, payload,
+                ))
+                written.add(key_name)
+            # the keyDetail loop: learned keys the key map did not write, always by name
+            for key_name, key_type in details:
+                if key_name in written:
+                    continue
+                if page == 4:
+                    if len(records) >= 15:
+                        continue
+                    if key_name == power_name and key_type == "key" and only_power:
+                        continue
+                    if key_name in default_keys:
+                        continue
+                    position = len(records)
+                elif key_name in support[page]:
+                    position = position_of(page, key_name, len(records))
+                else:
+                    continue
+                records.append(record(position, function_of(key_name), _KIND_CUSTOM, _name_bytes(key_name)))
+                written.add(key_name)
             if page == 0:
                 for position, function, gate, argument in layout.soft:
                     if gate == "tag":
-                        shown = any(key in present for key in argument)
+                        shown = any(str(key) in tag_names for key in argument)
                     else:
                         shown = count(argument) > 0
                     records.append(record(
@@ -245,13 +316,17 @@ def _make_builder(layout: _Layout, doc: str) -> Callable[..., tuple[bytes, ...]]
                         function_payload(function),
                     ))
                 for position, function, fillers in layout.placeholders:
-                    if not any(key in present for key in fillers):
+                    if not any(str(key) in tag_names for key in fillers):
                         records.append(record(
                             position, function, _KIND_EMPTY, function_payload(function),
                         ))
                 if only_power:
-                    power = next(entry for entry in keys if entry[0] == layout.power)
-                    kind, payload = block(*power)
+                    # getPowerCmd: the key-map power key, else the learned one (by name)
+                    power = next((entry for entry in entries if entry[0] == power_name), None)
+                    if power is not None:
+                        kind, payload = block(*power)
+                    else:
+                        kind, payload = _KIND_CUSTOM, _name_bytes(power_name)
                     for position in (TAG["ON"], TAG["OFF"]):
                         records.append(record(position, layout.function[layout.power], kind, payload))
             body = (

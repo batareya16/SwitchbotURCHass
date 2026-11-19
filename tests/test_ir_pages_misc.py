@@ -291,6 +291,119 @@ def test_validation_errors():
         misc.LAYOUT_TYPES[11](remote_index=0, device_type=11, remote_id=b"short", name="x",
                               key_map=[(2, 0, 1)])
     with pytest.raises(ValueError):
-        build(11, [])
-    with pytest.raises(ValueError):
         build(11, [(2, 0, 0)])
+
+
+# ---- learned / free-named keys (cloud keyDetail), empty key map ------------------------------
+
+def names(packet):
+    return [(pos, fun, kind, payload.rstrip(b"\0")) for pos, fun, kind, payload in full_records(packet)]
+
+
+def test_empty_key_map_still_writes_page_zero_soft_keys_and_placeholders():
+    for type_id, expected in (
+        (11, [(0, 39, 254), (3, 100, 254), (1, 27, 254), (2, 28, 254)]),
+        (24, [(0, 39, 254), (3, 100, 254), (1, 27, 254), (2, 28, 254)]),
+        (12, [(3, 100, 254), (0, 56, 254), (1, 154, 254), (2, 62, 254)]),
+        (13, [(3, 100, 254), (0, 900, 254), (1, 56, 254), (2, 92, 254)]),
+        (8, [(3, 100, 254), (0, 153, 254), (1, 116, 254), (2, 90, 254)]),
+    ):
+        pages = build(type_id, [])
+        assert page_numbers(pages) == [0]
+        assert short(pages[0]) == expected
+
+
+def test_audio_text_keys_with_an_empty_key_map_go_to_page_four_as_named_kind_two():
+    pages = build(24, [], learned_keys=(("Eco", "text"), ("Night/Mode", "text")))
+    assert page_numbers(pages) == [0, 4]
+    assert short(pages[0]) == [(0, 39, 254), (3, 100, 4), (1, 27, 254), (2, 28, 254)]
+    assert names(pages[1]) == [(0, 115, 2, b"Eco"), (1, 115, 2, b"NightMode")]     # "/" is dropped
+
+
+def test_audio_page_four_is_capped_at_fifteen_and_keymap_keys_count_towards_it():
+    text = tuple((f"K{i}", "text") for i in range(17))
+    pages = build(24, [], learned_keys=text)
+    assert page_numbers(pages) == [0, 4]
+    assert [r[0] for r in names(pages[1])] == list(range(15))
+    assert names(pages[1])[-1] == (14, 115, 2, b"K14")
+    # Play from the key map is written first and is not capped itself; texts fill up to 15 records
+    pages = build(24, [(21, 0, 10)], learned_keys=text)
+    page4 = names(pages[1])
+    assert len(page4) == 15
+    assert page4[0] == (0, 21, 1, ref(0, 10).rstrip(b"\0"))
+    assert page4[1] == (1, 115, 2, b"K0") and page4[-1] == (14, 115, 2, b"K13")
+
+
+def test_audio_learned_default_keys_that_exist_only_in_key_detail():
+    # VolAdd 13, Number1 12, Play 21, ON 2: each goes to the page that supports it, as kind 2
+    pages = build(24, [], learned_keys=(("13", "key"), ("12", "key"), ("21", "key"), ("2", "key")))
+    assert page_numbers(pages) == [0, 1, 4]
+    # VOLADD, ON (function 115), A shown (a digit exists), D shown (Play), Last/Next placeholders
+    assert short(pages[0]) == [(15, 15, 2), (4, 115, 2), (0, 39, 4), (3, 100, 4), (1, 27, 254), (2, 28, 254)]
+    assert names(pages[1]) == [(0, 41, 2, b"12")]
+    assert names(pages[2]) == [(0, 21, 2, b"21")]
+
+
+def test_audio_default_learned_key_does_not_open_page_four_or_show_d():
+    pages = build(24, [], learned_keys=(("13", "key"),))
+    assert page_numbers(pages) == [0]
+    assert short(pages[0]) == [(15, 15, 2), (0, 39, 254), (3, 100, 254), (1, 27, 254), (2, 28, 254)]
+
+
+def test_audio_text_key_named_like_a_default_key_reaches_both_pages():
+    # the audio handler lets keyType "text" through on page 4 whatever its name
+    pages = build(24, [], learned_keys=(("13", "text"),))
+    assert page_numbers(pages) == [0, 4]
+    assert names(pages[0])[0] == (15, 15, 2, b"13")
+    assert names(pages[1]) == [(0, 15, 2, b"13")]
+
+
+def test_audio_key_map_key_is_not_repeated_from_key_detail():
+    pages = build(24, [(13, 0, 10)], learned_keys=(("13", "key"), ("Eco", "text")))
+    volume = [r for r in names(pages[0]) if r[1] == 15]
+    assert volume == [(15, 15, 2, b"13")]                 # kind 2: a learned key replaces the code
+    assert names(pages[1]) == [(0, 115, 2, b"Eco")]
+
+
+def test_audio_power_only_in_key_detail():
+    pages = build(24, [(13, 0, 10)], learned_keys=(("11", "key"),))
+    assert page_numbers(pages) == [0]
+    assert names(pages[0])[-2:] == [(4, 105, 2, b"11"), (5, 105, 2, b"11")]
+    assert (3, 100, 254) in short(pages[0])               # Power left page 4: nothing behind D
+    # with a learned ON key beside it Power is an ordinary page-4 key again
+    pages = build(24, [], learned_keys=(("11", "key"), ("2", "key")))
+    assert page_numbers(pages) == [0, 4]
+    assert names(pages[1]) == [(0, 105, 2, b"11")]
+    assert (3, 100, 4) in short(pages[0])
+
+
+def test_learned_keys_order_wins_over_sorted_custom_keys():
+    pages = build(24, [], custom_keys=frozenset({"20", "12"}), learned_keys=(("20", "key"), ("12", "key")))
+    assert names(pages[1]) == [(0, 45, 2, b"20"), (1, 41, 2, b"12")]
+    # without learned_keys the old behaviour (name order) stays
+    pages = build(24, [], custom_keys=frozenset({"20", "12"}))
+    assert names(pages[1]) == [(0, 41, 2, b"12"), (1, 45, 2, b"20")]
+
+
+def test_water_heater_robot_and_camera_learned_keys():
+    pages = build(25, [], learned_keys=(("Boost", "text"),))
+    assert page_numbers(pages) == [0, 4]
+    assert short(pages[0]) == [(3, 100, 4), (0, 56, 254), (1, 154, 254), (2, 62, 254)]
+    assert names(pages[1]) == [(0, 115, 2, b"Boost")]
+    pages = build(26, [], learned_keys=(("15", "key"),))
+    assert page_numbers(pages) == [0]
+    assert short(pages[0]) == [(0, 900, 2), (3, 100, 254), (1, 56, 254), (2, 92, 254)]
+    pages = build(22, [], learned_keys=(("Zoom", "text"), ("1", "key")))
+    assert page_numbers(pages) == [0, 4]
+    assert short(pages[0]) == [(0, 153, 2), (3, 100, 4), (1, 116, 254), (2, 90, 254)]
+    assert names(pages[1]) == [(0, 115, 2, b"Zoom")]
+
+
+def test_water_heater_text_key_named_like_a_default_key_stays_off_page_four():
+    # the water heater handler has no "text" exception on page 4, but its key count has one,
+    # so D is shown and an empty page 4 is written, as the app does
+    pages = build(12, [], learned_keys=(("5", "text"),))
+    assert page_numbers(pages) == [0, 4]
+    assert names(pages[0])[0] == (15, 60, 2, b"5")
+    assert full_records(pages[1]) == []
+    assert (3, 100, 4) in short(pages[0])

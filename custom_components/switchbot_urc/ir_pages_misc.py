@@ -19,6 +19,13 @@ What differs from the TV layout:
   key (no ON/OFF) it is written on ON and OFF, like the TV does. Robot and camera have no power
   key at all.
 
+Learned / free-named keys (cloud ``keyDetail``, passed as ``learned_keys``) follow the second loop
+of the handlers' ``getDefaultKeysCmd``: a default key that exists only there goes to the page that
+supports it as kind 2 (name in the payload); every other name (and, for audio, every ``text`` key)
+goes to page 4, at most 15 per page, with function 115 unless the name is a known key id. The key
+map may be empty (an account remote of a CUSTOM type has ``code = "no_data"``): page 0 then still
+carries its soft keys and placeholders, and the sub-pages only exist if they have keys.
+
 Assumes a remote firmware that supports the hidden D soft key (urc version >= 21), as the TV
 builder does: soft keys with nothing behind them are written hidden (254).
 """
@@ -61,6 +68,8 @@ class _Layout(NamedTuple):
     soft: tuple[_Soft | _Hold, ...]   # tail of page 0, in the order the handler writes it
     power: int | None = None          # the generic Power key (written on ON and OFF when alone)
     on_off: tuple[int, ...] = ()      # the ON / OFF keys that make Power an ordinary key
+    defaults: frozenset[int] = frozenset()  # checkCustomKeysIsDefaultKey: keys a learned key replaces
+    text_on_page4: bool = False       # audio only: a "text" key reaches page 4 even if named like a default
 
 
 # ---- Audio (ADO 11, ADO_CUSTOM 24): module 1789124910520, WOAUDIOTAG_* --------------------------
@@ -96,6 +105,8 @@ _ADO_LAYOUT = _Layout(
     ),
     power=_ADO_POWER,
     on_off=(2, 4),
+    defaults=frozenset(_ADO_MAIN) | frozenset(_ADO_DIGITS),
+    text_on_page4=True,
 )
 
 # ---- Water heater (WHEARER 12, WHEARER_CUSTOM 25): module ...531, WOWHEATERTAG_* ----------------
@@ -119,6 +130,7 @@ _WH_LAYOUT = _Layout(
     ),
     power=_WH_POWER,
     on_off=(2, 4),
+    defaults=frozenset(_WH_MAIN),
 )
 
 # ---- Robot vacuum (RBT 13, RBT_CUSTOM 26): module ...528, WORBTTAG_* ----------------------------
@@ -139,6 +151,7 @@ _RBT_LAYOUT = _Layout(
         _Hold(TAG["B"], 4),
         _Hold(TAG["C"], 37),
     ),
+    defaults=frozenset(_RBT_MAIN),
 )
 
 # ---- SLR / camera (SLR 8, SLR_CUSTOM 22): module ...521 (m1090636), WOCAMERATAG_* ---------------
@@ -147,17 +160,26 @@ _SLR_MAIN = {1: TAG["A"], 2: TAG["B"], 4: TAG["C"]}   # Shutter, Menu, Timer
 _SLR_LAYOUT = _Layout(
     function=_SLR_FUNCTION,
     main=_SLR_MAIN,
-    sub={},                                           # getDefaultKeysCount is 0 on every page > 0
+    sub={},                                           # no default key on a sub-page (learned ones can reach 4)
     soft=(
         _Soft(TAG["D"], 100, None),
         _Hold(TAG["A"], 1),
         _Hold(TAG["B"], 2),
         _Hold(TAG["C"], 4),
     ),
+    defaults=frozenset(_SLR_MAIN),
 )
 
 # DIY (type 9, module ...526) is not covered: it has no cloud key map. Its keys all come from the
 # remote's own ``keyDetail`` list (named keys, first three on A-C, the rest on page 4).
+
+
+_PAGE4_CAP = 15      # the app writes at most 15 learned/text keys on page 4
+
+
+def _label(name: str) -> bytes:
+    """getKeyNameBytes_32 for the names that occur here: the name without "/", NUL terminated."""
+    return name.replace("/", "").encode("utf-8")[:31]
 
 
 def _build(
@@ -170,78 +192,139 @@ def _build(
     key_map: list[tuple[int, int, int]],
     icon: int,
     custom_keys: frozenset[str],
+    learned_keys: tuple[tuple[str, str], ...],
 ) -> tuple[bytes, ...]:
     if len(remote_id) != 11:
         raise ValueError("IR remote id must be exactly 11 bytes")
-    if not key_map:
-        raise ValueError("IR key map must not be empty")
     name_bytes = bytearray(commands.pad(name.encode("utf-8"), 64))
     name_bytes[63] = 0
 
+    supported_anywhere = set(layout.main)
+    for keys in layout.sub.values():
+        supported_anywhere.update(keys)
+
+    def supported(page: int, key: int) -> bool:
+        return key in (layout.main if page == 0 else layout.sub.get(page, ()))
+
+    def number(label: str) -> int | None:
+        return int(label) if label.isdigit() and str(int(label)) == label else None
+
+    def function_of(label: str) -> int:
+        """getXxx_fun_key_name: the id of a known key, else 115 (names that are text too)."""
+        key = number(label)
+        return layout.function.get(key, 115) if key is not None else 115
+
+    # keyDetail, in the cloud's order. Without ``learned_keys`` it is rebuilt from ``custom_keys``
+    # (numeric names of keys this type knows, in name order), all of them keyType "key".
+    if learned_keys:
+        detail = [(str(label), str(kind)) for label, kind in learned_keys]
+    else:
+        detail = [
+            (label, "key") for label in sorted(custom_keys)
+            if (key := number(label)) is not None and key in supported_anywhere
+        ]
+    custom = set(custom_keys) | {label for label, kind in detail if kind == "key"}
+
     def block(key: int, start: int, length: int) -> tuple[int, bytes]:
-        if str(key) in custom_keys:
-            label = str(key).encode("utf-8")[:31]
-            return 2, label.ljust(32, b"\0")
+        if str(key) in custom:
+            return 2, _label(str(key)).ljust(32, b"\0")
         if not 0 <= start <= 0xFFFFFFFF or not 0 < length <= 0xFFFF:
             raise ValueError("IR code-bank reference is out of range")
         return 1, (start.to_bytes(4, "big") + length.to_bytes(2, "big")).ljust(32, b"\0")
 
     def record(position: int, function: int, kind: int, payload: bytes = b"") -> bytes:
-        return bytes([position]) + function.to_bytes(2, "big") + bytes([kind]) + payload.ljust(32, b"\0")
+        return bytes([position & 0xFF]) + function.to_bytes(2, "big") + bytes([kind]) + payload.ljust(32, b"\0")
 
-    supported = set(layout.main)
-    for keys in layout.sub.values():
-        supported.update(keys)
-    entries = [entry for entry in key_map if entry[0] in layout.function and entry[0] in supported]
-    listed = {entry[0] for entry in entries}
-    # keys uploaded on their own (keyDetail) that the key map does not mention come after it
-    for label in sorted(custom_keys):
-        if label.isdigit() and int(label) in supported and int(label) not in listed:
-            entries.append((int(label), 0, 1))
-            listed.add(int(label))
-    present = listed
+    map_keys = {entry[0] for entry in key_map}
+    # getIsOnlyPower: keyMap keys and the keyDetail entries of keyType "key"
+    owned = map_keys | {key for label, kind in detail if kind == "key" and (key := number(label)) is not None}
     only_power = (
         layout.power is not None
-        and layout.power in present
-        and not any(key in present for key in layout.on_off)
+        and layout.power in owned
+        and not any(key in owned for key in layout.on_off)
     )
-    page4_shown = any(
-        key in present and not (only_power and key == layout.power) for key in layout.sub.get(4, ())
-    )
+    power_label = str(layout.power)
 
-    pages: list[bytes] = []
-    for page in range(5):
+    def key_records(page: int) -> list[bytes]:
+        """The keyMap loop, then the keyDetail loop, of getDefaultKeysCmd for one page."""
         records: list[bytes] = []
-        wanted = layout.main if page == 0 else layout.sub.get(page, ())
-        for key, start, length in entries:
+        done: set[str] = set()
+        for key, start, length in key_map:
             if only_power and key == layout.power:
                 continue
-            if key not in wanted:
+            if not supported(page, key):
                 continue
             kind, payload = block(key, start, length)
             position = layout.main[key] if page == 0 else len(records)
-            records.append(record(position, layout.function[key], kind, payload))
+            records.append(record(position, function_of(str(key)), kind, payload))
+            done.add(str(key))
+        for label, kind_name in detail:
+            if label in done:
+                continue
+            if page == 4:
+                if len(records) >= _PAGE4_CAP:
+                    continue
+                if only_power and label == power_label and kind_name == "key":
+                    continue
+                key = number(label)
+                is_default = key is not None and key in layout.defaults
+                if (layout.text_on_page4 and kind_name == "text") or not is_default:
+                    records.append(record(len(records), function_of(label), 2, _label(label)))
+                    done.add(label)
+            else:
+                key = number(label)
+                if key is not None and supported(page, key):
+                    position = layout.main[key] if page == 0 else len(records)
+                    records.append(record(position, function_of(label), 2, _label(label)))
+                    done.add(label)
+        return records
+
+    def page4_count() -> int:
+        """getDefaultKeysCount(remote, 4): what decides whether D is shown."""
+        seen: set[str] = set()
+        total = 0
+        for key in map_keys:
+            if supported(4, key) and str(key) not in seen:
+                seen.add(str(key))
+                total += 1
+        for label, kind_name in detail:
+            key = number(label)
+            if label in seen or (kind_name != "text" and key is not None and key in layout.defaults):
+                continue
+            seen.add(label)
+            total += 1
+        return total - 1 if only_power else total
+
+    # the tag arrays of haveRemoteTag_default: a keyMap key or a keyDetail name of the right id
+    named = map_keys | {key for label, _kind in detail if (key := number(label)) is not None}
+
+    pages: list[bytes] = []
+    for page in range(5):
+        records = key_records(page)
         if page == 0:
             for step in layout.soft:
                 if isinstance(step, _Soft):
-                    shown = page4_shown if step.keys is None else any(key in present for key in step.keys)
+                    shown = page4_count() > 0 if step.keys is None else any(key in named for key in step.keys)
                     records.append(record(
                         step.position, step.function, 4 if shown else 254,
                         step.function.to_bytes(2, "big"),
                     ))
-                elif step.key not in present:
+                elif step.key not in named:
                     function = layout.function[step.key]
                     records.append(record(
                         step.position, function, 254,
                         step.payload if step.payload is not None else function.to_bytes(2, "big"),
                     ))
             if only_power:
-                power = next(entry for entry in entries if entry[0] == layout.power)
-                kind, payload = block(*power)
+                power = next((entry for entry in key_map if entry[0] == layout.power), None)
+                if power is not None:
+                    kind, payload = block(*power)
+                else:                                    # only in keyDetail: referenced by name
+                    kind, payload = 2, _label(power_label)
                 for position in (TAG["ON"], TAG["OFF"]):
                     records.append(record(position, layout.function[layout.power], kind, payload))
-        elif not records:
-            continue
+        elif not records and not (page == 4 and page4_count() > 0):
+            continue                      # the app writes a page 1..4 when its key count is > 0
         body = bytes([remote_index & 0xFF, device_type & 0xFF, commands.CTRL_IR, 0, icon & 0xFF]) \
             + remote_id + bytes(name_bytes) + bytes([0, page, len(records)]) + b"".join(records)
         pages.append(b"\x0f\x62\x06" + commands.s16(len(body)) + commands.s16(commands.crc16_modbus(body)) + body)
@@ -258,10 +341,12 @@ def _builder(layout: _Layout) -> Callable[..., tuple[bytes, ...]]:
         key_map: list[tuple[int, int, int]],
         icon: int = 0,
         custom_keys: frozenset[str] = frozenset(),
+        learned_keys: tuple[tuple[str, str], ...] = (),
     ) -> tuple[bytes, ...]:
         return _build(
             layout, remote_index=remote_index, device_type=device_type, remote_id=remote_id,
             name=name, key_map=key_map, icon=icon, custom_keys=custom_keys,
+            learned_keys=learned_keys,
         )
 
     return build

@@ -1415,17 +1415,18 @@ def build_tv_pages(
     key_map: list[tuple[int, int, int]],
     icon: int = 0,
     custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     """Build the pages the official app writes for an IR TV from a cloud key map.
 
     ``key_map`` holds ``(key id, offset, length)``; a key listed in ``custom_keys`` was uploaded
     on its own and is referenced by name. Power is written twice, on ON and on OFF, the way
-    the app does. The soft keys A-D show only the sub-pages that have keys.
+    the app does. The soft keys A-D show only the sub-pages that have keys. ``learned_keys`` are
+    the account's ``keyDetail`` entries as ordered ``(keyName, keyType)``: a learned default key
+    that the key map lacks goes to its own page, and a free-named ("text") key to page 4.
     """
     if len(remote_id) != 11:
         raise ValueError("IR remote id must be exactly 11 bytes")
-    if not key_map:
-        raise ValueError("IR key map must not be empty")
     name_bytes = bytearray(pad(name.encode("utf-8"), 64))
     name_bytes[63] = 0
 
@@ -1441,11 +1442,15 @@ def build_tv_pages(
         return bytes([position]) + function.to_bytes(2, "big") + bytes([kind]) + payload.ljust(32, b"\0")
 
     keys = [entry for entry in key_map if entry[0] in _TV_FUNCTION]
+    learned = [(str(name), str(key_type)) for name, key_type in learned_keys]
     present = {entry[0] for entry in keys}
-    has_power = _TV_POWER in present or str(_TV_POWER) in custom_keys
+    present |= {int(name) for name, _type in learned if name.isdigit() and int(name) in _TV_FUNCTION}
+    has_power = (_TV_POWER in present or str(_TV_POWER) in custom_keys
+                 or (str(_TV_POWER), "key") in learned)
     pages: list[bytes] = []
     for page in range(5):
         records: list[bytes] = []
+        placed: set[str] = set()
         wanted = _TV_MAIN_KEYS if page == 0 else _TV_SUBPAGE_KEYS[page]
         for key, start, length in keys:
             if key == _TV_POWER and has_power:
@@ -1455,10 +1460,28 @@ def build_tv_pages(
             kind, payload = block(key, start, length)
             position = _TV_MAIN_POSITION[key] if page == 0 else len(records)
             records.append(record(position, _TV_FUNCTION[key], kind, payload))
+            placed.add(str(key))
+        for name, key_type in learned:
+            # The app's keyDetail loop: keys the key map did not place on this page.
+            if name in placed:
+                continue
+            number = int(name) if name.isdigit() else None
+            is_default = number in _TV_FUNCTION
+            label = name.encode("utf-8")[:31]
+            if page == 4:
+                if len(records) < 15 and (key_type == "text" or not is_default):
+                    records.append(record(len(records), 115, 2, label))
+                    placed.add(name)
+            elif is_default and number in wanted and number != _TV_POWER:
+                position = _TV_MAIN_POSITION[number] if page == 0 else len(records)
+                records.append(record(position, _TV_FUNCTION[number], 2, label))
+                placed.add(name)
         if page == 0:
             for position in (TAG["A"], TAG["B"], TAG["C"], TAG["D"]):
                 if position == TAG["D"]:
-                    shown = any(key in present for key in _TV_SUBPAGE_KEYS[4])
+                    shown = any(key in present for key in _TV_SUBPAGE_KEYS[4]) or any(
+                        key_type == "text" or not (name.isdigit() and int(name) in _TV_FUNCTION)
+                        for name, key_type in learned)
                 else:
                     shown = any(key in present for key in _TV_SOFT_KEYS[position])
                 # The app puts the soft key's own function id in the first two payload bytes.
@@ -1538,8 +1561,13 @@ def parse_added_devices(raw: bytes) -> list[tuple[int, int, int, bytes]]:
     return items
 
 
-def parse_device_appearances(raw: bytes) -> dict[tuple[int, int, bytes], tuple[int, int]]:
-    """Read V48 0F6305 Native model modes and icons, keyed by slot, type and ID."""
+def parse_device_appearances(
+    raw: bytes, control_types: tuple[int, ...] | None = None
+) -> dict[tuple[int, int, bytes], tuple[int, int]]:
+    """Read V48 0F6305 model modes and icons, keyed by slot, type and ID.
+
+    Native entries by default; ``control_types`` picks other transports (HID, IR) instead.
+    """
     if len(raw) < 9 or raw[:4] != b"\x01\x00\x00\x00":
         raise ValueError("Unexpected device details response header")
     length = int.from_bytes(raw[4:6], "big")
@@ -1548,7 +1576,7 @@ def parse_device_appearances(raw: bytes) -> dict[tuple[int, int, bytes], tuple[i
     appearances = {}
     for offset in range(9, len(raw), 80):
         slot, device_type, control_type, mode, icon = raw[offset:offset + 5]
-        if control_type == CTRL_NATIVE:
+        if control_type in (control_types or (CTRL_NATIVE,)):
             identity = (slot, device_type, raw[offset + 5:offset + 16])
             if identity in appearances:
                 raise ValueError("Duplicate Native entry in device details")

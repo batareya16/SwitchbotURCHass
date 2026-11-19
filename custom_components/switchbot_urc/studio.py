@@ -49,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.5"
+FRONTEND_VERSION = "0.53.6"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -418,6 +418,11 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "artwork_id": artwork_id,
                 "can_test_native_icon": str(remote.get("device_type", "")).upper()
                     in commands.NATIVE_DEVTYPE,
+                # A native remote the app set up and Studio never wrote: its pages cannot be read
+                # back, so what Studio shows is the stock profile, which may not be what is on it.
+                "layout_assumed": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE
+                    and not (remote.get("physical_layout") or remote.get("physical_packets")
+                             or remote.get("custom_layout")),
                 "binding": deepcopy(binding) if binding else None,
                 "pages": remote_pages(remote, binding),
                 **({"matter": _matter_payload(remote)}

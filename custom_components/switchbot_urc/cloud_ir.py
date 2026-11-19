@@ -159,10 +159,17 @@ class CloudIrProfile:
     key_map_fast_bin: bytes = b""
     fast_config_bin: bytes = b""
     custom_code_banks: tuple[tuple[str, bytes], ...] = ()
+    # The account's keyDetail entries as ordered (keyName, keyType); keyType is "key" for a learned
+    # copy of a default key and "text" for a free-named key.
+    learned_keys: tuple[tuple[str, str], ...] = ()
+    # An empty remote of the chosen type: no codes at all, the user assigns them key by key.
+    blank: bool = False
     metadata: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def __post_init__(self) -> None:
-        if not self.code_bank:
+        # A learned (custom) remote has no code bank of its own: the account sends "no_data" and
+        # keeps every key in keyDetail.
+        if not self.code_bank and not self.custom_code_banks and not self.blank:
             raise ValueError("cloud IR profile has no code bank")
         valid = tuple(
             record
@@ -170,7 +177,8 @@ class CloudIrProfile:
             if record[1] >= 0 and record[2] > 0
             and record[1] + record[2] <= len(self.code_bank)
         )
-        if not valid and self.device_type not in AIR_CONDITIONER_TYPES:
+        if not valid and self.device_type not in AIR_CONDITIONER_TYPES \
+                and not self.custom_code_banks and not self.blank:
             raise ValueError("cloud IR key map has no valid code-bank references")
         object.__setattr__(self, "key_map", valid[:90])
 
@@ -182,6 +190,7 @@ class CloudIrProfile:
             return commands.build_tv_pages(
                 remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
                 name=name, key_map=list(self.key_map), icon=shown_icon, custom_keys=custom_keys,
+                learned_keys=self.learned_keys,
             )
         builder = PAGE_LAYOUTS.get(self.device_type)
         if builder is not None:
@@ -192,7 +201,7 @@ class CloudIrProfile:
             return builder(
                 remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
                 name=name, key_map=list(self.key_map), icon=shown_icon, custom_keys=custom_keys,
-                **extra,
+                learned_keys=self.learned_keys, **extra,
             )
         return commands.build_ir_pages(
             remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
@@ -218,7 +227,8 @@ class CloudIrProfile:
             ),
             ("ir_sync_start", commands.build_ir_sync(remote_count, 1), frozenset({0x01})),
         ]
-        result.extend(commands.build_ir_transfer_sequence(self.remote_id, self.code_bank))
+        if self.code_bank:
+            result.extend(commands.build_ir_transfer_sequence(self.remote_id, self.code_bank))
         if self.key_map_fast_bin:
             result.extend(
                 commands.build_ir_transfer_sequence(
@@ -280,6 +290,23 @@ class CloudIrProfile:
         }
 
 
+# Remote types an empty IR remote can be made of: those with a layout, DIY (9) excluded.
+BLANK_REMOTE_TYPES = tuple(sorted({2, *PAGE_LAYOUTS} - {*range(15, 28)}))
+
+
+def blank_profile(device_type: int, name: str) -> CloudIrProfile:
+    """An empty IR remote of ``device_type`` under a fresh id; its keys are assigned afterwards."""
+    if device_type not in BLANK_REMOTE_TYPES:
+        raise ValueError("Choose one of the IR remote types")
+    remote_id_text = generate_remote_id()
+    return CloudIrProfile(
+        key="blank", title=name, default_name=name,
+        remote_id=commands.cloud_remote_id_to_bytes(remote_id_text),
+        remote_id_text=remote_id_text, device_type=device_type, code_bank=b"", key_map=(),
+        blank=True,
+    )
+
+
 def profile_from_cloud(
     item: dict[str, Any],
     *,
@@ -295,23 +322,21 @@ def profile_from_cloud(
     code_value = merged.get("code")
     if not code_value:
         raise ValueError("cloud IR response did not contain code")
-    code_bank = decode_code_blob(code_value)
+    # A learned (custom) remote sends "no_data" instead of a code bank.
+    code_bank = b"" if str(code_value) == "no_data" else decode_code_blob(code_value)
     key_map_value = merged.get("keyMap", "")
     key_map = parse_key_map(key_map_value)
     custom: list[tuple[str, bytes]] = []
+    learned: list[tuple[str, str]] = []
     details = _as_object(merged.get("keyDetail", []))
     if isinstance(details, list):
         for index, detail in enumerate(details):
             if not isinstance(detail, dict) or not detail.get("code"):
                 continue
             try:
-                custom.append(
-                    (
-                        # The app names a learned key by "keyName" (and sends it by that name).
-                        str(detail.get("keyName", detail.get("key", detail.get("name", index)))),
-                        decode_code_blob(detail["code"]),
-                    )
-                )
+                label = str(detail.get("keyName", detail.get("key", detail.get("name", index))))
+                custom.append((label, decode_code_blob(detail["code"])))
+                learned.append((label, str(detail.get("keyType", "key"))))
             except (ValueError, TypeError):
                 continue
     type_value = remote_type if remote_type is not None else merged.get("type", 2)
@@ -352,5 +377,6 @@ def profile_from_cloud(
         key_map_fast_bin=_hex_bytes(merged.get("keyMapFastBin")),
         fast_config_bin=_hex_bytes(merged.get("fastConfigBin")),
         custom_code_banks=tuple(custom),
+        learned_keys=tuple(learned),
         metadata=merged,
     )

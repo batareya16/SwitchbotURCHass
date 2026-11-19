@@ -62,3 +62,29 @@ def test_a_custom_key_is_referenced_by_name_and_packets_are_well_formed():
 def test_unknown_keys_are_left_out():
     pages = build([(11, 0, 10), (999, 10, 5)])
     assert all(fun != 999 for _, fun, _, _ in records(pages[0]))
+
+
+def test_learned_keys_of_an_account_remote_follow_the_apps_key_detail_loop():
+    # A custom TV: no code bank references at all, every key learned. Text keys go to page 4
+    # (kind 2, function 115, named), a learned default key (Volume up = 9) to the main page.
+    learned = (("Netflix", "text"), ("9", "key"), ("Prime", "text"))
+    pages = commands.build_tv_pages(remote_index=1, device_type=16, remote_id=REMOTE_ID, name="TV",
+                                    key_map=[], custom_keys=frozenset({"Netflix", "9", "Prime"}),
+                                    learned_keys=learned)
+    by_page = {packet[HEADER + PAGE_BODY + 1]: records(packet) for packet in pages}
+    assert sorted(by_page) == [0, 4]
+    assert [(pos, fun, kind) for pos, fun, kind, _ in by_page[4]] == [(0, 115, 2), (1, 115, 2)]
+    assert by_page[4][0][3].rstrip(b"\0") == b"Netflix" and by_page[4][1][3].rstrip(b"\0") == b"Prime"
+    volume = [r for r in by_page[0] if r[1] == 15]
+    assert [(r[0], r[2]) for r in volume] == [(commands.TAG["VOLADD"], 2)]
+    assert volume[0][3].rstrip(b"\0") == b"9"
+    d = [r for r in by_page[0] if r[1] == 100]
+    assert [r[2] for r in d] == [4]                      # D opens page 4: it has keys now
+
+
+def test_page_four_takes_at_most_fifteen_text_keys():
+    learned = tuple((f"Key{n}", "text") for n in range(20))
+    pages = commands.build_tv_pages(remote_index=1, device_type=16, remote_id=REMOTE_ID, name="TV",
+                                    key_map=[], custom_keys=frozenset(), learned_keys=learned)
+    last = [packet for packet in pages if packet[HEADER + PAGE_BODY + 1] == 4][0]
+    assert len(records(last)) == 15

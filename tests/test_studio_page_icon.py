@@ -174,3 +174,48 @@ def test_serialised_remotes_say_which_picture_type_default_or_original_gives_bac
     # the text remote's "Type default" is the firmware's own text-remote picture
     assert rows["mt1"]["default_artwork_id"] == 0x1B
 
+
+def test_hid_and_ir_icons_are_read_from_the_device_when_the_remote_is_refreshed(studio):
+    # Studio guessed the tv icon for an adopted remote (placeholder name), the device says icon 0.
+    hid_id, ir_id = commands.id_to_bytes(DEVICE_ID), bytes.fromhex("0300000e0e0e0e0e0e0e0e")
+
+    def record(slot, device_type, control, mode, icon, identity):
+        return bytes([slot, device_type, control, mode, icon]) + identity + bytes(80 - 16)
+
+    body = bytes([2]) + record(2, 0xF2, commands.CTRL_HID, 0, 0, hid_id) \
+        + record(3, 0x02, commands.CTRL_IR, 1, 10, ir_id)
+    raw = b"\x01\0\0\0" + len(body).to_bytes(2, "big") + b"\0\0" + body
+
+    class Client:
+        async def query(self, subcommand, **_kwargs):
+            assert subcommand == 5
+            return raw
+
+    table = [(2, 0xF2, commands.CTRL_HID, hid_id), (3, 0x02, commands.CTRL_IR, ir_id)]
+    page = commands.rewrite_native_page_icon(hid_page(), 10).hex()
+    remotes = [
+        {"index": 2, "name": "Box", "device_type": "UNIVERSAL_BLE", "device_id": DEVICE_ID,
+         "icon": "tv", "icon_code": 10, "physical_packets": [page]},
+        {"index": 3, "name": "TV", "device_type": "IR_2", "device_id": ir_id.hex(), "icon": "tv"},
+    ]
+    run(studio.studio_physical._refresh_page_remote_icons(Client(), table, remotes))
+    box, tv = remotes
+    assert (box["icon"], box["icon_code"]) == ("device", 0)              # icon 0: the type's own picture
+    assert bytes.fromhex(box["physical_packets"][0]) == hid_page()       # the saved page agrees
+    assert (tv["icon"], tv["icon_code"], tv["control_mode"]) == ("tv", 10, 1)
+
+
+def test_a_native_remote_studio_never_wrote_is_flagged_as_an_assumed_layout(studio, monkeypatch):
+    import types
+
+    app_made = {"index": 1, "name": "TV Ambience", "device_type": "STRIP", "device_id": "0200000e0e0e",
+                "remote_id": "strip1", "buttons": []}
+    studio_made = {**app_made, "index": 2, "name": "Lamp", "remote_id": "strip2",
+                   "device_id": "0200000e0e0f", "physical_packets": [hid_page().hex()]}
+    hass, entry, _, _ = make(studio, FakeClient([]), [app_made, studio_made])
+    monkeypatch.setattr(studio, "_repair_identities", lambda *_: None)
+    monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
+        async_get_entity_id=lambda *_: None))
+    rows = {row["remote_id"]: row for row in studio._serialize_entry(hass, entry)["remotes"]}
+    assert rows["strip1"]["layout_assumed"] is True        # the app wrote it; Studio shows the stock pages
+    assert rows["strip2"]["layout_assumed"] is False       # Studio holds the pages it wrote

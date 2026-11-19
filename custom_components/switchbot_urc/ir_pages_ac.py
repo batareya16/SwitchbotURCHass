@@ -131,6 +131,27 @@ def _custom_sort_key(label: str) -> tuple[int, int, str]:
     return (0, int(label), label) if label.isdigit() else (1, 0, label)
 
 
+def _learned_list(
+    learned_keys: tuple[tuple[str, str], ...], custom_keys: frozenset[str],
+) -> list[tuple[str, str]]:
+    """The app's keyDetail as ordered (name, type) pairs: first occurrence of each name.
+
+    Without ``learned_keys`` the names in ``custom_keys`` stand in for it, all of type "key",
+    in numeric-then-alphabetical order (a frozenset has no order of its own).
+    """
+    if learned_keys:
+        pairs = [(str(label), str(kind)) for label, kind in learned_keys]
+    else:
+        pairs = [(label, "key") for label in sorted(custom_keys, key=_custom_sort_key)]
+    seen: set[str] = set()
+    result = []
+    for label, kind in pairs:
+        if label not in seen:
+            seen.add(label)
+            result.append((label, kind))
+    return result
+
+
 def build_air_pages(
     *,
     remote_index: int,
@@ -140,6 +161,7 @@ def build_air_pages(
     key_map: list[tuple[int, int, int]],
     icon: int = 0,
     custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     """Build the pages the official app writes for an IR air purifier (types 10 and 23).
 
@@ -150,29 +172,38 @@ def build_air_pages(
 
     Power: a remote that has the Power key but neither ON nor OFF gets Power written twice on the
     ON and OFF positions (the code-bank slice or custom name is shared) and is left out of page 4.
-    A key listed in ``custom_keys`` is referenced by name (kind 2). Names in ``custom_keys`` that
-    the key map does not place are the app's ``keyDetail`` entries: the main-page and fan-speed
-    ones join their page, the others go to page 4 (function 115 unless the name is a known key).
+
+    ``learned_keys`` is the cloud ``keyDetail`` as ordered ``(keyName, keyType)`` pairs. A key-map
+    key that has a ``"key"`` entry of the same name is referenced by name (kind 2). The entries the
+    key map does not place are walked in order: the main-page and fan-speed ones join their page,
+    the others go to page 4 (function 115 unless the name is a known key) as kind 2; as in the app
+    the type does not matter there, except that a ``"text"`` entry is counted for page 4 even when
+    its name is a default key (and then not written), and that only a ``"key"`` Power counts for the
+    Power-only rule. Without ``learned_keys`` the names in ``custom_keys`` are used, all of type
+    ``"key"``. The key map may be empty (a custom type whose keys are all learned).
     """
     if len(remote_id) != 11:
         raise ValueError("IR remote id must be exactly 11 bytes")
-    if not key_map and not custom_keys:
-        raise ValueError("IR key map must not be empty")
+    detail = _learned_list(learned_keys, custom_keys)
     name_bytes = _name_field(name, strip_slash=True)
 
     entries = [(str(key), start, length) for key, start, length in key_map]
-    detail = sorted(custom_keys, key=_custom_sort_key)
-    ids = {key for key, _s, _l in entries} | set(custom_keys)
-    has_power = str(_AIR_POWER) in ids
-    only_power = has_power and not ({str(_AIR_ON), str(_AIR_OFF)} & ids)
+    custom = {label for label, kind in detail if kind == "key"}      # checkIsCustomKey
+    ids = {key for key, _s, _l in entries} | {label for label, _kind in detail}
+    power, on_off = str(_AIR_POWER), {str(_AIR_ON), str(_AIR_OFF)}
+    has_power = power in {key for key, _s, _l in entries} or power in custom
+    only_power = has_power and not (on_off & ({key for key, _s, _l in entries} | custom))
 
     def block(key: str, start: int, length: int) -> tuple[int, bytes]:
-        if key in custom_keys:
+        if key in custom:
             return KIND_NAME, _key_name(key)
         return KIND_CODE, _code_payload(start, length)
 
     def supported(page: int, key: str) -> bool:
         return key.isdigit() and int(key) in _AIR_PAGE_KEYS[page]
+
+    def default_key(label: str) -> bool:
+        return label.isdigit() and int(label) in _AIR_CUSTOM_DEFAULT
 
     def mapped(page: int) -> list[tuple[str, int, int]]:
         """The key-map entries of this page, first occurrence of each id, in map order."""
@@ -182,17 +213,19 @@ def build_air_pages(
                 result.append(entry)
         return result
 
-    def learned(page: int) -> list[str]:
-        """Custom keys the key map does not place on this page (the app's keyDetail loop)."""
-        placed = {entry[0] for entry in mapped(page)}
-        if page == 4:
-            return [label for label in detail if label not in placed
-                    and not (label.isdigit() and int(label) in _AIR_CUSTOM_DEFAULT)]
-        return [label for label in detail if label not in placed and supported(page, label)]
-
     def count(page: int) -> int:
         """getDefaultKeysCount: a page is written only when this is above zero."""
-        total = len(mapped(page)) + len(learned(page))
+        counted = {entry[0] for entry in mapped(page)}
+        for label, kind in detail:
+            if label in counted:
+                continue
+            if page == 4:
+                if kind != "text" and default_key(label):
+                    continue
+            elif not supported(page, label):
+                continue
+            counted.add(label)
+        total = len(counted)
         if page == 0:
             total += 2
         if page == 4 and only_power:
@@ -201,22 +234,31 @@ def build_air_pages(
 
     def page_records(page: int) -> list[bytes]:
         records: list[bytes] = []
+        pushed: set[str] = set()
 
         def position(key: str) -> int:
             return _AIR_MAIN_POSITION.get(int(key), TAG["D"]) if page == 0 else len(records)
 
         for key, start, length in mapped(page):
-            if key == str(_AIR_POWER) and only_power:
+            if key == power and only_power:
                 continue
             kind, payload = block(key, start, length)
             records.append(_record(position(key), _air_function(key), kind, payload))
-        for label in learned(page):
+            pushed.add(key)
+        for label, kind in detail:
+            if label in pushed:
+                continue
             if page == 4:
                 if len(records) >= _AIR_PAGE_D_LIMIT:
                     continue
-                if label == str(_AIR_POWER) and only_power:
+                if label == power and kind == "key" and only_power:
                     continue
+                if default_key(label):
+                    continue
+            elif not supported(page, label):
+                continue
             records.append(_record(position(label), _air_function(label), KIND_NAME, _key_name(label)))
+            pushed.add(label)
         return records
 
     def has_soft(position: int) -> bool:
@@ -347,6 +389,7 @@ def build_arc_pages(
     custom_keys: frozenset[str] = frozenset(),
     fast_config_map: Any = None,
     fast_config_bin: bytes | None = None,
+    learned_keys: tuple[tuple[str, str], ...] = (),
 ) -> tuple[bytes, ...]:
     """Build the pages the official app writes for an IR air conditioner (types 1 and 15).
 
@@ -363,6 +406,13 @@ def build_arc_pages(
     page with just the ON and OFF keys, taken from the learned keys whose name starts with ``ON``
     or ``OFF`` (kind 2, the name cut to 16 characters). Pass ``b""`` for that case; ``None`` (the
     default) means the data is present.
+
+    ``learned_keys`` is the cloud ``keyDetail`` as ordered ``(keyName, keyType)`` pairs; the
+    "custom on/off" rule takes the first entry whose name starts with ``ON`` and the first that
+    starts with ``OFF`` in that order, whatever the type (the app does not look at it), and the
+    other entries, ``"text"`` ones included, are not written: an air conditioner remote has no
+    page for them. Without it, ``custom_keys`` is used in numeric-then-alphabetical order. The key
+    map may be empty, as for a custom type 15 remote whose code is ``no_data``.
     """
     if len(remote_id) != 11:
         raise ValueError("IR remote id must be exactly 11 bytes")
@@ -373,8 +423,8 @@ def build_arc_pages(
             remote_index=remote_index, device_type=device_type, remote_id=remote_id,
             name_bytes=name_bytes, icon=icon, page=page, records=records)
 
-    if fast_config_bin is not None and not fast_config_bin and custom_keys:
-        labels = sorted(custom_keys, key=_custom_sort_key)
+    labels = [label for label, _kind in _learned_list(learned_keys, custom_keys)]
+    if fast_config_bin is not None and not fast_config_bin and labels:
         records = []
         for position, function, prefix in ((TAG["ON"], 5, "ON"), (TAG["OFF"], 6, "OFF")):
             label = next((item for item in labels if item.startswith(prefix)), None)
