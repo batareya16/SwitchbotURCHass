@@ -22,6 +22,17 @@ REMOTE_TYPES = {
     13: "Water heater",
     14: "Robot vacuum",
 }
+# The catalog numbers its types like the SwitchBot hub does. The Universal Remote and the app use
+# their own ids (REMOTE_*_TYPE in the app: IPTV 3, set-top box 4, DVD 5, fan 6, projector 7,
+# camera 8, air purifier 10, audio 11, water heater 12, robot vacuum 13, light 14); that is the
+# type byte written into the remote's pages and sent to the account.
+APP_REMOTE_TYPES = {1: 1, 2: 2, 3: 14, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 10: 8, 11: 10, 12: 11,
+                    13: 12, 14: 13}
+
+
+def app_remote_type(catalog_type: int) -> int:
+    """The remote type the app and the Universal Remote use for a catalog type."""
+    return APP_REMOTE_TYPES.get(int(catalog_type), int(catalog_type))
 
 
 @dataclass(frozen=True)

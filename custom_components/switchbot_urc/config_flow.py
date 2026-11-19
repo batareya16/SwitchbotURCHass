@@ -52,7 +52,7 @@ from .inventory import (
     stable_id_for_local,
 )
 from .ir_catalog import available as catalog_available
-from .ir_catalog import REMOTE_TYPES, brands as catalog_brands, profiles as catalog_profiles
+from .ir_catalog import REMOTE_TYPES, app_remote_type, brands as catalog_brands, profiles as catalog_profiles
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1742,7 +1742,7 @@ class UrcOptionsFlow(OptionsFlow):
                     model_item,
                     remote_id=generate_remote_id(),
                     name=user_input["name"],
-                    remote_type=self._catalog_type,
+                    remote_type=app_remote_type(self._catalog_type),
                     metadata=asdict(metadata),
                 )
                 errors, remote_index = await self._install_ir_profile(

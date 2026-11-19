@@ -580,7 +580,8 @@ async def _install_ir_remote(hass, connection, msg):
                 raise ValueError("The cloud returned no code bank for this model")
             profile = profile_from_cloud(
                 item, remote_id=generate_remote_id(), name=name,
-                remote_type=metadata.remote_type, metadata=asdict(metadata),
+                remote_type=ir_catalog.app_remote_type(metadata.remote_type),
+                metadata=asdict(metadata),
             )
         else:
             remote_id = str(msg.get("remote_id", ""))

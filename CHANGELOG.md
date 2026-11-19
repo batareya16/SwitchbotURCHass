@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.53.5
+
+- Every IR remote type is now laid out the way the official app lays it out, not only TVs. The remote finds a key by the firmware's function id next to a screen position, and each type has its own main-page positions, sub-pages behind the A-D soft keys and Power handling. Covered: air conditioner, air purifier, IPTV, set-top box, DVD, fan, projector, light, audio, water heater, robot vacuum and camera. DIY remotes are not covered. Built from the app's own code and checked by tests only; not confirmed on a real Universal Remote yet.
+- Fix the type of IR remotes installed from the catalog. The catalog numbers its types like the SwitchBot hub (light is 3), while the remote and the app use their own ids (light is 14). The catalog number was written to the remote as it was, so anything except TVs and air conditioners was installed under the wrong type. It is now converted, and the picture shown for "Type default" in the Add dialog follows the same conversion.
+- Fix the soft keys A-D of an IR TV carrying zero bytes where the app writes the key's own function id.
+- Fix learned keys of an account remote being named by a wrong field (the app calls it `keyName`), and the type names used when the cloud sends a type as a word.
+- An air conditioner can be installed without per-key code references in its key map; it is built from its code bank and fast-config data.
+- Bridge add-on 0.53.5 (update it as well): it now answers the remote's connection-parameter requests. Without the answer the remote stopped responding during an IR install, showed "sync error" and the link dropped with `central disconnected: 0x08`. The add-on log also shows what the remote sends besides ATT data and how long each install step took.
+- An IR install announces one remote in its sync boundary, as the official app does, instead of the size of the device table.
+
 ## 0.53.4
 
 - Fix an IR remote install ending in "sync error" on the remote's screen. The sync boundary of an install carries the number of remotes sent in this synchronisation, and Studio announced the size of the device table instead, so the remote waited for remotes that never came. It now announces one remote, as the official app does for a single new remote. Not confirmed on a real Universal Remote yet.

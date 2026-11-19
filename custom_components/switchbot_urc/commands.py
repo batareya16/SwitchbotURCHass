@@ -1461,7 +1461,10 @@ def build_tv_pages(
                     shown = any(key in present for key in _TV_SUBPAGE_KEYS[4])
                 else:
                     shown = any(key in present for key in _TV_SOFT_KEYS[position])
-                records.append(record(position, _TV_SOFT_FUNCTION[position], 4 if shown else 254))
+                # The app puts the soft key's own function id in the first two payload bytes.
+                function = _TV_SOFT_FUNCTION[position]
+                records.append(record(position, function, 4 if shown else 254,
+                                      function.to_bytes(2, "big")))
             if has_power:
                 power = next((entry for entry in keys if entry[0] == _TV_POWER), None)
                 kind, payload = block(*(power or (_TV_POWER, 0, 1)))

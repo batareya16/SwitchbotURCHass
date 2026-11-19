@@ -36,6 +36,11 @@ const IR_PROFILE_ARTWORK = {
   1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
   8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
 };
+// The catalog numbers its IR types like the SwitchBot hub; the remote and the app use their own
+// ids (the keys above). Light is 3 in the catalog and 14 on the remote, and so on.
+const CATALOG_TO_REMOTE_IR_TYPE = {
+  1: 1, 2: 2, 3: 14, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 10: 8, 11: 10, 12: 11, 13: 12, 14: 13,
+};
 // English captions from docs/native-glyph-resource-index.csv (WoRWS V48).
 const NATIVE_GLYPH_LABELS = {
   "0": null,
@@ -2403,7 +2408,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const picked = add.icon || "device";
     const names = ["device", ...(this._entry()?.icons || [])];
     // The picture "Type default" gives back for what is being added, where it is known.
-    const irType = add.kind === "catalog" ? Number(this._catalog?.remoteType)
+    const irType = add.kind === "catalog"
+      ? CATALOG_TO_REMOTE_IR_TYPE[Number(this._catalog?.remoteType)]
       : add.kind === "cloud"
         ? Number((this._sources?.cloud_remotes || []).find((item) => item.remote_id === add.remoteId)?.device_type)
         : NaN;

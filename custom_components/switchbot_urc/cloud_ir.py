@@ -9,7 +9,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from . import commands
+from . import commands, ir_pages_ac, ir_pages_home, ir_pages_misc, ir_pages_video
+
+# Page layouts of the official app, per remote type (see the ir_pages_* modules). A type that is
+# not listed falls back to the generic layout.
+PAGE_LAYOUTS = {
+    **ir_pages_ac.LAYOUT_TYPES,
+    **ir_pages_home.LAYOUT_TYPES,
+    **ir_pages_misc.LAYOUT_TYPES,
+    **ir_pages_video.LAYOUT_TYPES,
+}
+# Air conditioners carry no per-key code references: the remote builds frames from the code
+# bank, keyMapFastBin and fastConfigBin.
+AIR_CONDITIONER_TYPES = (1, 15)
 
 
 def decode_code_blob(value: str | bytes) -> bytes:
@@ -158,18 +170,29 @@ class CloudIrProfile:
             if record[1] >= 0 and record[2] > 0
             and record[1] + record[2] <= len(self.code_bank)
         )
-        if not valid:
+        if not valid and self.device_type not in AIR_CONDITIONER_TYPES:
             raise ValueError("cloud IR key map has no valid code-bank references")
         object.__setattr__(self, "key_map", valid[:90])
 
     def build_pages(self, *, remote_index: int, name: str, icon: int | None = None) -> tuple[bytes, ...]:
-        """The key pages for this profile; a TV gets the official app's own layout."""
+        """The key pages for this profile, laid out the way the official app does it per type."""
         shown_icon = self.icon if icon is None else icon
+        custom_keys = frozenset(label for label, _bank in self.custom_code_banks)
         if self.device_type in commands.TV_REMOTE_TYPES:
             return commands.build_tv_pages(
                 remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
-                name=name, key_map=list(self.key_map), icon=shown_icon,
-                custom_keys=frozenset(label for label, _bank in self.custom_code_banks),
+                name=name, key_map=list(self.key_map), icon=shown_icon, custom_keys=custom_keys,
+            )
+        builder = PAGE_LAYOUTS.get(self.device_type)
+        if builder is not None:
+            extra = {}
+            if self.device_type in AIR_CONDITIONER_TYPES:
+                extra = {"fast_config_map": self.metadata.get("fastConfigMap"),
+                         "fast_config_bin": self.fast_config_bin}
+            return builder(
+                remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
+                name=name, key_map=list(self.key_map), icon=shown_icon, custom_keys=custom_keys,
+                **extra,
             )
         return commands.build_ir_pages(
             remote_index=remote_index, device_type=self.device_type, remote_id=self.remote_id,
@@ -284,7 +307,8 @@ def profile_from_cloud(
             try:
                 custom.append(
                     (
-                        str(detail.get("key", detail.get("name", index))),
+                        # The app names a learned key by "keyName" (and sends it by that name).
+                        str(detail.get("keyName", detail.get("key", detail.get("name", index)))),
                         decode_code_blob(detail["code"]),
                     )
                 )
@@ -294,21 +318,22 @@ def profile_from_cloud(
     try:
         resolved_type = _as_int(type_value)
     except (TypeError, ValueError):
+        # The app's own ids (REMOTE_*_TYPE in the SwitchBot bundle).
         type_names = {
-            "tv": 1,
-            "air_conditioner": 2,
-            "ac": 2,
-            "fan": 3,
-            "light": 4,
-            "iptv": 5,
-            "set_top_box": 6,
-            "dvd": 7,
-            "speaker": 8,
-            "projector": 10,
-            "camera": 11,
-            "air_purifier": 12,
-            "water_heater": 13,
-            "vacuum": 14,
+            "air_conditioner": 1,
+            "ac": 1,
+            "tv": 2,
+            "iptv": 3,
+            "set_top_box": 4,
+            "dvd": 5,
+            "fan": 6,
+            "projector": 7,
+            "camera": 8,
+            "air_purifier": 10,
+            "speaker": 11,
+            "water_heater": 12,
+            "vacuum": 13,
+            "light": 14,
         }
         resolved_type = type_names.get(str(type_value).strip().lower(), 2)
     resolved_name = str(name or merged.get("remoteName") or merged.get("model") or "IR remote")
