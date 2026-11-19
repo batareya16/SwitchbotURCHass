@@ -150,6 +150,9 @@ def test_server_reads_without_releasing_or_resetting_the_controller(monkeypatch)
             if opcode == hci.OP_LE_CREATE_CONN:
                 assert len(payload) == 25
                 assert payload[6:12] == hci.address_bytes(PEER)
+                # The remote goes silent for seconds while it writes flash; a 4 s link
+                # supervision timeout dropped installs with "disconnected: 0x08".
+                assert int.from_bytes(payload[19:21], "little") >= 2000
                 server._on_event(hci.EV_LE_META, bytes([1, 0, 24, 0, 0, 0])
                                  + hci.address_bytes(PEER) + bytes(7))
             elif opcode == hci.OP_DISCONNECT:
