@@ -399,3 +399,42 @@ def test_bulk_upload_is_not_throttled_like_a_short_command():
     assert len(sent) == 206 and len(waits) == 205
     assert set(waits) == {hci.AttManagementClient.BULK_CHUNK_PAUSE}
     assert hci.AttManagementClient.BULK_CHUNK_PAUSE < hci.AttManagementClient.CHUNK_PAUSE
+
+
+def _central_server():
+    server = object.__new__(hci.MultiAddressServer)
+    client = hci.AttManagementClient(PEER, lambda _: None)
+    server._central_client = client
+    server._central_link = hci.Link(24, PEER, client, None)
+    server.links = {}
+    sent, commands = [], []
+    class Writer:
+        def send(self, handle, data, cid=hci.ATT_CID):
+            sent.append((handle, cid, data))
+    class Channel:
+        def command(self, opcode, payload=b"", **_kwargs):
+            commands.append((opcode, payload))
+            return b""
+    server.writer = Writer()
+    server.channel = Channel()
+    return server, sent, commands
+
+
+def test_remote_connection_parameter_request_is_answered_like_a_phone_does():
+    import struct
+    server, sent, commands = _central_server()
+    request = struct.pack("<BBHHHHH", 0x12, 7, 8, 24, 40, 0, 600)
+    frame = struct.pack("<HH", len(request), hci.SIGNALING_CID) + request
+    acl = struct.pack("<HH", 24, len(frame)) + frame
+    server._on_acl(acl)
+    assert sent == [(24, hci.SIGNALING_CID, struct.pack("<BBHH", 0x13, 7, 2, 0))]
+    assert commands == [(hci.OP_LE_CONNECTION_UPDATE, struct.pack("<HHHHHHH", 24, 24, 40, 0, 600, 0, 0))]
+
+
+def test_controller_waits_for_the_host_to_answer_a_link_layer_parameter_request():
+    import struct
+    server, _sent, commands = _central_server()
+    params = bytes([hci.LE_REMOTE_PARAM_REQUEST]) + struct.pack("<HHHHH", 24, 24, 40, 0, 600)
+    server._on_event(hci.EV_LE_META, params)
+    assert commands == [(hci.OP_LE_PARAM_REQUEST_REPLY,
+                         struct.pack("<HHHHHHH", 24, 24, 40, 0, 600, 0, 0))]
