@@ -2,7 +2,7 @@
 
 Use your SwitchBot Universal Remote (WoRWS) to control lights, start a robot vacuum, run scripts, or launch scenes in Home Assistant. **Remote Studio** lets you set this up by clicking buttons on a preview of the remote. You can also manage infrared and Bluetooth remotes, the remote's own **scenes** and a **text remote** with four captioned buttons from the same screen.
 
-![Remote Studio in Home Assistant](https://github.com/user-attachments/assets/799c9ee6-b741-4766-9219-549d9b69d6f5)
+![Remote Studio in Home Assistant](https://github.com/user-attachments/assets/b07c0ab7-a111-4907-98e5-f19e79c38922)
 
 ## Which kind of remote do I need?
 
