@@ -1462,7 +1462,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const [status] = this._status(item);
       const on = item.button_id === this._buttonId;
       const draft = this._draftLabel(item);
-      return `<div class="scr-pad-key k ${status}${extraClass}${item.layout_empty ? " empty" : ""}${on ? " on" : ""}${draft ? " unsaved" : ""}"
+      return `<div class="scr-pad-key k ${status}${extraClass}${item.layout_empty ? " pad-unset" : ""}${on ? " on" : ""}${draft ? " unsaved" : ""}"
         role="button" tabindex="0" data-button="${escapeHtml(item.button_id)}"
         title="${escapeHtml(item.label)}${item.layout_empty ? " · no command yet" : ""}">${escapeHtml(NUMBER_PAD_LABELS[item.button_index])}</div>`;
     };
@@ -4632,12 +4632,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
       .scr-row.unsaved{outline:1px dashed #ffffff80;outline-offset:-1px}
-      .scr-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:6px 12px}
-      .scr-pad.soft{grid-template-columns:repeat(4,1fr);gap:4px;padding-top:2px}
-      .scr-pad-key{display:grid;place-items:center;height:30px;border:1px solid #ffffff40;border-radius:8px;
-        font:700 15px/1 system-ui,sans-serif;cursor:pointer}
-      .scr-pad-key.soft{height:24px;font-size:10px}
-      .scr-pad-key.empty{opacity:.4;border-style:dashed}
+      .scr-pad{display:grid;grid-template-columns:repeat(3,44px);justify-content:center;gap:5px 10px;padding:2px 0}
+      .scr-pad.soft{grid-template-columns:repeat(4,40px);gap:6px;padding-top:6px}
+      .scr-pad-key{display:grid;place-items:center;box-sizing:border-box;height:26px;margin:0;padding:0;
+        border:1px solid #ffffff40;border-radius:13px;font:700 14px/1 system-ui,sans-serif;cursor:pointer}
+      .scr-pad-key.soft{height:20px;border-radius:10px;font-size:9px}
+      .scr-pad-key.pad-unset{opacity:.4;border-style:dashed}
       .scr-pad-key:hover{background:#ffffff14}.scr-pad-key.on{background:#ffffff2e;opacity:1}
       .scr-pad-key.custom{color:#8df0bd}.scr-pad-key.unsaved{outline:1px dashed #ffffff80;outline-offset:1px}
       .scr-pad-key:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.25
+
+- Fix the number pad on Studio's picture of the remote: its keys were drawn huge and the screen scrolled sideways, because a key without a command picked up the panel's style for empty notices. The pad is now drawn small enough to show the whole grid and the four keys under it at once.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.24
 
 - Key A of an audio remote can no longer be given a command: on the remote it opens the number pad when it has one and otherwise shows "No list under this shortcut", so a command there was never sent. Studio offers only **Turn key A into a number pad** on it, like D, which only opens a page. On every key that only opens a page (audio A and D, light D, fan C and D, air conditioner A–D) Studio no longer offers **Give this key a command**, and a command left there from an earlier version is flagged in the key's editor.

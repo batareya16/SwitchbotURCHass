@@ -1355,7 +1355,8 @@ test('a number pad page has its 14 keys, the missing ones as dim placeholders', 
   const screen = instance._renderNumberPad(pad);
   assert.equal((screen.match(/data-button=/g) || []).length, 14);
   assert.match(screen, /data-button="p1_k9"[^>]*>0</);
-  assert.match(screen, /scr-pad-key k [^"]* empty[^"]*"[\s\S]*?data-button="p1_k0"/);
+  assert.match(screen, /scr-pad-key k [^"]* pad-unset[^"]*"[\s\S]*?data-button="p1_k0"/);
+  assert.doesNotMatch(screen, /class="[^"]*\bempty\b/);
 });
 
 test('each IR window offers a list or the number pad only where the remote opens one', () => {
