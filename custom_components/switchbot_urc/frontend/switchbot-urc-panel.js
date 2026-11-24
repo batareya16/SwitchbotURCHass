@@ -39,6 +39,10 @@ const BLANK_IR_TYPES = [
   [12, "Water heater"], [13, "Robot vacuum"], [8, "Camera"],
 ];
 const IR_KINDS = ["catalog", "cloud", "blank"];
+// Icons the firmware treats as menu shortcuts: on a key with no page behind it, pressing one
+// shows "No list under this shortcut" (WoRWS V48, decoded, not run on a remote).
+const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 119,
+  123, 124, 125, 126, 210, 320, 330, 914, 915, 916, 917]);
 const IR_PROFILE_ARTWORK = {
   1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
   8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
@@ -3078,8 +3082,13 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     root.getElementById("addCommandToIconKey")?.addEventListener("click", () => {
       // The icon stays: from here it is the picture of a key that also sends a code.
-      key.transport = "ir";
-      key.code_hex = "";
+      if (this._physical.kind === "native") {
+        key.transport = "native";
+        key.function ??= NATIVE_CUSTOM_FUNCTION;
+      } else {
+        key.transport = "ir";
+        key.code_hex = "";
+      }
       this._render();
     });
 
@@ -3188,7 +3197,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       let owner = glyphField === "link_glyph"
         ? this._physical.pages.find((page) => page.index === this._page()?.index)
         : this._draftKey(this._button())?.key;
-      if (!owner && glyphField === "glyph" && this._physical.kind === "ir" && glyphCode !== "") {
+      if (!owner && glyphField === "glyph" && (this._physical.kind === "ir" || this._physical.kind === "native")
+          && glyphCode !== "") {
         // An empty A–D position takes an icon alone: it becomes an icon-only key.
         const target = this._physical.pages.find((page) => page.index === this._button()?.button_page);
         if (!target) return;
@@ -3293,9 +3303,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!page) return "";
       const label = kind === "native" ? "Assign an action" : "Give this key a command";
       // An A–D key on an IR remote's Main page can show an icon with no command behind it.
-      const iconOnly = kind === "ir" && page.index === 0 && button.button_index < 4
+      const canIconOnly = (kind === "ir" || kind === "native") && page.index === 0 && button.button_index < 4;
+      const iconOnly = canIconOnly
         ? `${this._renderGlyphPicker({}, "glyph", "Icon only, no command", 0,
-          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}` : "";
+          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}`
+        : kind === "hid" || kind === "ir"
+          ? '<p class="small">A picture needs a command here: give the key a command first, then choose its icon.</p>' : "";
       return `<div class="action-box key-editor">
         ${kind === "native" ? "" : '<div class="action-title"><b>On the remote</b><span>this position is empty</span></div>'}
         <div class="key-actions">
@@ -3315,6 +3328,20 @@ class SwitchBotUrcPanel extends HTMLElement {
     const pageControl = this._pageControl(button, key);
     const clearKey = `<button class="secondary compact destructive" id="removeKey"
       title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`;
+    if (key.transport === "icon") {
+      return `<div class="action-box key-editor">
+        <div class="action-title"><b>On the remote</b><span>shows an icon, sends nothing</span></div>
+        ${this._renderGlyphPicker(key, "glyph", "Icon only, no command", key.glyph,
+          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}
+        ${MENU_SHORTCUT_ICONS.has(key.glyph)
+          ? '<p class="small" role="status">The remote treats this icon as a menu shortcut: pressing the key shows "No list under this shortcut". Pick another icon if that is not wanted.</p>' : ""}
+        <div class="key-actions">
+          <button class="secondary compact" id="addCommandToIconKey">Give this key a command</button>
+          ${clearKey}
+        </div>
+        ${pageControl}
+      </div>`;
+    }
     if (kind === "native") {
       const glyphPicker = key.index < 4
         ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function) : "";
@@ -3324,18 +3351,6 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `${glyphPicker}${canClear || pageControl ? `<div class="key-editor">
         ${canClear ? `<div class="key-actions">${clearKey}</div>` : ""}
         ${pageControl}</div>` : ""}`;
-    }
-    if (key.transport === "icon") {
-      return `<div class="action-box key-editor">
-        <div class="action-title"><b>On the remote</b><span>shows an icon, sends nothing</span></div>
-        ${this._renderGlyphPicker(key, "glyph", "Icon only, no command", key.glyph,
-          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}
-        <div class="key-actions">
-          <button class="secondary compact" id="addCommandToIconKey">Give this key a command</button>
-          ${clearKey}
-        </div>
-        ${pageControl}
-      </div>`;
     }
     const transports = kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", hid: "HID", ir: "IR" };

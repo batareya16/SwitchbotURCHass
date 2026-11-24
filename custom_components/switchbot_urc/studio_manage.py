@@ -450,6 +450,7 @@ async def _recreate_remote(hass, connection, msg):
                     control_mode=native_mode,
                     device_type_name=device_type_name,
                     glyphs=custom_layout.get("glyphs"),
+                    icon_only=custom_layout.get("icon_only"),
                 )
             else:
                 stages = c.build_native_bind_sequence(
@@ -550,6 +551,7 @@ def _native_page_source_packets(remote: dict[str, Any], slot: int) -> list[bytes
                 control_mode=remote.get("control_mode"),
                 device_type_name=device_type_name,
                 glyphs=layout.get("glyphs"),
+                icon_only=layout.get("icon_only"),
             )
         ]
     else:

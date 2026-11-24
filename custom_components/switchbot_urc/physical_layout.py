@@ -354,6 +354,9 @@ def draft_for(remote: dict) -> dict:
             for index, action in enumerate(actions)
         ]} for page, actions in layout.get("pages", {}).items()]}
         glyphs = layout.get("glyphs", {})
+        main_page = next(page for page in draft["pages"] if page["index"] == 0)
+        for position, glyph in (layout.get("icon_only") or {}).items():
+            main_page["buttons"].append({"index": c.TAG[position], "transport": "icon", "glyph": glyph})
         for page in draft["pages"]:
             number = page["index"]
             if number and (link := f"p0_k{number - 1}") in glyphs:
@@ -481,10 +484,10 @@ def validate(remote: dict, draft: dict) -> dict:
                 if not supports_glyph or (not number and index > 3):
                     raise ValueError("This position does not support a screen icon")
                 _validate_glyph(key["glyph"])
-                if expected in ("hid", "ir") and key["glyph"] == 0:
+                if (expected in ("hid", "ir") or key.get("transport") == "icon") and key["glyph"] == 0:
                     raise ValueError("Choose a nonzero icon for an IR button")
             transport = key.get("transport")
-            allowed = ({"native"} if expected == "native" else {"hid", "ir"} if expected == "hid"
+            allowed = ({"native", "icon"} if expected == "native" else {"hid", "ir"} if expected == "hid"
                        else {"stored", "ir", "icon"})
             if transport == "icon" and (number or index > 3 or key.get("glyph") is None):
                 # An icon without a command is the record the A–D softkeys use: a shown softkey.
@@ -670,19 +673,24 @@ def removed_native_keys(previous: dict, draft: dict) -> list[tuple[int, int]]:
 def native_layout(draft: dict) -> dict:
     positions = {value: name for name, value in c.TAG.items()}
     glyphs = {}
+    icon_only = {}
     for page in draft["pages"]:
         number = page["index"]
         if "link_glyph" in page:
             glyphs[f"p0_k{number - 1}"] = page["link_glyph"]
         for key in page["buttons"]:
-            if "glyph" in key:
+            if key["transport"] == "icon":
+                # A picture with no action: it is the key's function, not a glyph over one.
+                icon_only[positions[key["index"]]] = key["glyph"]
+            elif "glyph" in key:
                 glyphs[f"p{number}_k{key['index']}"] = key["glyph"]
     return {"layout_version": 2, "template": draft.get("template", "FAN"),
-            "glyphs": glyphs,
+            "glyphs": glyphs, "icon_only": icon_only,
             "native_type": draft.get("native_type", draft.get("template", "FAN")),
             "control_mode": int(draft.get("control_mode", 0)),
             "icon_name": draft.get("icon_name", "light"), "main_buttons": {
         positions[key["index"]]: c.custom_action_name(key["function"])
         for page in draft["pages"] if page["index"] == 0 for key in page["buttons"]
+        if key["transport"] != "icon"
     }, "pages": {str(page["index"]): [c.custom_action_name(key["function"]) for key in sorted(page["buttons"], key=lambda k: k["index"])]
                  for page in draft["pages"] if page["index"]}}

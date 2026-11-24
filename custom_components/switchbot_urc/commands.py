@@ -730,7 +730,7 @@ def custom_action_ha_icon(name: str) -> str:
 
 def custom_native_layout(
     main_buttons: list[str] | dict[str, str], page_buttons: dict[int, list[str]],
-    *, template: str | None = None,
+    *, template: str | None = None, icon_only: dict[str, int] | None = None,
 ) -> dict[int, list[dict]]:
     """Build an editable layout using the selected stock screen profile."""
     template = template or "FAN"
@@ -769,6 +769,15 @@ def custom_native_layout(
             _button(index, custom_action_function(name))
             for index, name in enumerate(actions)
         ]
+    # An A-D key that only shows a picture: the record of a page link, without a page behind it.
+    for position, glyph in (icon_only or {}).items():
+        if position not in ("A", "B", "C", "D"):
+            raise ValueError("only an A-D key can show an icon without an action")
+        if type(glyph) is not int or not 0 < glyph <= 0xFFFF:
+            raise ValueError("choose a nonzero icon")
+        if position in normalized_main or (ord(position) - ord("A") + 1) in enabled_pages:
+            raise ValueError(f"key {position} already has an action or opens a page")
+        pages[0].append(_button(TAG[position], glyph, actionable=False))
     if not pages[0]:
         raise ValueError("the custom main page must contain a button or a page link")
     return pages
@@ -1698,6 +1707,7 @@ def build_custom_native_pages(
     control_mode: int | None = None,
     device_type_name: str | None = None,
     glyphs: dict[str, int] | None = None,
+    icon_only: dict[str, int] | None = None,
 ) -> tuple[tuple[int, bytes], ...]:
     """Build editable pages while retaining the selected native screen profile."""
     template = NATIVE_PROFILE_ALIASES.get(template.upper(), template.upper())
@@ -1707,7 +1717,8 @@ def build_custom_native_pages(
     device_type_name = device_type_name or native_profile_device_type(template)
     if not device_type_name or not native_device_type_supported(device_type_name):
         raise ValueError("WoRWS local page writes require a one-byte native device type")
-    layout = custom_native_layout(main_buttons, page_buttons, template=template)
+    layout = custom_native_layout(
+        main_buttons, page_buttons, template=template, icon_only=icon_only)
     common = {
         "remote_index": remote_index,
         "device_type": NATIVE_DEVTYPE[device_type_name.upper()],
@@ -1762,6 +1773,7 @@ def build_custom_native_bind_sequence(
     control_mode: int | None = None,
     device_type_name: str | None = None,
     glyphs: dict[str, int] | None = None,
+    icon_only: dict[str, int] | None = None,
 ) -> tuple[tuple[str, bytes], ...]:
     """Return all pages for an editable Native Bridge remote."""
     pages = build_custom_native_pages(
@@ -1776,6 +1788,7 @@ def build_custom_native_bind_sequence(
         control_mode=control_mode,
         device_type_name=device_type_name,
         glyphs=glyphs,
+        icon_only=icon_only,
     )
     return tuple((f"bind_page_{page_index}", command) for page_index, command in pages)
 

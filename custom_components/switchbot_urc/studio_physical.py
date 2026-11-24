@@ -532,6 +532,7 @@ async def ws_physical_apply(hass, connection, msg):
                     control_mode=layout["control_mode"],
                     device_type_name=selected_type["device_type"],
                     glyphs=layout["glyphs"],
+                    icon_only=layout["icon_only"],
                 )
                 stages = [(name, packet, frozenset({1})) for name, packet in bind]
                 if not recovering_native:

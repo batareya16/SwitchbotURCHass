@@ -1134,3 +1134,25 @@ test('a submenu row is captioned like the remote does, from the picture it carri
   const rows = instance._pages().find((page) => page.index === 4).buttons.map((item) => item.label);
   assert.deepEqual(rows, ['Color 1', 'Color 2', 'Function 22', 'Mine']);
 });
+
+test('an A–D key with no command offers an icon on IR and Native, a note on HID', () => {
+  const editor = (kind, pages) => {
+    const instance = panel();
+    instance._physical = {kind, template: 'FAN', pages};
+    instance._nativeGlyph = () => '';
+    instance._pageControl = () => '';
+    const button = {button_page: 0, button_index: 0, button_id: 'p0_k0'};
+    return instance._renderKeyEditor(button);
+  };
+  const main = [{index: 0, buttons: []}];
+  assert.match(editor('ir', main), /Icon only, no command/);
+  assert.match(editor('native', main), /Icon only, no command/);
+  const hid = editor('hid', main);
+  assert.doesNotMatch(hid, /Icon only/);
+  assert.match(hid, /give the key a command first/);
+  // an icon-only key can be given a command, and warns about menu shortcut icons
+  const withIcon = (kind, glyph) => editor(kind, [{index: 0, buttons: [{index: 0, transport: 'icon', glyph}]}]);
+  assert.match(withIcon('native', 70), /No list under this shortcut/);
+  assert.doesNotMatch(withIcon('ir', 115), /No list under this shortcut/);
+  assert.match(withIcon('ir', 115), /id="addCommandToIconKey"/);
+});

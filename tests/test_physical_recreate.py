@@ -247,3 +247,47 @@ def test_an_a_to_d_key_can_show_an_icon_with_no_command():
         physical.validate(remote, {"kind": "ir", "pages": [
             {"index": 0, "buttons": [icon]}, {"index": 3, "buttons": [
                 {"index": 0, "transport": "ir", "code_hex": "aa"}]}]})
+
+
+def test_a_native_a_to_d_key_can_show_an_icon_with_no_action():
+    layout = c.custom_native_layout({"ON": "ON"}, {}, template="FAN", icon_only={"B": 70})
+    main = {item["keyIndex"]: item for item in layout[0]}
+    assert main[c.TAG["B"]]["keyFun"] == 70 and not main[c.TAG["B"]]["cmd"]
+    pages = c.build_custom_native_pages(
+        remote_index=3, name="Fan", device_id="AA:BB:CC:DD:EE:FF", icon_name="light",
+        event_remote_id="12345678", main_buttons={"ON": "ON"}, page_buttons={},
+        template="FAN", icon_only={"B": 70},
+    )
+    body = pages[0][1][7:]
+    count = body[82]
+    records = {body[83 + 36 * i]: body[83 + 36 * i:83 + 36 * (i + 1)] for i in range(count)}
+    record = records[c.TAG["B"]]
+    assert record[1:3] == (70).to_bytes(2, "big") and record[4:6] == (70).to_bytes(2, "big")
+    # a position that already has an action or opens a page cannot also be icon-only
+    for bad in ({"ON": "ON", "B": "ON"}, ):
+        with pytest.raises(ValueError, match="already"):
+            c.custom_native_layout(bad, {}, template="FAN", icon_only={"B": 70})
+    with pytest.raises(ValueError, match="already"):
+        c.custom_native_layout({"ON": "ON"}, {2: ["ON"]}, template="FAN", icon_only={"B": 70})
+    with pytest.raises(ValueError, match="A-D"):
+        c.custom_native_layout({"ON": "ON"}, {}, template="FAN", icon_only={"ON": 70})
+
+
+def test_a_native_icon_only_key_survives_draft_validation_and_layout():
+    remote = {"device_type": "LOCK", "device_id": "001122334455", "name": "Lock", "icon": "lock"}
+    draft = physical.draft_for(remote)
+    main = next(page for page in draft["pages"] if page["index"] == 0)
+    free = 0                                             # a LOCK has no key or page on A–D
+    main["buttons"].append({"index": free, "transport": "icon", "glyph": 70})
+    valid = physical.validate(remote, draft)
+    layout = physical.native_layout(valid)
+    assert layout["icon_only"] == {"ABCD"[free]: 70}
+    assert "ABCD"[free] not in layout["main_buttons"]
+    # saved and read back, the key is still an icon-only key
+    again = physical.draft_for({**remote, "custom_layout": layout})
+    keys = next(page for page in again["pages"] if page["index"] == 0)["buttons"]
+    assert {"index": free, "transport": "icon", "glyph": 70} in keys
+    for bad in (0, None):
+        main["buttons"][-1]["glyph"] = bad
+        with pytest.raises(ValueError):
+            physical.validate(remote, draft)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.12
+
+- A Native remote's A–D key on the Main page can now show an icon with no action (**Icon only, no command**), as an IR remote's can. It is written like a key that opens a page, without a page behind it. What the remote does when such a key is pressed is not confirmed on a real Universal Remote yet.
+- When the chosen icon of an icon-only key is one the remote treats as a menu shortcut, the editor warns that pressing the key shows "No list under this shortcut".
+- Where a picture alone is not possible (HID remotes and the rows of a menu), the editor now says that the key needs a command first.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.11
 
 - The **Button icon** choice of IR and HID keys has a **No icon** button, and the empty picture is named "No icon" in the list instead of "No caption".
