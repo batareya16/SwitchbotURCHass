@@ -846,10 +846,12 @@ class SwitchBotUrcPanel extends HTMLElement {
     return src ? `<img class="native-glyph ${className}" src="${src}" alt="" aria-hidden="true">` : "";
   }
 
-  _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null) {
+  // blankCode is the icon code whose picture is empty (the remote draws nothing for it), so the
+  // picker can offer it by name instead of as one blank tile among two hundred.
+  _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null, blankCode = null) {
     const selected = owner[field];
     const current = selected ?? defaultFunction;
-    const caption = NATIVE_GLYPH_LABELS[current];
+    const caption = current === blankCode ? "No icon" : NATIVE_GLYPH_LABELS[current];
     const preview = this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
     const unsupported = selected !== undefined && allowedCodes && !allowedCodes.includes(selected);
     return `<details class="glyph-picker">
@@ -857,12 +859,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${unsupported ? '<p class="small" role="status">Choose a menu icon or reset to the default before saving.</p>' : ""}
       <button class="secondary compact" data-glyph-field="${field}" data-glyph-code=""
         ${selected === undefined ? "disabled" : ""}>Reset to default</button>
+      ${blankCode === null ? "" : `<button class="secondary compact" data-glyph-field="${field}"
+        data-glyph-code="${blankCode}" aria-pressed="${current === blankCode}">No icon</button>`}
       <div class="glyph-grid" role="group" aria-label="${label}">
         ${Object.entries(NATIVE_GLYPH_LABELS).map(([value, caption]) => {
           const code = Number(value);
           if (allowedCodes && !allowedCodes.includes(code)) return "";
           const iconId = `0x${code.toString(16).padStart(4, "0")}`;
-          const name = caption || "No caption";
+          const name = code === blankCode ? "No icon" : caption || "No caption";
           return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
             aria-label="${escapeHtml(name)} (${iconId})" aria-pressed="${code === current}">
             ${this._nativeGlyph({ button_function: code })}<span>${escapeHtml(name)}</span></button>`;
@@ -1413,7 +1417,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           const disabledFunction = irPreview?.disabled_softkeys?.[index];
           const recordedFunction = linked
             ? Number.parseInt(linkDraft?.link_record?.slice(2, 6), 16)
-            : glyphButton?.button_function;
+            : glyphButton?.button_glyph ?? glyphButton?.button_function;
           const irFunction = irPreview?.softkeys
             ? irPreview.softkeys[index] : recordedFunction || disabledFunction;
           const glyphSrc = isIr
@@ -3072,6 +3076,13 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!found) return;
     const { page, key } = found;
 
+    root.getElementById("addCommandToIconKey")?.addEventListener("click", () => {
+      // The icon stays: from here it is the picture of a key that also sends a code.
+      key.transport = "ir";
+      key.code_hex = "";
+      this._render();
+    });
+
     root.querySelector('[data-key-field="transport"]')?.addEventListener("change", (event) => {
       key.transport = event.target.value;
       if (key.transport !== "ir" && this._physical.kind === "hid") delete key.glyph;
@@ -3174,10 +3185,24 @@ class SwitchBotUrcPanel extends HTMLElement {
     }));
     root.querySelectorAll("[data-glyph-field]").forEach((button) => button.addEventListener("click", () => {
       const { glyphField, glyphCode } = button.dataset;
-      const owner = glyphField === "link_glyph"
+      let owner = glyphField === "link_glyph"
         ? this._physical.pages.find((page) => page.index === this._page()?.index)
         : this._draftKey(this._button())?.key;
+      if (!owner && glyphField === "glyph" && this._physical.kind === "ir" && glyphCode !== "") {
+        // An empty A–D position takes an icon alone: it becomes an icon-only key.
+        const target = this._physical.pages.find((page) => page.index === this._button()?.button_page);
+        if (!target) return;
+        owner = { index: this._button().button_index, transport: "icon" };
+        target.buttons.push(owner);
+      }
       if (!owner) return;
+      if (glyphCode === "" && owner.transport === "icon") {
+        // Resetting an icon-only key takes the icon away, which leaves nothing to keep.
+        const holder = this._physical.pages.find((page) => page.buttons.includes(owner));
+        if (holder) holder.buttons = holder.buttons.filter((item) => item !== owner);
+        this._render();
+        return;
+      }
       if (glyphCode === "") delete owner[glyphField];
       else owner[glyphField] = Number(glyphCode);
       this._physicalStatus = "";
@@ -3267,11 +3292,16 @@ class SwitchBotUrcPanel extends HTMLElement {
       const page = this._physical.pages?.find((item) => item.index === button.button_page);
       if (!page) return "";
       const label = kind === "native" ? "Assign an action" : "Give this key a command";
+      // An A–D key on an IR remote's Main page can show an icon with no command behind it.
+      const iconOnly = kind === "ir" && page.index === 0 && button.button_index < 4
+        ? `${this._renderGlyphPicker({}, "glyph", "Icon only, no command", 0,
+          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}` : "";
       return `<div class="action-box key-editor">
         ${kind === "native" ? "" : '<div class="action-title"><b>On the remote</b><span>this position is empty</span></div>'}
         <div class="key-actions">
           <button class="secondary compact" id="addKeyHere">${label}</button>
         </div>
+        ${iconOnly}
         ${this._pageControl(button, null)}
       </div>`;
     }
@@ -3295,6 +3325,18 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${canClear ? `<div class="key-actions">${clearKey}</div>` : ""}
         ${pageControl}</div>` : ""}`;
     }
+    if (key.transport === "icon") {
+      return `<div class="action-box key-editor">
+        <div class="action-title"><b>On the remote</b><span>shows an icon, sends nothing</span></div>
+        ${this._renderGlyphPicker(key, "glyph", "Icon only, no command", key.glyph,
+          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}
+        <div class="key-actions">
+          <button class="secondary compact" id="addCommandToIconKey">Give this key a command</button>
+          ${clearKey}
+        </div>
+        ${pageControl}
+      </div>`;
+    }
     const transports = kind === "hid" ? ["hid", "ir"] : ["stored", "ir"];
     const label = { stored: "Original IR command", hid: "HID", ir: "IR" };
     return `<div class="action-box key-editor">
@@ -3310,7 +3352,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${key.transport === "ir" ? `
         ${(kind === "hid" || kind === "ir") && (page.index || key.index < 4)
           ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? (kind === "hid" ? 0x07D3 : 115),
-            Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0)) : ""}
+            Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0),
+            kind === "hid" ? 0x07D3 : 115) : ""}
         ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
             <option value="">Choose…</option>${
             this._physicalSources.map((source, index) => `<option value="${index}" ${key.code_hex === source.code_hex ? "selected" : ""}>${escapeHtml(source.label)}</option>`).join("")

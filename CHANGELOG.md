@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.11
+
+- The **Button icon** choice of IR and HID keys has a **No icon** button, and the empty picture is named "No icon" in the list instead of "No caption".
+- An A–D key on the Main page of an IR remote can now show an icon with no command behind it (**Icon only, no command**), so you no longer have to give the key a command first. It is written to the remote as a shown softkey, the same record the keys that open a page use. Not confirmed on a real Universal Remote yet.
+- The picture of the remote in Studio shows the icon you chose for an A–D key.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.10
 
 - Keys of an IR remote that send an IR code you pasted or learned (including a remote you made empty) now have a **Button icon** choice, as HID remotes do. The icon is the picture the remote shows for the key; with an icon chosen, the remote also shows that icon's own caption instead of the key's name. Keys copied from the app's profile keep what they had.

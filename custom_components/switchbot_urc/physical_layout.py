@@ -477,20 +477,27 @@ def validate(remote: dict, draft: dict) -> dict:
                 # the record they came with.
                 supports_glyph = expected == "native" or (
                     expected in ("hid", "ir") and key.get("transport") == "ir"
-                )
+                ) or (expected == "ir" and key.get("transport") == "icon")
                 if not supports_glyph or (not number and index > 3):
                     raise ValueError("This position does not support a screen icon")
                 _validate_glyph(key["glyph"])
                 if expected in ("hid", "ir") and key["glyph"] == 0:
                     raise ValueError("Choose a nonzero icon for an IR button")
             transport = key.get("transport")
-            allowed = {"native"} if expected == "native" else {"hid", "ir"} if expected == "hid" else {"stored", "ir"}
+            allowed = ({"native"} if expected == "native" else {"hid", "ir"} if expected == "hid"
+                       else {"stored", "ir", "icon"})
+            if transport == "icon" and (number or index > 3 or key.get("glyph") is None):
+                # An icon without a command is the record the A–D softkeys use: a shown softkey.
+                raise ValueError("Only an A–D key on Main can hold an icon without a command, "
+                                 "and it needs an icon")
             if transport not in allowed:
                 raise ValueError(f"{transport} commands are not supported inside {expected} profiles")
             if transport in ("native", "hid"):
                 function = key.get("function")
                 if type(function) is not int or not 0 <= function <= 65535:
                     raise ValueError("Function must be a number from 0 to 65535")
+            elif transport == "icon":
+                pass
             elif transport == "ir":
                 try:
                     code = bytes.fromhex(str(key.get("code_hex", "")))
@@ -553,7 +560,11 @@ def compile_pages(
         for key in page["buttons"]:
             index = key["index"]
             transport = key["transport"]
-            if transport == "ir":
+            if transport == "icon":
+                # A shown softkey: the picture only, with no command behind it.
+                function = int(key["glyph"])
+                keys.append(bytes([index]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
+            elif transport == "ir":
                 # Main names match the official HID editor; submenu names are stable and unique.
                 name = str(index) if number == 0 else f"p{number}_k{index}"
                 code = bytes.fromhex(key["code_hex"])

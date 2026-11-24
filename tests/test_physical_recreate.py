@@ -225,3 +225,25 @@ def test_ir_remote_keys_take_a_screen_icon_as_their_function():
     key.update(glyph=105, transport="stored", record="00" * 36)
     with pytest.raises(ValueError, match="screen icon"):
         physical.validate(remote, draft)
+
+
+def test_an_a_to_d_key_can_show_an_icon_with_no_command():
+    cloud_ir = load(INTEGRATION / "cloud_ir.py")
+    packets = cloud_ir.blank_profile(2, "Empty").build_pages(remote_index=5, name="Empty")
+    remote = {"device_type": "IR_2", "device_id": "001122334455", "name": "Empty",
+              "physical_packets": [bytes(packet).hex() for packet in packets]}
+    icon = {"index": 2, "transport": "icon", "glyph": 115}
+    draft = {"kind": "ir", "pages": [{"index": 0, "buttons": [icon]}]}
+    uploads, pages = physical.compile_pages(remote, draft, slot=1)
+    assert not uploads                                   # no command, so no IR code is sent
+    # a shown softkey (type 4) carrying only the picture, like the keys that open a page
+    assert pages[0][90:126] == (bytes([2, 0, 115, 4]) + (115).to_bytes(2, "big")).ljust(36, b"\0")
+    for bad in ({"index": 5}, {"glyph": None}, {"glyph": 0}):
+        broken = {"index": 2, "transport": "icon", "glyph": 115, **bad}
+        with pytest.raises(ValueError):
+            physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [broken]}]})
+    # it is reserved like any other Main command once that position opens a page
+    with pytest.raises(ValueError, match="reserved"):
+        physical.validate(remote, {"kind": "ir", "pages": [
+            {"index": 0, "buttons": [icon]}, {"index": 3, "buttons": [
+                {"index": 0, "transport": "ir", "code_hex": "aa"}]}]})
