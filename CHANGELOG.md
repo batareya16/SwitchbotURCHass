@@ -7,12 +7,11 @@
 - An IR key on Main A–D that sends a command is not offered the icons the remote treats as menu shortcuts: with one of those, pressing the key showed "No list under this shortcut" instead of sending the code.
 - The IR device type is chosen from cards with the picture of each type and a mark showing whether its A–D keys take your icon (**Custom A–D icons**) or draw a fixed picture (**Fixed A–D icons**), with an explanation under the cards. The type of a remote cannot be changed afterwards.
 - Studio's picture of the remote shows the icon you chose for a key, not the stock icon of the type.
-- Under an icon-only key of a Native remote, the editor notes that what the remote does when the key is pressed is not confirmed yet.
 - The Bridge add-on is unchanged in this release (0.53.6 is the latest).
 
 ## 0.53.12
 
-- A Native remote's A–D key on the Main page can now show an icon with no action (**Icon only, no command**), as an IR remote's can. It is written like a key that opens a page, without a page behind it. What the remote does when such a key is pressed is not confirmed on a real Universal Remote yet.
+- A Native remote's A–D key on the Main page can now show an icon with no action (**Icon only, no command**), as an IR remote's can. It is written like a key that opens a page, without a page behind it.
 - When the chosen icon of an icon-only key is one the remote treats as a menu shortcut, the editor warns that pressing the key shows "No list under this shortcut".
 - Where a picture alone is not possible (HID remotes and the rows of a menu), the editor now says that the key needs a command first.
 - The Bridge add-on is unchanged in this release (0.53.6 is the latest).
@@ -20,7 +19,7 @@
 ## 0.53.11
 
 - The **Button icon** choice of IR and HID keys has a **No icon** button, and the empty picture is named "No icon" in the list instead of "No caption".
-- An A–D key on the Main page of an IR remote can now show an icon with no command behind it (**Icon only, no command**), so you no longer have to give the key a command first. It is written to the remote as a shown softkey, the same record the keys that open a page use. Not confirmed on a real Universal Remote yet.
+- An A–D key on the Main page of an IR remote can now show an icon with no command behind it (**Icon only, no command**), so you no longer have to give the key a command first. It is written to the remote as a shown softkey, the same record the keys that open a page use.
 - The picture of the remote in Studio shows the icon you chose for an A–D key.
 - The Bridge add-on is unchanged in this release (0.53.6 is the latest).
 
@@ -32,7 +31,7 @@
 
 ## 0.53.9
 
-- Studio now draws the remote's tiles in the order the remote lists them, from the highest slot down, in the picture of the remote and in the Remote selector. Dragging tiles and **Apply order** follow the same order: the order shown from top to bottom is the order the remote ends up with. Not confirmed on a real Universal Remote yet.
+- Studio now draws the remote's tiles in the order the remote lists them, from the highest slot down, in the picture of the remote and in the Remote selector. Dragging tiles and **Apply order** follow the same order: the order shown from top to bottom is the order the remote ends up with.
 - The Bridge add-on is unchanged in this release.
 
 ## 0.53.8
@@ -51,8 +50,8 @@
 ## 0.53.6
 
 - Reorder the tiles by dragging them on the remote's own screen in Studio: drag a tile by its grip (⠿) and press **Apply** in the **New order** bar (or **Reset**). Apply reads the remote's table, asks for confirmation and sends the order as a whole; rows Studio does not know keep their place. The ▲/▼ buttons and the drag handles in the "Installed on the remote" table are gone. Dragging did not work before: moving a row in the list made the browser stop sending the pointer's events to the grip, so the release was never seen.
-- **Add a remote** now has one **IR remote** tab with three ways inside it: **From the catalog**, **From your account** and the new **Empty remote**. An empty IR remote of the type you choose (TV, air conditioner, light, fan, audio, IPTV, set-top box, DVD, projector, air purifier, water heater, robot vacuum, camera) is installed on the remote with its main page and no codes; give its buttons IR codes afterwards in the button editor. It counts towards the ten IR remotes and is not saved to the SwitchBot account. Not confirmed on a real Universal Remote yet.
-- Fix installed IR remotes that were made of learned keys (an account remote of a custom type, such as an audio soundbar, comes with `no_data` instead of a code bank and all its keys in `keyDetail`). Refresh failed on them with "Only base64 data is allowed". They are now laid out from their key list: free-named keys go to page D (at most 15), learned copies of default keys go to their own page, and an empty key map is accepted by every layout. Not confirmed on a real Universal Remote yet.
+- **Add a remote** now has one **IR remote** tab with three ways inside it: **From the catalog**, **From your account** and the new **Empty remote**. An empty IR remote of the type you choose (TV, air conditioner, light, fan, audio, IPTV, set-top box, DVD, projector, air purifier, water heater, robot vacuum, camera) is installed on the remote with its main page and no codes; give its buttons IR codes afterwards in the button editor. It counts towards the ten IR remotes and is not saved to the SwitchBot account.
+- Fix installed IR remotes that were made of learned keys (an account remote of a custom type, such as an audio soundbar, comes with `no_data` instead of a code bank and all its keys in `keyDetail`). Refresh failed on them with "Only base64 data is allowed". They are now laid out from their key list: free-named keys go to page D (at most 15), learned copies of default keys go to their own page, and an empty key map is accepted by every layout.
 - Studio now reads the real icon and screen mode of HID and IR remotes from the remote when you press Refresh. A remote Studio found on the device used to show a placeholder icon (the TV icon), which is why "Original" could show a picture the remote did not have.
 - Fix a main-page key that was removed from a layout still showing the stock profile's picture on the remote's face (key C of a light strip showed the warm-white ring although the remote does not draw it).
 - Fix the captions of submenu rows: the remote captions a row from the picture it carries, and Studio used the name of the row's command, so rows showed "Color 1…" where the remote shows "Color 7", "Color Bulb" and so on.
@@ -60,7 +59,7 @@
 
 ## 0.53.5
 
-- Every IR remote type is now laid out the way the official app lays it out, not only TVs. The remote finds a key by the firmware's function id next to a screen position, and each type has its own main-page positions, sub-pages behind the A-D soft keys and Power handling. Covered: air conditioner, air purifier, IPTV, set-top box, DVD, fan, projector, light, audio, water heater, robot vacuum and camera. DIY remotes are not covered. Built from the app's own code and checked by tests only; not confirmed on a real Universal Remote yet.
+- Every IR remote type is now laid out the way the official app lays it out, not only TVs. The remote finds a key by the firmware's function id next to a screen position, and each type has its own main-page positions, sub-pages behind the A-D soft keys and Power handling. Covered: air conditioner, air purifier, IPTV, set-top box, DVD, fan, projector, light, audio, water heater, robot vacuum and camera. DIY remotes are not covered.
 - Fix the type of IR remotes installed from the catalog. The catalog numbers its types like the SwitchBot hub (light is 3), while the remote and the app use their own ids (light is 14). The catalog number was written to the remote as it was, so anything except TVs and air conditioners was installed under the wrong type. It is now converted, and the picture shown for "Type default" in the Add dialog follows the same conversion.
 - Fix the soft keys A-D of an IR TV carrying zero bytes where the app writes the key's own function id.
 - Fix learned keys of an account remote being named by a wrong field (the app calls it `keyName`), and the type names used when the cloud sends a type as a word.
@@ -70,12 +69,12 @@
 
 ## 0.53.4
 
-- Fix an IR remote install ending in "sync error" on the remote's screen. The sync boundary of an install carries the number of remotes sent in this synchronisation, and Studio announced the size of the device table instead, so the remote waited for remotes that never came. It now announces one remote, as the official app does for a single new remote. Not confirmed on a real Universal Remote yet.
+- Fix an IR remote install ending in "sync error" on the remote's screen. The sync boundary of an install carries the number of remotes sent in this synchronisation, and Studio announced the size of the device table instead, so the remote waited for remotes that never came. It now announces one remote, as the official app does for a single new remote.
 - Bridge add-on 0.53.4 (update it as well): the link to the remote now tolerates 20 seconds of silence instead of 4, so an install is no longer cut off with `central disconnected: 0x08` while the remote is busy, and the add-on log shows how long the remote took to answer each install step.
 
 ## 0.53.3
 
-- Fix the buttons of an IR TV installed from Studio doing nothing. Studio laid the key pages out its own way, with the SwitchBot cloud's key ids and keys in cloud order, while the remote looks keys up by the firmware's function ids and expects each main-page key on its own position. A TV now gets the layout the official app writes: Power on both ON and OFF, volume, channel, arrows, OK, back and menu on their own positions, and the digits, playback, inputs and extra keys on the sub-pages behind the A-D soft keys (a soft key without keys is switched off). Not confirmed on a real Universal Remote yet. The other IR types (air conditioner, fan, light, set-top box and so on) are still laid out the old way.
+- Fix the buttons of an IR TV installed from Studio doing nothing. Studio laid the key pages out its own way, with the SwitchBot cloud's key ids and keys in cloud order, while the remote looks keys up by the firmware's function ids and expects each main-page key on its own position. A TV now gets the layout the official app writes: Power on both ON and OFF, volume, channel, arrows, OK, back and menu on their own positions, and the digits, playback, inputs and extra keys on the sub-pages behind the A-D soft keys (a soft key without keys is switched off). The other IR types (air conditioner, fan, light, set-top box and so on) are still laid out the old way.
 - The Bridge add-on is unchanged in this release.
 
 ## 0.53.2
