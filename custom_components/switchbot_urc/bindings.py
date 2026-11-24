@@ -248,35 +248,46 @@ def event_mapping_candidates(event_data: dict[str, Any]) -> list[str]:
     return candidates
 
 
-def resolve_binding_action(
+def resolve_binding_match(
     binding: dict[str, Any], event_data: dict[str, Any]
-) -> str | None:
-    """Resolve a button event against one stored binding."""
+) -> tuple[str | None, str | None]:
+    """Resolve a button event against one stored binding: the action and the key that matched.
+
+    The key is the button's own id, or a name or function it shares with other buttons: a key
+    without actions of its own runs the Quick bind of any button with the same action name.
+    """
     if not binding.get("enabled", True):
-        return None
+        return None, None
     if str(binding.get("remote_id", "")) != str(event_data.get("remote_id", "")):
-        return None
+        return None, None
     mapping = binding.get("mappings")
     if not isinstance(mapping, dict):
-        return None
+        return None, None
     candidates = event_mapping_candidates(event_data)
     for candidate in candidates:
         action = str(mapping.get(candidate, ACTION_NONE))
         if action != ACTION_NONE:
-            return action
+            return action, candidate
         # An explicitly stored colour entry is authoritative. Exact physical-button
         # overrides are handled before this function and remain the preferred way to
         # customize or disable one palette key.
         if candidate in mapping and candidate in LIGHT_COLOR_PRESET_MAPPINGS:
-            return None
+            return None, None
     # Bindings created before 0.19.29 have no colour keys. Supply the native light
     # palette at runtime so an existing Quick bind is upgraded without user action.
     if str(binding.get("profile", "")) == "light":
         for candidate in candidates:
             action = LIGHT_COLOR_PRESET_MAPPINGS.get(candidate)
             if action is not None:
-                return action
-    return None
+                return action, candidate
+    return None, None
+
+
+def resolve_binding_action(
+    binding: dict[str, Any], event_data: dict[str, Any]
+) -> str | None:
+    """Resolve a button event against one stored binding."""
+    return resolve_binding_match(binding, event_data)[0]
 
 
 def resolve_button_action_sequence(

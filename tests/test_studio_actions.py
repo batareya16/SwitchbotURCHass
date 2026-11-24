@@ -713,3 +713,29 @@ class TestSubmenuRowsAreNotPhysicalKeys:
         labels = [button["label"] for page in submenus for button in page["buttons"]]
         assert not any(label in {"UP", "DOWN", "LEFT", "RIGHT", "OK", "BACK"}
                        for label in labels)
+
+
+def test_a_key_that_copies_another_buttons_quick_bind_says_which(studio):
+    # A row whose action is OFF and that has no actions of its own runs the Quick bind of OFF, so
+    # it does what the physical OFF button does; Studio names that button on the row.
+    light = {"remote_id": "abc123", "enabled": True, "mappings": {"OFF": "turn_off", "ON": "turn_on"},
+             "button_actions": {}}
+    record = lambda page, index, position, label: studio._button_record(
+        remote_id="abc123", remote_slot=3, page=page, index=index, function=6,
+        position=position, label=label, binding=light)
+    off_key = record(0, 5, "OFF", "OFF")
+    row = record(1, 2, "", "OFF")
+    pages = [{"index": 0, "buttons": [off_key]}, {"index": 1, "buttons": [row]}]
+    studio._mark_shared_presets(pages)
+    assert row["preset_action"] == "turn_off" and row["preset_match"] == "OFF"
+    assert row["preset_copies"] == {"button_id": "p0_k5", "name": "OFF"}
+    assert "preset_copies" not in off_key
+    # a row with actions of its own copies nothing; a button alone with its name copies nothing
+    row["has_override"] = True
+    off_key.pop("preset_copies", None)
+    row.pop("preset_copies")
+    studio._mark_shared_presets(pages)
+    assert "preset_copies" not in row
+    alone = [{"index": 0, "buttons": [record(0, 5, "OFF", "OFF")]}]
+    studio._mark_shared_presets(alone)
+    assert "preset_copies" not in alone[0]["buttons"][0]

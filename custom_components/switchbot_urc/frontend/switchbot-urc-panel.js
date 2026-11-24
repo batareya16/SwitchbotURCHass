@@ -966,7 +966,10 @@ class SwitchBotUrcPanel extends HTMLElement {
   _status(button) {
     if (button.has_override && button.actions.length) return ["custom", "Custom action"];
     if (button.has_override) return ["disabled", "Disabled"];
-    if (button.preset_action) return ["preset", button.preset_action.replaceAll("_", " ")];
+    if (button.preset_action) {
+      const action = button.preset_action.replaceAll("_", " ");
+      return ["preset", button.preset_copies ? `${action} · same as ${button.preset_copies.name}` : action];
+    }
     return ["none", "No action"];
   }
 
@@ -3816,7 +3819,11 @@ class SwitchBotUrcPanel extends HTMLElement {
             ? `This button will ${escapeHtml(button.preset_action.replaceAll("_", " "))}${
                 remote.binding?.entity_id ? ` ${escapeHtml(remote.binding.entity_id)}` : ""}.`
             : "No Quick-bind action currently matches this button."
-        }</span></div>` : ""}
+        }</span></div>${button.preset_copies && button.preset_action ? `<div class="explanation" role="status">
+          <b>Same as the ${escapeHtml(button.preset_copies.name)} button.</b><span>This key has no
+          actions of its own, so it runs the Quick bind of its action, ${escapeHtml(String(button.preset_match))},
+          like the ${escapeHtml(button.preset_copies.name)} button does. To make it do something
+          else, choose Custom actions; to make it do nothing, choose Disabled.</span></div>` : ""}` : ""}
         ${this._mode === "disabled" ? `<div class="explanation danger"><b>Ignore this button.</b><span>Physical presses will be received but no Home Assistant action will run.</span></div>` : ""}
         ${this._mode === "actions" ? `<div class="action-box"><div class="action-title"><b>Home Assistant actions</b><span id="actionSummary">${this._actionSummary()}</span></div><div id="visualActionEditor"></div><div id="selectOptionWarning" class="small" role="status">${escapeHtml(this._selectOptionWarning())}</div><p class="json-help">To run a script, choose <b>Script: Turn on</b> and select the script, or choose the script’s own action.</p><details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false" class="${this._jsonValid ? "" : "invalid"}">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : ""}
       </div>

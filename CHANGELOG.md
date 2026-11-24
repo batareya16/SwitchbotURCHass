@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.22
+
+- A key that does what another button does now says so. A key with no actions of its own runs the Quick bind of its action: a menu row whose action is OFF turns the light off like the OFF button. Studio now marks such a key "same as OFF" on the remote picture, and its **Quick bind** tab explains that it copies the OFF button and how to change that (**Custom actions**, or **Disabled** to make it do nothing). The remote itself always sends the key's own command; the icon only changes the picture.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.21
 
 - The icon picker sorts the remote's icons by what they do: **Icons** (the picture only), **Menu icons** (on Main A–D they make the key open a list) and **123** (on Main A–D it opens the number pad). Each place offers only the icons that work there, with a note on what an icon does in it. In a list every icon is only the picture and the row always sends its command, so lists offer all of them; on an HID remote the key always sends its command too.

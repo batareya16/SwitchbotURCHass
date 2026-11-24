@@ -1390,3 +1390,10 @@ test('the icon picker groups icons by what they do and offers only those that wo
   assert.match(plainOnly, /<b>Icons<\/b>/);
   assert.doesNotMatch(plainOnly, /Menu icons|<b>123<\/b>/);
 });
+
+test('a key that copies another button\'s Quick bind says so on its row and in the editor', () => {
+  const instance = panel();
+  assert.deepEqual([...instance._status({ preset_action: 'turn_off', preset_copies: { name: 'OFF' }, actions: [] })],
+    ['preset', 'turn off · same as OFF']);
+  assert.deepEqual([...instance._status({ preset_action: 'turn_off', actions: [] })], ['preset', 'turn off']);
+});

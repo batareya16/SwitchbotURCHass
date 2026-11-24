@@ -23,6 +23,7 @@ from .bindings import (
     light_mapping_from_rows,
     native_button_label,
     resolve_binding_action,
+    resolve_binding_match,
 )
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
 from . import studio_catalog
@@ -49,7 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.21"
+FRONTEND_VERSION = "0.53.22"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -125,7 +126,8 @@ def _button_record(
         "position": position,
         "default_function": function or _default_function(position, index),
         "label": label.replace("_", " ").title(),
-        "preset_action": resolve_binding_action(binding, event_data) if binding else None,
+        **dict(zip(("preset_action", "preset_match"),
+                   resolve_binding_match(binding, event_data) if binding else (None, None))),
         "has_override": has_override,
         "actions": deepcopy(override),
     }
@@ -280,6 +282,30 @@ def _remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None) -> lis
     return result
 
 
+def _mark_shared_presets(pages: list[dict[str, Any]]) -> None:
+    """Say which button a key copies when its Quick bind comes from a shared action name.
+
+    A key without actions of its own runs the Quick bind of its action name, so a key whose action
+    is OFF does what the OFF button does. When several buttons get their Quick bind that way, the
+    one on Main at the position of that name (else the first) is the original; the others copy it.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for page in pages:
+        for button in page["buttons"]:
+            match = button.get("preset_match")
+            if match and match != button["button_id"] and not button.get("has_override"):
+                groups.setdefault(str(match), []).append(button)
+    for match, buttons in groups.items():
+        if len(buttons) < 2:
+            continue
+        original = next((button for button in buttons if button["button_page"] == 0
+                         and str(button.get("position", "")).upper() == match), buttons[0])
+        name = original.get("position") or original.get("label") or match
+        for button in buttons:
+            if button is not original:
+                button["preset_copies"] = {"button_id": original["button_id"], "name": name}
+
+
 def remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """One page catalogue shared by Studio and the integration settings."""
     layout = remote.get("physical_layout")
@@ -299,6 +325,7 @@ def remote_pages(remote: dict[str, Any], binding: dict[str, Any] | None = None) 
     # Renaming pages and buttons inside Studio was removed: the names come from the remote's
     # own profile, and a second set that only Studio showed was one more thing to keep in step
     # for no benefit. Still applied so a configuration written before that keeps its names.
+    _mark_shared_presets(pages)
     labels = remote.get("studio_labels", {})
     for page in pages:
         if page["index"] == 0:
