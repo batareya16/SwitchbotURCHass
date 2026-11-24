@@ -24,6 +24,37 @@ _LOGGER = logging.getLogger(__name__)
 
 def store_device_table(hass, entry, table):
     hass.data.setdefault(DOMAIN, {}).setdefault("_studio_device_tables", {})[entry.entry_id] = tuple(table)
+    sync_saved_slots(hass, entry)
+
+
+def sync_saved_slots(hass, entry) -> bool:
+    """Make the slot saved with each remote the one the remote's table last gave it.
+
+    A saved slot goes stale whenever the table changes under it (an install restores other tiles
+    at new places, an order is applied elsewhere), and a stale slot can collide with another
+    remote's. A remote is only corrected when the table names it once and no other saved remote
+    answers to the same address.
+    """
+    table = cached_device_table(hass, entry)
+    if not table:
+        return False
+    in_table: dict[bytes, list[int]] = {}
+    for row in table:
+        in_table.setdefault(bytes(row[3]), []).append(row[0])
+    options = deepcopy(dict(entry.options))
+    saved = [item for item in options.get("remotes", []) if isinstance(item, dict)]
+    identities = [local_identity_bytes(item) for item in saved]
+    changed = False
+    for item, identity in zip(saved, identities):
+        slots = in_table.get(identity) if identity is not None else None
+        if not slots or len(slots) != 1 or identities.count(identity) != 1:
+            continue
+        if item.get("index") != slots[0]:
+            item["index"] = slots[0]
+            changed = True
+    if changed:
+        hass.config_entries.async_update_entry(entry, options=options)
+    return changed
 
 
 def cached_device_table(hass, entry):

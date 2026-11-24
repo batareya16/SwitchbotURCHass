@@ -29,7 +29,8 @@ from .const import DOMAIN, RESP_OK
 from .inventory import stable_id_for_local
 from .studio_catalog import cloud_client
 from .studio_physical import (
-    cached_device_table, local_identity_bytes, read_device_table, resolve, store_device_table)
+    cached_device_table, local_identity_bytes, read_device_table, resolve, store_device_table,
+    sync_saved_slots)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ def _save_remotes(hass, entry, remotes: list[dict[str, Any]]) -> None:
     options = deepcopy(dict(entry.options))
     options["remotes"] = remotes
     hass.config_entries.async_update_entry(entry, options=options)
+    sync_saved_slots(hass, entry)
 
 
 def ensure_distinct_identities(hass, entry) -> int:

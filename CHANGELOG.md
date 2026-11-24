@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.15
+
+- The slot saved with each remote now follows the remote's table, not only what Studio shows. Whenever Studio reads the table (an install, **Apply order**, **Refresh**) or saves a remote, each saved remote takes the slot the table names for it, so a restart of Home Assistant no longer brings back stale slots and two remotes sharing one. A remote is only corrected when the table names its address once and no other saved remote has the same address.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.14
 
 - Fix a newly added remote being drawn as another remote when you drag it on the remote's screen. The slot saved with a remote goes stale when the remote's table changes under it, so two tiles could share a slot, and the panel then showed one of them twice. A tile's slot now follows the last read of the remote's table, and two tiles can no longer claim one slot; a tile whose slot is out of date cannot be dragged until the table is read again (**Refresh**).

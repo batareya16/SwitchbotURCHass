@@ -323,8 +323,33 @@ def test_two_tiles_never_claim_one_slot_and_the_device_table_decides(studio, mon
         (6, 0x27, 0, studio.studio_physical.local_identity_bytes(newer)),
     ])
     assert slots() == {"Mi Box S": 2, "New remote": 6}
+    # and the slots saved with the remotes are corrected, so a restart (which forgets the table)
+    # does not bring the collision back
+    assert {item["name"]: item["index"] for item in entry.options["remotes"]} == {
+        "Mi Box S": 2, "New remote": 6}
+
     # the table names only the new remote: the stale record gives up the slot it does not hold
+    hass, entry, _, _ = make(studio, FakeRemote([]), [older, newer])
     studio.studio_physical.store_device_table(hass, entry, [
         (5, 0x27, 0, studio.studio_physical.local_identity_bytes(newer)),
     ])
     assert slots() == {"Mi Box S": None, "New remote": 5}
+
+
+def test_saved_slots_are_only_corrected_for_an_unambiguous_remote(studio):
+    one = {"index": 1, "name": "One", "device_type": "MATTER_TEXT", "device_id": "4d5400000001",
+           "remote_id": "aaaa0001", "buttons": [], "matter_captions": CAPTIONS}
+    two = {**one, "index": 2, "name": "Two", "remote_id": "aaaa0002"}      # the same address as One
+    other = {**one, "index": 3, "name": "Other", "device_id": "4d5400000002", "remote_id": "aaaa0003"}
+    hass, entry, _, _ = make(studio, FakeRemote([]), [one, two, other])
+    identity = studio.studio_physical.local_identity_bytes
+    studio.studio_physical.store_device_table(hass, entry, [
+        (7, 0x27, 0, identity(one)), (8, 0x27, 0, identity(other)),
+    ])
+    saved = {item["name"]: item["index"] for item in entry.options["remotes"]}
+    assert saved == {"One": 1, "Two": 2, "Other": 8}      # two records share an address: left alone
+    # a row that appears twice in the table cannot say which record it is either
+    studio.studio_physical.store_device_table(hass, entry, [
+        (4, 0x27, 0, identity(other)), (5, 0x27, 0, identity(other)),
+    ])
+    assert {item["name"]: item["index"] for item in entry.options["remotes"]}["Other"] == 8

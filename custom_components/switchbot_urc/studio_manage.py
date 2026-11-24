@@ -32,7 +32,7 @@ from . import addressing
 from . import studio_remotes
 from . import targets
 from .studio_catalog import cloud_client
-from .studio_physical import read_device_table, resolve, store_device_table
+from .studio_physical import read_device_table, resolve, store_device_table, sync_saved_slots
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ def _save_remotes(hass, entry, remotes: list[dict[str, Any]]) -> None:
     options = deepcopy(dict(entry.options))
     options["remotes"] = remotes
     hass.config_entries.async_update_entry(entry, options=options)
+    sync_saved_slots(hass, entry)
 
 
 async def _inventory(hass, entry, client) -> list[dict[str, Any]]:
