@@ -1397,3 +1397,11 @@ test('a key that copies another button\'s Quick bind says so on its row and in t
     ['preset', 'turn off · same as OFF']);
   assert.deepEqual([...instance._status({ preset_action: 'turn_off', actions: [] })], ['preset', 'turn off']);
 });
+
+test('a key that only opens a page is not offered a command', () => {
+  const audio = irPanel('IR_11', [{ index: 0, buttons: [] }]);
+  assert.equal(audio._pageOnlyKey(0, 0), true);
+  assert.equal(audio._pageOnlyKey(0, 1), false);
+  assert.equal(audio._pageOnlyKey(1, 0), false);
+  assert.equal(irPanel('IR_2', [{ index: 0, buttons: [] }])._pageOnlyKey(0, 0), false);
+});

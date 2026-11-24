@@ -80,6 +80,9 @@ const NUMBER_PAD_LABELS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "3-
 const IR_TV_WINDOW = new Set([2, 3, 4, 16, 17, 18]);
 const IR_AUDIO_WINDOW = new Set([11, 24]);
 const IR_INFRARED_WINDOW = new Set([5, 7, 8, 9, 10, 12, 13, 15, 19, 21, 22, 23, 25, 26]);
+// Main A–D positions (A = 0) of the fixed-picture windows that only open a page and never send a
+// command (same table as ir_glyphs.py page_only_positions).
+const IR_PAGE_ONLY_POSITIONS = { 1: [0, 1, 2, 3], 6: [2, 3], 20: [2, 3], 11: [0, 3], 24: [0, 3], 14: [3], 27: [3] };
 // Main A–D positions (A = 0) that open a list on the fixed-picture windows.
 const IR_FIXED_LIST_POSITIONS = { 1: [0, 1, 2, 3], 6: [2, 3], 20: [2, 3], 14: [3], 27: [3] };
 
@@ -3599,6 +3602,13 @@ class SwitchBotUrcPanel extends HTMLElement {
     return irPagePositions(this._remote()?.device_type);
   }
 
+  // True when this Main A–D key of an IR remote only opens a page on the remote.
+  _pageOnlyKey(page, index) {
+    if (this._physical?.kind !== "ir" || page || index > 3) return false;
+    const type = Number.parseInt(String(this._remote()?.device_type || "").replace("IR_", ""), 10);
+    return (IR_PAGE_ONLY_POSITIONS[type] || []).includes(index);
+  }
+
   // True when this IR remote's window draws a fixed picture on Main A-D.
   _fixedSoftkeys() {
     const type = Number.parseInt(String(this._remote()?.device_type || "").replace("IR_", ""), 10);
@@ -3626,11 +3636,13 @@ class SwitchBotUrcPanel extends HTMLElement {
         : fixedAD ? FIXED_SOFTKEY_NOTE
         : kind === "hid" || kind === "ir"
           ? '<p class="small">A picture needs a command here: give the key a command first, then choose its icon.</p>' : "";
+      const pageOnly = this._pageOnlyKey(page.index, button.button_index);
       return `<div class="action-box key-editor">
         ${kind === "native" ? "" : '<div class="action-title"><b>On the remote</b><span>this position is empty</span></div>'}
-        <div class="key-actions">
+        ${pageOnly ? `<p class="small">On this type of remote key ${"ABCD"[button.button_index]} only opens
+          a page and never sends a command.</p>` : `<div class="key-actions">
           <button class="secondary compact" id="addKeyHere">${label}</button>
-        </div>
+        </div>`}
         ${iconOnly}
         ${this._pageControl(button, null)}
       </div>`;
@@ -3690,6 +3702,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${key.transport === "hid" ? `<label>This key sends<select data-key-field="function">${
         this._hidFunctionOptions(key.function)
       }</select></label>` : ""}
+      ${this._pageOnlyKey(page.index, key.index) ? `<p class="small" role="status">On this type of
+        remote key ${"ABCD"[key.index]} only opens a page and never sends a command. Clear this key, or
+        turn it into a page, before saving.</p>` : ""}
       ${kind === "ir" && !page.index && key.index < 4 && !this._fixedSoftkeys()
         && MENU_SHORTCUT_ICONS.has(key.glyph ?? key.function) ? `<p class="small" role="status">This key
         carries the menu icon ${escapeHtml(NATIVE_GLYPH_LABELS[key.glyph ?? key.function] || String(key.glyph ?? key.function))}:

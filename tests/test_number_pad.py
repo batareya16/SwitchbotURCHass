@@ -164,3 +164,14 @@ def test_the_panel_and_the_integration_agree_on_the_number_pad_and_windows():
     fixed = re.search(r"const IR_FIXED_LIST_POSITIONS = \{(.*?)\};", source, re.S).group(1)
     for type_, positions in re.findall(r"(\d+): \[([\d, ]+)\]", fixed):
         assert glyphs.list_page_positions(f"IR_{type_}") == {int(v) for v in positions.split(",")}
+
+
+def test_the_panel_and_the_integration_agree_on_page_only_keys():
+    import re
+    source = (INTEGRATION / "frontend" / "switchbot-urc-panel.js").read_text()
+    table = re.search(r"const IR_PAGE_ONLY_POSITIONS = \{(.*?)\};", source, re.S).group(1)
+    found = {int(type_): {int(v) for v in positions.split(",")}
+             for type_, positions in re.findall(r"(\d+): \[([\d, ]+)\]", table)}
+    assert set(found) == set(glyphs.FIXED_SOFTKEY_TYPES)
+    for type_, positions in found.items():
+        assert glyphs.page_only_positions(f"IR_{type_}") == positions

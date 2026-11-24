@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.24
+
+- Key A of an audio remote can no longer be given a command: on the remote it opens the number pad when it has one and otherwise shows "No list under this shortcut", so a command there was never sent. Studio offers only **Turn key A into a number pad** on it, like D, which only opens a page. On every key that only opens a page (audio A and D, light D, fan C and D, air conditioner A–D) Studio no longer offers **Give this key a command**, and a command left there from an earlier version is flagged in the key's editor.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.23
 
 - Fix a new command on an IR remote's A–D key starting on the key's menu icon (123 on A, and similar on B–D): giving an empty A key a command kept the 123 picture, and the remote then showed "No list under this shortcut" instead of sending the code. A new key now starts on no icon, a key that already carries a menu icon says so in its editor, and such a key is not saved until it gets another icon. The same applies to a Native A–D key whose action is a menu function (for example Mode).

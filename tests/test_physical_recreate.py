@@ -311,7 +311,7 @@ def test_a_fixed_picture_window_gets_its_own_a_to_d_ids_and_ignores_icons():
     for device_type, stock in ids.items():
         remote = _blank_ir_remote(device_type)
         # a command on a position that can hold one gets the position's own id, whatever the icon
-        free = 0
+        free = 1 if device_type == 11 else 0                # audio A only opens the number pad
         draft = {"kind": "ir", "pages": [{"index": 0, "buttons": [
             {"index": free, "transport": "ir", "code_hex": "aabb", "glyph": 105}]}]}
         if device_type == 1:                              # an air conditioner has no command keys
@@ -339,6 +339,10 @@ def test_a_fixed_picture_window_gets_its_own_a_to_d_ids_and_ignores_icons():
     with pytest.raises(ValueError, match="only opens a page"):
         physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
             {"index": 3, "transport": "ir", "code_hex": "aa"}]}]})
+    # audio A opens the number pad, or shows "No list under this shortcut": never a command
+    with pytest.raises(ValueError, match="only opens a page"):
+        physical.validate(_blank_ir_remote(11), {"kind": "ir", "pages": [{"index": 0, "buttons": [
+            {"index": 0, "transport": "ir", "code_hex": "aa"}]}]})
 
 
 def test_a_command_key_on_a_tv_window_refuses_menu_shortcut_icons():

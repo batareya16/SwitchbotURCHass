@@ -145,10 +145,11 @@ def fixed_softkey_functions(device_type: str) -> tuple[int, ...] | None:
 
 # On a fixed window these positions only open the page behind them (with no page the press shows
 # "No list under this shortcut"), so a command cannot be put there. Positions are A=0 … D=3.
+# Audio A opens the number pad when it has a page and shows that message otherwise (0x2002710b).
 _PAGE_ONLY_POSITIONS = {
     1: frozenset({0, 1, 2, 3}),
     6: frozenset({2, 3}),
-    11: frozenset({3}),
+    11: frozenset({0, 3}),
     14: frozenset({3}),
 }
 
