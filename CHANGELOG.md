@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.26
+
+- **Re-read my remotes** now also finds the IR remotes of your SwitchBot account that are not on this Universal Remote yet, such as a remote made on a Hub. They are listed under **IR saved in your account** and are installed the same way, from the codes in your account. Before, only remotes already added to the Universal Remote in the app were read. Remotes deleted in the app are left out.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.25
 
 - Fix the number pad on Studio's picture of the remote: its keys were drawn huge and the screen scrolled sideways, because a key without a command picked up the panel's style for empty notices. The pad is now drawn small enough to show the whole grid and the four keys under it at once.

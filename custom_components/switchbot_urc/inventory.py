@@ -48,6 +48,10 @@ def cloud_item_id(item: dict[str, Any]) -> bytes | None:
     return None
 
 
+# Set on an account IR remote that is not bound to this Universal Remote.
+UNBOUND_MARK = "studioUnbound"
+
+
 def cloud_items(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Normalize the cloud's bindable-device response."""
     if not payload:
@@ -67,6 +71,17 @@ def cloud_items(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
                 if identity not in seen:
                     result.append(item)
                     seen.add(identity)
+    # The account's other IR remotes (made on a Hub, or not yet added to this Universal Remote)
+    # come in their own list; the app's "add a remote" page offers them from it. They are a source
+    # of codes for an install, not remotes of this Universal Remote, so they are marked as such.
+    remotes = payload.get("remotes")
+    for item in remotes if isinstance(remotes, list) else []:
+        if not isinstance(item, dict) or not item.get("remoteID") or item.get("isDeleted") is True:
+            continue
+        identity = str(item["remoteID"])
+        if identity not in seen:
+            result.append({**item, UNBOUND_MARK: True})
+            seen.add(identity)
     return result
 
 
@@ -171,7 +186,7 @@ def merge_inventory(
         seen.add(item_id)
 
     for item_id, remote in cloud_by_id.items():
-        if item_id in seen or remote.get("isDeleted") is True:
+        if item_id in seen or remote.get("isDeleted") is True or remote.get(UNBOUND_MARK):
             continue
         name = remote.get("remoteName") or remote.get("thirdPartyDeviceName") or "Cloud remote"
         result.append(
