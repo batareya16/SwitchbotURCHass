@@ -51,6 +51,9 @@ const FIXED_SOFTKEY_NOTE = '<p class="small" role="status">This type of remote d
 // shows "No list under this shortcut" (WoRWS V48, decoded, not run on a remote).
 const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 119,
   123, 124, 125, 126, 210, 320, 330, 914, 915, 916, 917]);
+// Icon codes that mean "no icon" on an IR or HID key (the key's default function is one of them).
+// The picture is drawn empty in Studio, so what it shows is what the key is: no icon.
+const NO_ICON_CODES = new Set([115, 2003]);
 const IR_PROFILE_ARTWORK = {
   1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
   8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
@@ -863,8 +866,11 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null, blankCode = null) {
     const selected = owner[field];
     const current = selected ?? defaultFunction;
-    const caption = current === blankCode ? "No icon" : NATIVE_GLYPH_LABELS[current];
-    const preview = this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
+    const noIconMode = blankCode !== null;
+    const caption = noIconMode && NO_ICON_CODES.has(current) ? "No icon" : NATIVE_GLYPH_LABELS[current];
+    const emptyGlyph = '<span class="native-glyph no-icon" aria-hidden="true"></span>';
+    const preview = noIconMode && NO_ICON_CODES.has(current) ? emptyGlyph
+      : this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
     const unsupported = selected !== undefined && allowedCodes && !allowedCodes.includes(selected);
     return `<details class="glyph-picker">
       <summary>${preview}<b>${label}</b>${caption ? ` <span>· ${escapeHtml(caption)}</span>` : ""}</summary>
@@ -872,16 +878,16 @@ class SwitchBotUrcPanel extends HTMLElement {
       <button class="secondary compact" data-glyph-field="${field}" data-glyph-code=""
         ${selected === undefined ? "disabled" : ""}>Reset to default</button>
       ${blankCode === null ? "" : `<button class="secondary compact" data-glyph-field="${field}"
-        data-glyph-code="${blankCode}" aria-pressed="${current === blankCode}">No icon</button>`}
+        data-glyph-code="${blankCode}" aria-pressed="${NO_ICON_CODES.has(current)}">No icon</button>`}
       <div class="glyph-grid" role="group" aria-label="${label}">
         ${Object.entries(NATIVE_GLYPH_LABELS).map(([value, caption]) => {
           const code = Number(value);
           if (allowedCodes && !allowedCodes.includes(code)) return "";
           const iconId = `0x${code.toString(16).padStart(4, "0")}`;
-          const name = code === blankCode ? "No icon" : caption || "No caption";
+          const name = noIconMode && NO_ICON_CODES.has(code) ? "No icon" : caption || "No caption";
           return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
             aria-label="${escapeHtml(name)} (${iconId})" aria-pressed="${code === current}">
-            ${this._nativeGlyph({ button_function: code })}<span>${escapeHtml(name)}</span></button>`;
+            ${noIconMode && NO_ICON_CODES.has(code) ? emptyGlyph : this._nativeGlyph({ button_function: code })}<span>${escapeHtml(name)}</span></button>`;
         }).join("")}
       </div>
     </details>`;
@@ -1242,8 +1248,14 @@ class SwitchBotUrcPanel extends HTMLElement {
         const [status] = this._status(item);
         const on = item.button_id === this._buttonId;
         const draft = this._draftLabel(item);
-        const glyph = this._nativeGlyph(catalogGlyphs && !Number.isInteger(item.button_glyph)
-          ? { button_glyph: catalogGlyphs[item.button_function] } : item, "scr-icon");
+        const shown = catalogGlyphs && !Number.isInteger(item.button_glyph)
+          ? { button_glyph: catalogGlyphs[item.button_function] } : item;
+        const iconCode = shown.button_glyph ?? shown.button_function;
+        const keyKind = this._physical?.kind;
+        // A key set to "no icon" draws nothing, as the picker shows it.
+        const glyph = (keyKind === "ir" || keyKind === "hid") && NO_ICON_CODES.has(iconCode)
+          ? '<span class="scr-icon no-icon" aria-hidden="true"></span>'
+          : this._nativeGlyph(shown, "scr-icon");
         return `<div class="scr-row k ${status}${on ? " on" : ""}${draft ? " unsaved" : ""}" role="button" tabindex="0"
           data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}${draft ? ` · ${draft} in draft` : ""}">
           ${glyph}
@@ -1454,7 +1466,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           const irFunction = Number.isInteger(glyphButton?.button_glyph) ? glyphButton.button_glyph
             : irPreview?.softkeys ? irPreview.softkeys[index] : recordedFunction || disabledFunction;
           const glyphSrc = isIr
-            ? (irFunction ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
+            ? (irFunction && !NO_ICON_CODES.has(irFunction) ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
             : glyphButton?.layout_empty ? "" : this._nativeGlyphSrc(glyphButton);
           const dim = isIr && disabledFunction && !recordedFunction;
           const x = 52 + index * 52;
@@ -4319,7 +4331,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .glyph-grid button span{font-size:12px;line-height:1.25;overflow-wrap:anywhere}
       .glyph-grid button:hover{background:#273445}
       .glyph-grid button[aria-pressed="true"],.glyph-grid button:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:-2px}
-      .scr-row .scr-icon{width:20px;height:20px}
+      .scr-row .scr-icon{width:20px;height:20px}.scr-row .scr-icon.no-icon{display:block;flex:none}.native-glyph.no-icon{display:inline-block;width:24px;height:24px;vertical-align:middle}
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
       .scr-row.unsaved{outline:1px dashed #ffffff80;outline-offset:-1px}

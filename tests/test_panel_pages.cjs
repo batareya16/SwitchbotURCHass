@@ -1234,3 +1234,29 @@ test('clearing the last key of an IR remote can still be saved, unlike Native', 
   assert.equal(status('ir'), '');
   assert.match(status('native'), /Add a command to Main/);
 });
+
+test('No icon is a real state: named in the picker and drawn empty on the screen', () => {
+  const instance = panel();
+  instance._physical = {kind: 'ir', pages: []};
+  instance._remote = () => ({remote_id: 'ir', device_type: 'IR_2', pages: []});
+  instance._status = () => ['ready'];
+  // the picker: a key on 'no icon' shows an empty picture and the name, and the button is pressed
+  const picker = instance._renderGlyphPicker({glyph: 115}, 'glyph', 'Button icon', 115, [115, 105], 115);
+  assert.match(picker, /<summary><span class="native-glyph no-icon"[^>]*><\/span><b>Button icon<\/b> <span>· No icon<\/span>/);
+  assert.match(picker, /data-glyph-code="115" aria-pressed="true">No icon</);
+  // the other no-icon code (the HID default) is named too, and a real icon is not
+  const other = instance._renderGlyphPicker({}, 'glyph', 'Button icon', 2003, [2003, 105], 2003);
+  assert.match(other, /· No icon/);
+  assert.doesNotMatch(instance._renderGlyphPicker({glyph: 105}, 'glyph', 'Button icon', 115, [115, 105], 115), /· No icon/);
+  // the menu rows on the screen
+  const page = {index: 1, buttons: [
+    {button_id: 'p1_k0', button_index: 0, button_function: 115, label: 'Plain'},
+    {button_id: 'p1_k1', button_index: 1, button_function: 115, button_glyph: 105, label: 'Chosen'},
+  ]};
+  const html = instance._renderScreen(page);
+  assert.match(html, /scr-icon no-icon[\s\S]*Plain/);
+  assert.match(html, /keyfun-0069\.png[\s\S]*Chosen/);
+  // a Native remote keeps drawing its own picture for these codes
+  instance._physical = {kind: 'native', pages: []};
+  assert.doesNotMatch(instance._renderScreen(page), /scr-icon no-icon/);
+});

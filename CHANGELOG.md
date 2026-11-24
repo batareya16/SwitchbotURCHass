@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.17
+
+- **No icon** is now a proper state of an IR or HID key. A key on no icon shows an empty picture and the words "No icon" in its **Button icon** choice, the **No icon** button is pressed, and both icon codes the firmware uses for it are named so in the list. On Studio's picture of the remote the key is drawn without a picture, on the menu rows and on A–D. A new IR key starts on no icon, and **Reset to default** returns to it.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.16
 
 - Fix **Save** staying disabled after **Clear this key** removed the last key of an IR remote's Main page. An IR remote with no keys is a normal state (an empty remote is installed that way), so it can now be saved; Native and HID remotes still need a command on Main.
