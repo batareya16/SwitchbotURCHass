@@ -461,7 +461,7 @@ def validate(remote: dict, draft: dict) -> dict:
                 if key.get("index", 9) < 4:
                     key.pop("glyph", None)
         limit = 15 if expected == "hid" and number else 18
-        minimum = 0 if number == 0 and len(pages) > 1 else 1
+        minimum = 0 if number == 0 and (len(pages) > 1 or expected == "ir") else 1
         if not isinstance(buttons, list) or not minimum <= len(buttons) <= limit:
             raise ValueError(f"Page {number} must have 1–{limit} buttons")
         if "link_glyph" in page:

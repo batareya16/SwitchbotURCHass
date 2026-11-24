@@ -3586,7 +3586,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (mappingDrafts.some(({ mode, valid }) => mode === "actions" && !valid)) {
       return "Fix the invalid actions JSON before saving.";
     }
-    if (this._physicalChanges() && this._physical.pages.length === 1 && !this._physical.pages[0].buttons.length) {
+    // An empty IR remote is a real state (an empty remote is installed that way), so clearing the
+    // last key of one can be saved; Native and HID remotes need a command on Main.
+    if (this._physicalChanges() && this._physical.kind !== "ir"
+        && this._physical.pages.length === 1 && !this._physical.pages[0].buttons.length) {
       return "Add a command to Main or keep a menu with at least one row.";
     }
     if (this._physicalChanges() && this._physical.pages.some((page) => page.index && !page.buttons.length)) {

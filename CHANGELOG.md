@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.16
+
+- Fix **Save** staying disabled after **Clear this key** removed the last key of an IR remote's Main page. An IR remote with no keys is a normal state (an empty remote is installed that way), so it can now be saved; Native and HID remotes still need a command on Main.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.15
 
 - The slot saved with each remote now follows the remote's table, not only what Studio shows. Whenever Studio reads the table (an install, **Apply order**, **Refresh**) or saves a remote, each saved remote takes the slot the table names for it, so a restart of Home Assistant no longer brings back stale slots and two remotes sharing one. A remote is only corrected when the table names its address once and no other saved remote has the same address.

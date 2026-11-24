@@ -1221,3 +1221,16 @@ test('an IR command key on Main A–D is not offered menu-shortcut icons, and No
   const row = instance._renderKeyEditor({button_page: 1, button_index: 0, button_id: 'p1_k0'});
   assert.match(row, /data-glyph-code="39"/);                   // a menu row takes any icon
 });
+
+test('clearing the last key of an IR remote can still be saved, unlike Native', () => {
+  const status = (kind) => {
+    const instance = panel();
+    instance._physical = {kind, template: 'LOCK', pages: [{index: 0, buttons: []}]};
+    instance._physicalBaseline = {kind, template: 'LOCK', pages: [{index: 0, buttons: [{index: 0, transport: 'ir', code_hex: 'aa'}]}]};
+    instance._mappingDrafts = () => new Map();
+    instance._hasAppearanceChanges = () => false;
+    return instance._saveStatus();
+  };
+  assert.equal(status('ir'), '');
+  assert.match(status('native'), /Add a command to Main/);
+});

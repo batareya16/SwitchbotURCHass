@@ -369,3 +369,16 @@ def test_the_panel_and_the_integration_agree_on_the_fixed_types_and_shortcut_ico
 def test_every_native_page_builder_call_passes_the_icon_only_keys():
     for name, expected in (("studio_manage.py", 2), ("studio_physical.py", 1)):
         assert (INTEGRATION / name).read_text().count("icon_only=") == expected, name
+
+
+def test_an_ir_remote_can_be_saved_with_every_key_cleared():
+    remote = _blank_ir_remote(2)
+    empty = {"kind": "ir", "pages": [{"index": 0, "buttons": []}]}
+    assert physical.validate(remote, empty)["pages"][0]["buttons"] == []
+    _, pages = physical.compile_pages(remote, empty, slot=1)
+    assert pages[0][7:][82] == 0                          # a Main page with no records
+    # Native and HID remotes still need a command on Main
+    native = {"device_type": "LOCK", "device_id": "001122334455", "name": "Lock", "icon": "lock"}
+    with pytest.raises(ValueError, match="1–18 buttons"):
+        physical.validate(native, {"kind": "native", "template": "LOCK",
+                                   "pages": [{"index": 0, "buttons": []}]})
