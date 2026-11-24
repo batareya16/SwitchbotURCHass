@@ -233,12 +233,17 @@ def test_an_a_to_d_key_can_show_an_icon_with_no_command():
     packets = cloud_ir.blank_profile(2, "Empty").build_pages(remote_index=5, name="Empty")
     remote = {"device_type": "IR_2", "device_id": "001122334455", "name": "Empty",
               "physical_packets": [bytes(packet).hex() for packet in packets]}
-    icon = {"index": 2, "transport": "icon", "glyph": 115}
+    icon = {"index": 2, "transport": "icon", "glyph": 105}
     draft = {"kind": "ir", "pages": [{"index": 0, "buttons": [icon]}]}
     uploads, pages = physical.compile_pages(remote, draft, slot=1)
     assert not uploads                                   # no command, so no IR code is sent
     # a shown softkey (type 4) carrying only the picture, like the keys that open a page
-    assert pages[0][90:126] == (bytes([2, 0, 115, 4]) + (115).to_bytes(2, "big")).ljust(36, b"\0")
+    records = [pages[0][o:o + 36] for o in range(90, len(pages[0]), 36)]
+    assert (bytes([2, 0, 105, 4]) + (105).to_bytes(2, "big")).ljust(36, b"\0") in records
+    # with no icon there is nothing to show: no record, so the remote leaves C empty
+    _, empty = physical.compile_pages(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
+        {"index": 2, "transport": "icon", "glyph": 115}]}]}, slot=1)
+    assert not any(empty[0][o] == 2 and empty[0][o + 3] == 4 for o in range(90, len(empty[0]), 36))
     for bad in ({"index": 5}, {"glyph": None}, {"glyph": 0}):
         broken = {"index": 2, "transport": "icon", "glyph": 115, **bad}
         with pytest.raises(ValueError):

@@ -1207,7 +1207,7 @@ test('the IR type picker marks which types let you choose A–D icons', () => {
   assert.match(catalog, /data-catalog-type-card="4"[\s\S]*?Custom A–D icons/);
 });
 
-test('an IR command key on Main A–D is not offered menu-shortcut icons, and No icon stays', () => {
+test('an IR command key on Main A–D is not offered menu-shortcut icons, nor No icon', () => {
   const instance = panel();
   instance._remote = () => ({remote_id: 'ir', device_type: 'IR_2', pages: []});
   instance._physical = {kind: 'ir', pages: [{index: 0, buttons: [{index: 0, transport: 'ir', code_hex: 'aa'}]},
@@ -1218,7 +1218,9 @@ test('an IR command key on Main A–D is not offered menu-shortcut icons, and No
   const main = instance._renderKeyEditor({button_page: 0, button_index: 0, button_id: 'p0_k0'});
   assert.doesNotMatch(main, /data-glyph-code="39"/);           // a menu shortcut
   assert.match(main, /data-glyph-code="105"/);
-  assert.match(main, />No icon</);
+  // a key with a command always shows a picture: no "No icon", the default is named as the ring
+  assert.doesNotMatch(main, />No icon</);
+  assert.match(main, /Ring \(no icon chosen\)/);
   const row = instance._renderKeyEditor({button_page: 1, button_index: 0, button_id: 'p1_k0'});
   assert.match(row, /data-glyph-code="39"/);                   // a menu row takes any icon
 });
@@ -1236,30 +1238,43 @@ test('an IR remote with every key cleared cannot be saved, and the panel says wh
   assert.match(status('native'), /Add a command to Main/);
 });
 
-test('No icon is a real state: named in the picker and drawn empty on the screen', () => {
+test('No icon empties a key without a command; with a command the remote draws a ring', () => {
   const instance = panel();
   instance._physical = {kind: 'ir', pages: []};
   instance._remote = () => ({remote_id: 'ir', device_type: 'IR_2', pages: []});
   instance._status = () => ['ready'];
-  // the picker: a key on 'no icon' shows an empty picture and the name, and the button is pressed
-  const picker = instance._renderGlyphPicker({glyph: 115}, 'glyph', 'Button icon', 115, [115, 105], 115);
-  assert.match(picker, /<summary><span class="native-glyph no-icon"[^>]*><\/span><b>Button icon<\/b> <span>· No icon<\/span>/);
-  assert.match(picker, /data-glyph-code="115" aria-pressed="true">No icon</);
-  // the other no-icon code (the HID default) is named too, and a real icon is not
-  const other = instance._renderGlyphPicker({}, 'glyph', 'Button icon', 2003, [2003, 105], 2003);
-  assert.match(other, /· No icon/);
-  assert.doesNotMatch(instance._renderGlyphPicker({glyph: 105}, 'glyph', 'Button icon', 115, [115, 105], 115), /· No icon/);
-  // the menu rows on the screen
+  // an icon-only key keeps the No icon choice (it empties the place on the remote)
+  const iconOnly = instance._renderGlyphPicker({glyph: 105}, 'glyph', 'Icon only, no command', 105, [115, 105], 115);
+  assert.match(iconOnly, /data-glyph-code="115" aria-pressed="false">No icon</);
+  // a command key offers no "No icon"; its default 115 is shown and named as the ring
+  const command = instance._renderGlyphPicker({}, 'glyph', 'Button icon', 115, [115, 105]);
+  assert.doesNotMatch(command, />No icon</);
+  assert.match(command, /· Ring \(no icon chosen\)/);
+  assert.match(command, /keyfun-0073\.png/);
+  // menu rows draw the ring too, as the remote does
   const page = {index: 1, buttons: [
     {button_id: 'p1_k0', button_index: 0, button_function: 115, label: 'Plain'},
     {button_id: 'p1_k1', button_index: 1, button_function: 115, button_glyph: 105, label: 'Chosen'},
   ]};
   const html = instance._renderScreen(page);
-  assert.match(html, /scr-icon no-icon[\s\S]*Plain/);
+  assert.match(html, /keyfun-0073\.png[\s\S]*Plain/);
   assert.match(html, /keyfun-0069\.png[\s\S]*Chosen/);
-  // a Native remote keeps drawing its own picture for these codes
-  instance._physical = {kind: 'native', pages: []};
-  assert.doesNotMatch(instance._renderScreen(page), /scr-icon no-icon/);
+  assert.doesNotMatch(html, /scr-icon no-icon/);
+});
+
+test('a stock A–D template icon is kept, and can be given a command or removed', () => {
+  const instance = panel();
+  const template = {index: 1, transport: 'stored', function: 31,
+    record: '01001ffe' + '001f'.padEnd(64, '0')};
+  instance._physical = {kind: 'ir', pages: [{index: 0, buttons: [template]}]};
+  instance._remote = () => ({remote_id: 'ir', device_type: 'IR_9', pages: []});
+  instance._pageControl = () => '';
+  const editor = instance._renderKeyEditor({button_page: 0, button_index: 1, button_id: 'p0_k1'});
+  assert.match(editor, /shows a template icon, sends nothing/);
+  assert.match(editor, /id="commandForTemplate"/);
+  assert.match(editor, /Remove this icon/);
+  assert.equal(context.irTemplateRecord(template), true);
+  assert.equal(context.irTemplateRecord({transport: 'stored', record: '0100190100'}), false);
 });
 
 test('Diagnostics offers Repair list order, and the installed table does not', () => {
@@ -1450,4 +1465,20 @@ test('waiting is shown with one loading panel and a spinner', () => {
   const source = fs.readFileSync(path.join(__dirname,
     '../custom_components/switchbot_urc/frontend/switchbot-urc-panel.js'), 'utf8');
   assert.doesNotMatch(source, /<p[^>]*>(Reading|Loading|Talking|Running)[^<]*…<\/p>/);
+});
+
+test('copy from a button lists this remote\'s keys and the account\'s, named by their icon', () => {
+  const instance = panel();
+  instance._physicalSources = [{ remote: 'TV', function: 26, code_hex: 'aa', label: 'TV · page 4 / key 1' }];
+  instance._accountCodes = { codes: [
+    { remote: 'Soundbar', key: '21', function: 26, code_hex: 'bb' },
+    { remote: 'Hub lamp', key: 'Night', function: null, code_hex: 'cc' }] };
+  const html = instance._renderCodeSources({ code_hex: 'cc' });
+  assert.match(html, /<optgroup label="On this Universal Remote">[\s\S]*TV · Forward/);
+  assert.match(html, /<optgroup label="In your SwitchBot account">[\s\S]*Soundbar · Forward[\s\S]*Hub lamp · Night/);
+  assert.match(html, /value="a:1"\s+selected/);
+  assert.equal(instance._codeSource('a:0').code_hex, 'bb');
+  assert.equal(instance._codeSource('u:0').code_hex, 'aa');
+  instance._accountCodes = { loading: true, codes: [] };
+  assert.match(instance._renderCodeSources({}), /Loading the buttons of your SwitchBot account/);
 });

@@ -290,6 +290,51 @@ class CloudIrProfile:
         }
 
 
+def account_ir_codes(item: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    """Every key of an account IR remote as a code a Studio key can take.
+
+    A key from the remote's code bank is its slice of the bank (the key map gives start and
+    length); a learned key is its own code. The function is the firmware picture the page builders
+    give that key, when the type has one, so Studio can name the key and offer its icon. Air
+    conditioners have no per-key codes (the remote builds their frames), so they give none.
+    """
+    from .ir_glyphs import catalog_glyphs
+
+    try:
+        remote_type = _as_int(item.get("type", 2))
+    except (TypeError, ValueError):
+        remote_type = 2
+    functions = catalog_glyphs(f"IR_{remote_type}")
+    codes: list[dict[str, Any]] = []
+    seen: set[bytes] = set()
+
+    def add(key: str, code: bytes, function: int | None) -> None:
+        if code and code not in seen:
+            seen.add(code)
+            codes.append({"remote": name, "key": key, "function": function, "code_hex": code.hex()})
+
+    code_value = item.get("code")
+    if code_value and str(code_value) != "no_data" and remote_type not in AIR_CONDITIONER_TYPES:
+        try:
+            bank = decode_code_blob(code_value)
+        except (ValueError, TypeError):
+            bank = b""
+        for key, start, length in parse_key_map(item.get("keyMap", "")):
+            if start + length <= len(bank):
+                add(str(key), bank[start:start + length], functions.get(key))
+    details = _as_object(item.get("keyDetail", []))
+    for index, detail in enumerate(details if isinstance(details, list) else []):
+        if not isinstance(detail, dict) or not detail.get("code"):
+            continue
+        label = str(detail.get("keyName", detail.get("key", detail.get("name", index))))
+        try:
+            code = decode_code_blob(detail["code"])
+        except (ValueError, TypeError):
+            continue
+        add(label, code, functions.get(int(label)) if label.isdigit() else None)
+    return codes
+
+
 # Remote types an empty IR remote can be made of: those with a layout, DIY (9) included: it has
 # no stock keys at all, so it starts as a clean generic IR remote.
 BLANK_REMOTE_TYPES = tuple(sorted({2, *PAGE_LAYOUTS} - {*range(15, 28)}))

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.28
+
+- **Copy from a button** in an IR key's editor now also lists every key of every IR remote in your SwitchBot account, including remotes made on a Hub and learned keys, under **In your SwitchBot account**; the keys already on this Universal Remote are under **On this Universal Remote**. The account's keys are read from the cloud once, when an IR key's editor first opens, and again after **Re-read my remotes**. Keys are named by their icon ("Soundbar · Forward") or, for a learned key, by its own name, instead of "page 4 / key 2", and copying a key copies its icon too where that place takes one.
+- The stock icons on A–D of an IR remote (the template icons an empty or account remote shows where it has no command) are kept when the remote is saved. Before, saving dropped every one you had not changed, so changing only A left B, C and D empty on the remote. Studio now shows such a key as a template icon, with **Give this key a command** (it keeps the picture unless it is a menu icon) and **Remove this icon**.
+- **No icon** now only appears where it can mean no picture: on a key with no command, where it empties the place (the remote shows nothing there). A key with a command always shows a picture on the remote, and for "no icon" that is a ring, so such keys no longer offer No icon, and Studio draws and names their default picture as the ring the remote shows.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.27
 
 - DIY IR remotes ("Others", the type the SwitchBot app uses for a remote of learned keys only, for example one made on a Hub) can now be installed from your account. The install stopped with "IR key map must not be empty", because Studio had no layout for this type. It now lays them out as the app does: the first three learned keys on A, B and C, the rest (up to 15) on a page behind D, each with its own learned code.

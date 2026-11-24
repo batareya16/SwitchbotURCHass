@@ -120,6 +120,11 @@ function irArtworkType(type) {
   return type;
 }
 
+// True for a stored stock A–D template record (kind 254: a picture with no command).
+function irTemplateRecord(key) {
+  return key?.transport === "stored" && String(key.record || "").slice(6, 8).toLowerCase() === "fe";
+}
+
 function irPagePositions(deviceType) {
   const text = String(deviceType || "").toUpperCase();
   const type = text === "IR_TV" ? 2 : Number.parseInt(text.replace(/^IR_/, ""), 10);
@@ -1033,7 +1038,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     const selected = owner[field];
     const current = selected ?? defaultFunction;
     const noIconMode = blankCode !== null;
-    const caption = noIconMode && NO_ICON_CODES.has(current) ? "No icon" : NATIVE_GLYPH_LABELS[current];
+    // A key with a command always shows a picture; the "no icon" codes are a ring on the remote.
+    const caption = NO_ICON_CODES.has(current) ? (noIconMode ? "No icon" : "Ring (no icon chosen)")
+      : NATIVE_GLYPH_LABELS[current];
     const emptyGlyph = '<span class="native-glyph no-icon" aria-hidden="true"></span>';
     const preview = noIconMode && NO_ICON_CODES.has(current) ? emptyGlyph
       : this._nativeGlyph({ button_glyph: selected, button_function: defaultFunction });
@@ -1052,7 +1059,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           if (allowedCodes && !allowedCodes.includes(code)) return "";
           if (glyphGroup(code) !== group.id) return "";
           const iconId = `0x${code.toString(16).padStart(4, "0")}`;
-          const name = noIconMode && NO_ICON_CODES.has(code) ? "No icon" : caption || "No caption";
+          const name = NO_ICON_CODES.has(code) ? (noIconMode ? "No icon" : "Ring") : caption || "No caption";
           return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
             aria-label="${escapeHtml(name)} (${iconId})" aria-pressed="${code === current}">
             ${noIconMode && NO_ICON_CODES.has(code) ? emptyGlyph : this._nativeGlyph({ button_function: code })}<span>${escapeHtml(name)}</span></button>`;
@@ -1443,9 +1450,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         const iconCode = shown.button_glyph ?? shown.button_function;
         const keyKind = this._physical?.kind;
         // A key set to "no icon" draws nothing, as the picker shows it.
-        const glyph = (keyKind === "ir" || keyKind === "hid") && NO_ICON_CODES.has(iconCode)
-          ? '<span class="scr-icon no-icon" aria-hidden="true"></span>'
-          : this._nativeGlyph(shown, "scr-icon");
+        // A row always has a command, so "no icon" is the ring the remote draws for it.
+        const glyph = this._nativeGlyph(shown, "scr-icon");
         return `<div class="scr-row k ${status}${on ? " on" : ""}${draft ? " unsaved" : ""}" role="button" tabindex="0"
           data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}${draft ? ` · ${draft} in draft` : ""}">
           ${glyph}
@@ -1678,7 +1684,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           const irFunction = Number.isInteger(glyphButton?.button_glyph) ? glyphButton.button_glyph
             : irPreview?.softkeys ? irPreview.softkeys[index] : recordedFunction || disabledFunction;
           const glyphSrc = isIr
-            ? (irFunction && !NO_ICON_CODES.has(irFunction) ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
+            ? (irFunction ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
             : glyphButton?.layout_empty ? "" : this._nativeGlyphSrc(glyphButton);
           const dim = isIr && disabledFunction && !recordedFunction;
           const x = 52 + index * 52;
@@ -2103,8 +2109,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("cloudRefresh")?.addEventListener("click", () => run(
       `${DOMAIN}/studio/cloud/refresh`,
       (result) => {
-        // The Add remote dialog reads this list, so make it fetch the new one.
+        // The Add remote dialog reads this list, so make it fetch the new one; the same for the
+        // account's buttons offered under "Copy from a button".
         this._sources = null;
+        this._accountCodesFor = null;
         this._cloud.cached_remotes = result.remotes;
         return `${result.remotes} remote${result.remotes === 1 ? "" : "s"} read from the account.`;
       }));
@@ -3362,6 +3370,15 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("openCustomPage")?.addEventListener("click", () => openSubpage(false));
     root.getElementById("openNumberPad")?.addEventListener("click", () => openSubpage(true));
 
+    root.getElementById("commandForTemplate")?.addEventListener("click", () => {
+      // The template's picture stays, unless it is a menu icon, which would stop the command.
+      const fn = key.function;
+      Object.keys(key).forEach((field) => delete key[field]);
+      Object.assign(key, { index: button.button_index, transport: "ir", code_hex: "",
+        function: MENU_SHORTCUT_ICONS.has(fn) || !fn ? 115 : fn });
+      this._render();
+    });
+
     root.getElementById("addKeyHere")?.addEventListener("click", () => {
       const target = this._physical.pages.find((item) => item.index === button.button_page);
       if (!target || target.buttons.some((item) => item.index === button.button_index)) return;
@@ -3408,9 +3425,16 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     });
 
+    if (root.querySelector('[data-key-field="code_hex"]')) this._ensureAccountCodes();
     root.querySelector('[data-key-field="ir_source"]')?.addEventListener("change", (event) => {
-      if (event.target.value === "") return;
-      key.code_hex = this._physicalSources[Number(event.target.value)].code_hex;
+      const source = this._codeSource(event.target.value);
+      if (!source) return;
+      key.code_hex = source.code_hex;
+      // Copying a button copies its picture too, where this place takes one.
+      const fn = source.function;
+      const takesIcon = (page.index || key.index < 4) && !page.number_pad
+        && !(!page.index && (MENU_SHORTCUT_ICONS.has(fn) || this._fixedSoftkeys()));
+      if (Number.isInteger(fn) && fn > 0 && fn in NATIVE_GLYPH_LABELS && takesIcon) key.glyph = fn;
       this._render();
     });
 
@@ -3533,8 +3557,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       let owner = glyphField === "link_glyph"
         ? this._physical.pages.find((page) => page.index === this._page()?.index)
         : this._draftKey(this._button())?.key;
+      const noIcon = glyphCode !== "" && NO_ICON_CODES.has(Number(glyphCode));
       if (!owner && glyphField === "glyph" && (this._physical.kind === "ir" || this._physical.kind === "native")
-          && glyphCode !== "") {
+          && glyphCode !== "" && !noIcon) {
         // An empty A–D position takes an icon alone: it becomes an icon-only key.
         const target = this._physical.pages.find((page) => page.index === this._button()?.button_page);
         if (!target) return;
@@ -3542,8 +3567,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         target.buttons.push(owner);
       }
       if (!owner) return;
-      if (glyphCode === "" && owner.transport === "icon") {
-        // Resetting an icon-only key takes the icon away, which leaves nothing to keep.
+      if ((glyphCode === "" || noIcon) && owner.transport === "icon") {
+        // An icon-only key with no icon is nothing: the place on the remote is left empty.
         const holder = this._physical.pages.find((page) => page.buttons.includes(owner));
         if (holder) holder.buttons = holder.buttons.filter((item) => item !== owner);
         this._render();
@@ -3636,6 +3661,55 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${letter} can only open the number pad.`}</p>` : ""}`;
   }
 
+  // "Copy from a button": the IR keys already on this Universal Remote and every IR key in the
+  // SwitchBot account (loaded once per integration entry, when an IR key editor first opens).
+  _ensureAccountCodes() {
+    if (this._accountCodesFor === this._entryId) return;
+    this._accountCodesFor = this._entryId;
+    this._accountCodes = { loading: true, codes: [] };
+    const entryId = this._entryId;
+    this._hass.callWS({ type: `${DOMAIN}/studio/cloud/ir_codes`, entry_id: entryId })
+      .then((result) => {
+        if (this._entryId !== entryId) return;
+        this._accountCodes = { codes: result.codes || [], connected: result.connected !== false };
+        this._render();
+      })
+      .catch((error) => {
+        if (this._entryId !== entryId) return;
+        this._accountCodes = { codes: [], error: error?.message || String(error) };
+        this._render();
+      });
+  }
+
+  _codeSource(value) {
+    const [group, index] = String(value || "").split(":");
+    if (group === "u") return (this._physicalSources || [])[Number(index)] || null;
+    if (group === "a") return (this._accountCodes?.codes || [])[Number(index)] || null;
+    return null;
+  }
+
+  _renderCodeSources(key) {
+    const name = (source) => {
+      const fn = source.function;
+      const glyphName = Number.isInteger(fn) && fn !== 115 && fn !== 2003 ? NATIVE_GLYPH_LABELS[fn] : null;
+      return `${source.remote || ""} · ${glyphName || source.key || source.label || "key"}`;
+    };
+    const options = (sources, group) => sources.map((source, index) => `<option value="${group}:${index}"
+      ${key.code_hex === source.code_hex ? "selected" : ""}>${escapeHtml(name(source))}</option>`).join("");
+    const local = this._physicalSources || [];
+    const account = this._accountCodes || { codes: [] };
+    if (!local.length && !account.codes.length && !account.loading) {
+      return account.error ? `<p class="small">Could not read the buttons of your account: ${escapeHtml(account.error)}</p>` : "";
+    }
+    return `<label>Copy from a button<select data-key-field="ir_source">
+        <option value="">Choose…</option>
+        ${local.length ? `<optgroup label="On this Universal Remote">${options(local, "u")}</optgroup>` : ""}
+        ${account.codes.length ? `<optgroup label="In your SwitchBot account">${options(account.codes, "a")}</optgroup>` : ""}
+      </select></label>
+      ${account.loading ? loadingNote("Loading the buttons of your SwitchBot account…", true) : ""}
+      ${account.error ? `<p class="small">Could not read the buttons of your account: ${escapeHtml(account.error)}</p>` : ""}`;
+  }
+
   // Where this IR remote's window opens a list page or the number pad (A = 0).
   _irPagePositions() {
     return irPagePositions(this._remote()?.device_type);
@@ -3696,6 +3770,20 @@ class SwitchBotUrcPanel extends HTMLElement {
     const pageControl = this._pageControl(button, key);
     const clearKey = `<button class="secondary compact destructive" id="removeKey"
       title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`;
+    if (!page.index && key.index < 4 && irTemplateRecord(key)) {
+      // The stock picture an empty A–D place shows (a record of kind 254, no command). It stays
+      // on the remote until it is given a command or removed.
+      return `<div class="action-box key-editor">
+        <div class="action-title"><b>On the remote</b><span>shows a template icon, sends nothing</span></div>
+        <p class="small">This is the stock icon of this type of remote. Pressing it only shows a
+          message on the remote. It stays when you save, until you give the key a command or remove it.</p>
+        <div class="key-actions">
+          <button class="secondary compact" id="commandForTemplate">Give this key a command</button>
+          <button class="secondary compact destructive" id="removeKey">Remove this icon</button>
+        </div>
+        ${pageControl}
+      </div>`;
+    }
     if (key.transport === "icon" && this._fixedSoftkeys()) {
       // Such a key hides itself on a fixed-picture window; it is dropped when the layout is saved.
       return `<div class="action-box key-editor">${FIXED_SOFTKEY_NOTE}
@@ -3758,12 +3846,9 @@ class SwitchBotUrcPanel extends HTMLElement {
                 // A command key on Main A–D with a menu-shortcut icon shows "No list under this
                 // shortcut" when pressed and sends nothing, so those icons are not offered.
                 && !(kind === "ir" && !page.index && MENU_SHORTCUT_ICONS.has(code))),
-              kind === "hid" ? 0x07D3 : 115, page.index ? LIST_ROW_ICON_HINT
+              null, page.index ? LIST_ROW_ICON_HINT
                 : kind === "hid" ? "On an HID remote every icon is only the picture: the key always sends its command." : "") : ""}
-        ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
-            <option value="">Choose…</option>${
-            this._physicalSources.map((source, index) => `<option value="${index}" ${key.code_hex === source.code_hex ? "selected" : ""}>${escapeHtml(source.label)}</option>`).join("")
-          }</select></label>` : ""}
+        ${this._renderCodeSources(key)}
         <label>IR code (hex)<textarea data-key-field="code_hex" spellcheck="false"
           placeholder="Paste the raw code, or copy one from a saved button above"
           >${escapeHtml(key.code_hex || "")}</textarea></label>

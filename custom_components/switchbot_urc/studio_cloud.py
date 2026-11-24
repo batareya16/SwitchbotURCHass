@@ -17,6 +17,7 @@ from homeassistant.components import websocket_api
 
 from .cloud import parse_communication_credentials
 from .const import CONF_KEY, CONF_KEY_ID, DOMAIN
+from .cloud_ir import account_ir_codes, find_cloud_items
 from .inventory import cloud_items
 from .studio_catalog import cloud_client
 
@@ -114,7 +115,41 @@ async def ws_cloud_refresh_key(hass, connection, msg):
         connection.send_error(msg["id"], "cloud_key_failed", str(err))
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/cloud/ir_codes",
+    vol.Required("entry_id"): str,
+})
+@websocket_api.async_response
+async def ws_cloud_ir_codes(hass, connection, msg):
+    """The keys of every IR remote in the account, for "Copy from a button"."""
+    try:
+        entry = _entry(hass, msg)
+        if not entry.data.get("cloud"):
+            connection.send_result(msg["id"], {"codes": [], "connected": False})
+            return
+        records = [item for item in entry.options.get("cloud_remotes", [])
+                   if isinstance(item, dict) and item.get("remoteID")]
+        names = {str(item["remoteID"]): str(item.get("remoteName") or item["remoteID"])
+                 for item in records}
+        groups: dict[str, list[str]] = {}
+        for item in records:
+            groups.setdefault(str(item.get("createFrom") or "hub"), []).append(str(item["remoteID"]))
+        client = cloud_client(hass, entry)
+        codes = []
+        for created_from, ids in groups.items():
+            for downloaded in find_cloud_items(await client.get_ir_remotes(ids, created_from)):
+                remote_id = str(downloaded.get("remoteID", ""))
+                codes.extend(account_ir_codes(
+                    downloaded, names.get(remote_id) or str(downloaded.get("remoteName") or "Remote")))
+        connection.send_result(msg["id"], {"codes": codes, "connected": True})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio account IR codes failed")
+        connection.send_error(msg["id"], "cloud_codes_failed", str(err))
+
+
 def register(hass) -> None:
+    websocket_api.async_register_command(hass, ws_cloud_ir_codes)
     websocket_api.async_register_command(hass, ws_cloud_status)
     websocket_api.async_register_command(hass, ws_cloud_refresh)
     websocket_api.async_register_command(hass, ws_cloud_refresh_key)

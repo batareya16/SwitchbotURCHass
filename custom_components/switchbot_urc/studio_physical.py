@@ -104,6 +104,8 @@ def ir_sources(entry):
                 start, length = int.from_bytes(record[4:8], "big"), int.from_bytes(record[8:10], "big")
                 if length and start + length <= len(bank):
                     sources.append({"label": f"{remote['name']} · page {body[81]} / key {record[0]}",
+                                    "remote": str(remote["name"]),
+                                    "function": int.from_bytes(record[1:3], "big"),
                                     "code_hex": bank[start:start + length].hex()})
     return sources
 

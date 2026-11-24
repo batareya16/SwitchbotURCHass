@@ -76,6 +76,17 @@ def _key_function(key: dict) -> int | None:
     return value if type(value) is int else None
 
 
+def is_template_key(key: dict) -> bool:
+    """A stock A–D template icon: a stored record of kind 254, a picture with no command."""
+    if key.get("transport") != "stored":
+        return False
+    try:
+        record = bytes.fromhex(str(key.get("record", "")))
+    except ValueError:
+        return False
+    return len(record) == 36 and record[3] == 254
+
+
 def _link_function(page: dict) -> int | None:
     try:
         record = bytes.fromhex(str(page.get("link_record") or ""))
@@ -478,7 +489,10 @@ def draft_for(remote: dict) -> dict:
         buttons = []
         for offset in range(83, len(body), 36):
             record = body[offset:offset + 36]
-            if record[3] in (4, 254) or (body[81] == 0 and record[0] == c.KATA_POSITION):
+            # A–D on Main keep their template icon (kind 254: the stock picture, no command), so a
+            # save leaves it where it was; every other kind 4/254 record is a page link or filler.
+            template = body[81] == 0 and record[0] < 4 and record[3] == 254
+            if (record[3] in (4, 254) and not template) or (body[81] == 0 and record[0] == c.KATA_POSITION):
                 continue
             buttons.append({"index": record[0], "function": int.from_bytes(record[1:3], "big"),
                             "transport": "stored", "record": record.hex()})
@@ -611,7 +625,7 @@ def validate(remote: dict, draft: dict) -> dict:
                     # pressing it shows "No list under this shortcut" and sends nothing.
                     raise ValueError("That icon is a menu shortcut; choose another for a key that sends a command")
             transport = key.get("transport")
-            if (not number and index < 4 and not fixed_softkeys
+            if (not number and index < 4 and not fixed_softkeys and not is_template_key(key)
                     and (expected, transport) in (("ir", "ir"), ("ir", "stored"), ("native", "native"))
                     and _key_function(key) in MENU_SHORTCUT_FUNCTIONS):
                 # The key's own function (its icon unless one is chosen) decides on these windows:
@@ -702,8 +716,11 @@ def compile_pages(
             index = key["index"]
             transport = key["transport"]
             if transport == "icon":
-                # A shown softkey: the picture only, with no command behind it.
+                # A shown softkey: the picture only, with no command behind it. With no icon it is
+                # nothing at all: no record, so the remote leaves the place empty.
                 function = int(key["glyph"])
+                if function in (0, 115, 0x07D3):
+                    continue
                 keys.append(bytes([index]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
             elif transport == "ir":
                 # Main names match the official HID editor; submenu names are stable and unique.

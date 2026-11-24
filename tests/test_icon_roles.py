@@ -77,3 +77,27 @@ def test_a_native_a_to_d_action_with_a_menu_function_is_refused():
     main["buttons"].append({"index": free, "transport": "native", "function": 119})   # MODE
     with pytest.raises(ValueError, match="menu icon"):
         physical.validate(remote, draft)
+
+
+def test_template_icons_on_a_to_d_are_kept_when_one_key_is_changed():
+    # The user's case: an empty DIY remote shows template icons on A–D (kind 254). Saving it after
+    # changing only A used to drop B, C and D, so the remote showed them empty.
+    remote = _blank_ir(9)
+    draft = physical.draft_for(remote)
+    main = next(page for page in draft["pages"] if page["index"] == 0)
+    assert sorted(key["index"] for key in main["buttons"]) == [0, 1, 2, 3]
+    assert all(physical.is_template_key(key) for key in main["buttons"])
+    main["buttons"] = [key for key in main["buttons"] if key["index"] != 0] + [
+        {"index": 0, "transport": "ir", "code_hex": "aa", "glyph": 105}]
+    _, pages = physical.compile_pages(remote, draft, slot=6)       # D's template is a menu icon: kept
+    body = pages[0][7:]
+    records = {body[83 + 36 * i]: body[83 + 36 * i:83 + 36 * (i + 1)] for i in range(body[82])}
+    assert records[0][1:4] == (105).to_bytes(2, "big") + b"\x02"
+    assert [(records[i][1:3], records[i][3]) for i in (1, 2, 3)] == [
+        ((31).to_bytes(2, "big"), 254), ((32).to_bytes(2, "big"), 254), ((100).to_bytes(2, "big"), 254)]
+    # "No icon" on a key with no command writes nothing: the place is empty
+    main["buttons"] = [key for key in main["buttons"] if key["index"] != 0] + [
+        {"index": 0, "transport": "icon", "glyph": 115}]
+    _, pages = physical.compile_pages(remote, draft, slot=6)
+    body = pages[0][7:]
+    assert 0 not in {body[83 + 36 * i] for i in range(body[82])}
