@@ -107,3 +107,54 @@ def catalog_glyphs(device_type: str) -> dict[int, int]:
 def stock_softkey_glyphs(device_type: str) -> tuple[int, ...]:
     """Firmware glyphs that the stock profile writes at A–D."""
     return _IR_SOFTKEY_FUNCTIONS.get(_profile(device_type), ())
+
+
+# IR remote types whose window draws a FIXED picture on Main A–D (light, fan, audio, air
+# conditioner, and the custom versions of the first three; WoRWS V48, decoded, not run). The
+# window shows a key only while the page holds a record whose function is that position's own id,
+# and it ignores any icon chosen for the key, so Studio writes these ids and offers no choice.
+FIXED_SOFTKEY_TYPES = frozenset({1, 6, 11, 14, 20, 24, 27})
+
+# The ids of those four keys on a fixed window; air conditioner (type 1) is not in the table above.
+_FIXED_SOFTKEY_FUNCTIONS = {
+    1: (59, 70, 80, 100),
+    6: (90, 89, 70, 100),
+    11: (39, 27, 28, 100),
+    14: (91, 311, 312, 100),
+}
+
+# Functions the firmware treats as menu shortcuts. A key with one of these and no page behind it
+# shows "No list under this shortcut" when pressed, and never sends its command.
+MENU_SHORTCUT_FUNCTIONS = frozenset({
+    1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 119, 123, 124, 125, 126, 210, 320, 330,
+    914, 915, 916, 917,
+})
+
+
+def _wire_type(device_type: str) -> int | None:
+    prefix, _, value = str(device_type).partition("_")
+    return int(value) if prefix == "IR" and value.isdecimal() else None
+
+
+def fixed_softkey_functions(device_type: str) -> tuple[int, ...] | None:
+    """The A–D ids a fixed-picture IR window needs, or None for a window that reads the record."""
+    wire = _wire_type(device_type)
+    if wire not in FIXED_SOFTKEY_TYPES:
+        return None
+    return _FIXED_SOFTKEY_FUNCTIONS[_profile(device_type)]
+
+# On a fixed window these positions only open the page behind them (with no page the press shows
+# "No list under this shortcut"), so a command cannot be put there. Positions are A=0 … D=3.
+_PAGE_ONLY_POSITIONS = {
+    1: frozenset({0, 1, 2, 3}),
+    6: frozenset({2, 3}),
+    11: frozenset({3}),
+    14: frozenset({3}),
+}
+
+
+def page_only_positions(device_type: str) -> frozenset[int]:
+    """Main A–D positions of a fixed-picture window that cannot hold a command."""
+    if fixed_softkey_functions(device_type) is None:
+        return frozenset()
+    return _PAGE_ONLY_POSITIONS[_profile(device_type)]

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.53.13
+
+- The A–D keys of light, fan, audio and air conditioner IR remotes no longer disappear after Studio writes the layout. These remotes draw a fixed picture on A–D and show a key only when it carries its own function id, so Studio now writes that id for each key and for the links to pages A–D.
+- On those types Studio no longer offers an icon for the A–D keys, and the key's editor says why. A key that only opens a page there (D on all of them, C on a fan, all four on an air conditioner) cannot be given a command, and the layout is refused with a message that names the key.
+- An IR key on Main A–D that sends a command is not offered the icons the remote treats as menu shortcuts: with one of those, pressing the key showed "No list under this shortcut" instead of sending the code.
+- The IR device type is chosen from cards with the picture of each type and a mark showing whether its A–D keys take your icon (**Custom A–D icons**) or draw a fixed picture (**Fixed A–D icons**), with an explanation under the cards. The type of a remote cannot be changed afterwards.
+- Studio's picture of the remote shows the icon you chose for a key, not the stock icon of the type.
+- Under an icon-only key of a Native remote, the editor notes that what the remote does when the key is pressed is not confirmed yet.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.12
 
 - A Native remote's A–D key on the Main page can now show an icon with no action (**Icon only, no command**), as an IR remote's can. It is written like a key that opens a page, without a page behind it. What the remote does when such a key is pressed is not confirmed on a real Universal Remote yet.

@@ -39,6 +39,14 @@ const BLANK_IR_TYPES = [
   [12, "Water heater"], [13, "Robot vacuum"], [8, "Camera"],
 ];
 const IR_KINDS = ["catalog", "cloud", "blank"];
+// IR windows that draw a fixed picture on Main A-D (light, fan, audio and air conditioner): the
+// remote ignores the icon of those keys, so there is nothing to choose (WoRWS V48, decoded).
+const IR_FIXED_SOFTKEY_TYPES = new Set([1, 6, 11, 14, 20, 24, 27]);
+const IR_TYPE_NOTE = "The type picks the remote's screen and which keys it has. It cannot be changed afterwards: to use another type, add a new remote.";
+const irTypeNote = (fixed) => `<p class="small">${IR_TYPE_NOTE} ${fixed
+  ? "On this type the A–D keys show a fixed picture, and the remote ignores any icon chosen for them. Rows of a menu and the other keys take any icon."
+  : "On this type you can choose the icon of the A–D keys."}</p>`;
+const FIXED_SOFTKEY_NOTE = '<p class="small" role="status">This type of remote draws a fixed picture on its A–D keys, and the remote ignores any icon chosen here. Some of these keys only open a page and cannot send a command.</p>';
 // Icons the firmware treats as menu shortcuts: on a key with no page behind it, pressing one
 // shows "No list under this shortcut" (WoRWS V48, decoded, not run on a remote).
 const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 119,
@@ -850,8 +858,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     return src ? `<img class="native-glyph ${className}" src="${src}" alt="" aria-hidden="true">` : "";
   }
 
-  // blankCode is the icon code whose picture is empty (the remote draws nothing for it), so the
-  // picker can offer it by name instead of as one blank tile among two hundred.
+  // blankCode is the icon code the remote shows as "no icon" (its own placeholder picture), so the
+  // picker can offer it by name instead of as one plain tile among two hundred.
   _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null, blankCode = null) {
     const selected = owner[field];
     const current = selected ?? defaultFunction;
@@ -860,7 +868,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const unsupported = selected !== undefined && allowedCodes && !allowedCodes.includes(selected);
     return `<details class="glyph-picker">
       <summary>${preview}<b>${label}</b>${caption ? ` <span>· ${escapeHtml(caption)}</span>` : ""}</summary>
-      ${unsupported ? '<p class="small" role="status">Choose a menu icon or reset to the default before saving.</p>' : ""}
+      ${unsupported ? '<p class="small" role="status">This icon cannot be used here. Choose another one or reset to the default before saving.</p>' : ""}
       <button class="secondary compact" data-glyph-field="${field}" data-glyph-code=""
         ${selected === undefined ? "disabled" : ""}>Reset to default</button>
       ${blankCode === null ? "" : `<button class="secondary compact" data-glyph-field="${field}"
@@ -956,6 +964,26 @@ class SwitchBotUrcPanel extends HTMLElement {
         aria-label="${name}" title="${name}" aria-pressed="${!!active}">
         <span class="native-type-art" aria-hidden="true">${artwork
           ? `<img src="${artwork}" alt="">` : "—"}</span>
+      </button>`;
+    }).join("")}</div>`;
+  }
+
+  // Cards for the type of an IR remote: the picture of the type, its name, and whether the A–D
+  // keys of that type take the icon you choose. `remoteType` turns an item into the remote's own
+  // type id (the catalog numbers its types differently).
+  _irTypeChoices(items, selected, dataAttribute, remoteType = Number) {
+    return `<div class="ir-type-grid" role="group" aria-label="Device type">${items.map((item) => {
+      const type = remoteType(item.value);
+      const fixed = IR_FIXED_SOFTKEY_TYPES.has(type);
+      const art = IR_PROFILE_ARTWORK[type]
+        ? `<img src="/switchbot_urc_static/artwork/profile-${IR_PROFILE_ARTWORK[type]}.png" alt="">` : "—";
+      const name = escapeHtml(item.label);
+      return `<button type="button" class="ir-type-choice${Number(item.value) === Number(selected) ? " selected" : ""}"
+        data-${dataAttribute}="${escapeHtml(item.value)}" aria-pressed="${Number(item.value) === Number(selected)}"
+        title="${fixed ? "The remote draws a fixed picture on A–D" : "A–D keys take the icon you choose"}">
+        <span class="native-type-art" aria-hidden="true">${art}</span>
+        <b>${name}</b>
+        <small class="${fixed ? "fixed" : "custom"}">${fixed ? "Fixed A–D icons" : "Custom A–D icons"}</small>
       </button>`;
     }).join("")}</div>`;
   }
@@ -1214,7 +1242,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         const [status] = this._status(item);
         const on = item.button_id === this._buttonId;
         const draft = this._draftLabel(item);
-        const glyph = this._nativeGlyph(catalogGlyphs
+        const glyph = this._nativeGlyph(catalogGlyphs && !Number.isInteger(item.button_glyph)
           ? { button_glyph: catalogGlyphs[item.button_function] } : item, "scr-icon");
         return `<div class="scr-row k ${status}${on ? " on" : ""}${draft ? " unsaved" : ""}" role="button" tabindex="0"
           data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}${draft ? ` · ${draft} in draft` : ""}">
@@ -1422,8 +1450,9 @@ class SwitchBotUrcPanel extends HTMLElement {
           const recordedFunction = linked
             ? Number.parseInt(linkDraft?.link_record?.slice(2, 6), 16)
             : glyphButton?.button_glyph ?? glyphButton?.button_function;
-          const irFunction = irPreview?.softkeys
-            ? irPreview.softkeys[index] : recordedFunction || disabledFunction;
+          // An icon chosen in the editor wins over the stock picture of the rebuilt layout.
+          const irFunction = Number.isInteger(glyphButton?.button_glyph) ? glyphButton.button_glyph
+            : irPreview?.softkeys ? irPreview.softkeys[index] : recordedFunction || disabledFunction;
           const glyphSrc = isIr
             ? (irFunction ? this._nativeGlyphSrc({ button_function: irFunction }) : "")
             : glyphButton?.layout_empty ? "" : this._nativeGlyphSrc(glyphButton);
@@ -2419,13 +2448,17 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${isIr ? `<div class="mode-tabs sub-tabs" role="tablist" aria-label="Which IR remote">${irKinds.map(([key, label, usable]) =>
         `<button data-add-kind="${key}" class="${add.kind === key ? "selected" : ""}" ${usable ? "" : "disabled"}>${escapeHtml(label)}</button>`).join("")}</div>` : ""}
       <p class="small">${escapeHtml((kinds.find((item) => item[0] === add.kind) || [])[3] || "")}</p>
-      ${add.kind === "blank" ? `<label>Device type<select data-add-field="blank_type">${
-        BLANK_IR_TYPES.map(([value, label]) => option(value, label, value === Number(add.blankType || 2))).join("")
-      }</select></label>` : ""}
+      ${add.kind === "blank" ? `<div class="native-type-heading"><b>Device type</b>
+        <span>The type decides how the remote's A–D keys behave.</span></div>
+        ${this._irTypeChoices(BLANK_IR_TYPES.map(([value, label]) => ({ value, label })),
+          add.blankType || 2, "blank-type")}
+        ${irTypeNote(IR_FIXED_SOFTKEY_TYPES.has(Number(add.blankType || 2)))}` : ""}
       ${add.kind === "catalog" ? `
-        <label>Device type<select data-catalog="type">${
-          cat.types.map((item) => option(item.value, item.label, item.value === cat.remoteType)).join("")
-        }</select></label>
+        <div class="native-type-heading"><b>Device type</b>
+          <span>The type decides how the remote's A–D keys behave.</span></div>
+        ${this._irTypeChoices(cat.types, cat.remoteType, "catalog-type-card",
+          (value) => CATALOG_TO_REMOTE_IR_TYPE[Number(value)])}
+        ${irTypeNote(IR_FIXED_SOFTKEY_TYPES.has(CATALOG_TO_REMOTE_IR_TYPE[Number(cat.remoteType)]))}
         <label>Brand<input type="search" data-catalog="search" autocomplete="off"
           value="${escapeHtml(cat.search || "")}"
           placeholder="Search ${cat.brands.length} brand${cat.brands.length === 1 ? "" : "s"}…"></label>
@@ -2664,7 +2697,6 @@ class SwitchBotUrcPanel extends HTMLElement {
         if (name === "name") add.name = field.value;
         else if (name === "remote_id") add.remoteId = field.value;
         else if (name === "device_type") add.deviceType = field.value;
-        else if (name === "blank_type") add.blankType = Number(field.value);
         else if (name === "icon") add.icon = field.value;
       });
       field.addEventListener("change", () => {
@@ -2674,10 +2706,6 @@ class SwitchBotUrcPanel extends HTMLElement {
           add.deviceType = field.value;
           if (add.kind === "native" || add.kind === "hid") this._render();
         }
-        if (name === "blank_type") {
-          add.blankType = Number(field.value);
-          this._render();   // the "Type default" picture follows the type
-        }
         if (name === "icon") add.icon = field.value;
         if (name === "target_id") {
           add.targetId = field.value;
@@ -2686,12 +2714,19 @@ class SwitchBotUrcPanel extends HTMLElement {
       });
     });
 
-    root.querySelector('.add-remote [data-catalog="type"]')?.addEventListener("change", async (event) => {
-      try {
-        await this._loadCatalogBrands(Number(event.target.value));
-      } catch (error) { add.error = error?.message || String(error); }
-      this._render();
-    });
+    root.querySelectorAll(".add-remote [data-blank-type]").forEach((button) =>
+      button.addEventListener("click", () => {
+        add.blankType = Number(button.dataset.blankType);
+        this._render();   // the "Type default" picture follows the type
+      }));
+
+    root.querySelectorAll(".add-remote [data-catalog-type-card]").forEach((button) =>
+      button.addEventListener("click", async () => {
+        try {
+          await this._loadCatalogBrands(Number(button.dataset.catalogTypeCard));
+        } catch (error) { add.error = error?.message || String(error); }
+        this._render();
+      }));
 
     root.querySelector('.add-remote [data-catalog="search"]')?.addEventListener("input", (event) => {
       // Filter in place: re-rendering here would steal focus mid-word.
@@ -3292,6 +3327,12 @@ class SwitchBotUrcPanel extends HTMLElement {
         one or the other, never both.</p>`;
   }
 
+  // True when this IR remote's window draws a fixed picture on Main A-D.
+  _fixedSoftkeys() {
+    const type = Number.parseInt(String(this._remote()?.device_type || "").replace("IR_", ""), 10);
+    return this._physical?.kind === "ir" && IR_FIXED_SOFTKEY_TYPES.has(type);
+  }
+
   _renderKeyEditor(button) {
     if (!this._physical) return "";
     const found = this._draftKey(button);
@@ -3303,10 +3344,14 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!page) return "";
       const label = kind === "native" ? "Assign an action" : "Give this key a command";
       // An A–D key on an IR remote's Main page can show an icon with no command behind it.
-      const canIconOnly = (kind === "ir" || kind === "native") && page.index === 0 && button.button_index < 4;
+      const fixedAD = this._fixedSoftkeys() && page.index === 0 && button.button_index < 4;
+      const canIconOnly = (kind === "ir" || kind === "native") && page.index === 0 && button.button_index < 4
+        && !fixedAD;
       const iconOnly = canIconOnly
         ? `${this._renderGlyphPicker({}, "glyph", "Icon only, no command", 0,
-          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}`
+          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}
+          ${kind === "native" ? '<p class="small">What the remote does when this key is pressed is not confirmed yet: it may send an empty command to the bridge.</p>' : ""}`
+        : fixedAD ? FIXED_SOFTKEY_NOTE
         : kind === "hid" || kind === "ir"
           ? '<p class="small">A picture needs a command here: give the key a command first, then choose its icon.</p>' : "";
       return `<div class="action-box key-editor">
@@ -3328,11 +3373,17 @@ class SwitchBotUrcPanel extends HTMLElement {
     const pageControl = this._pageControl(button, key);
     const clearKey = `<button class="secondary compact destructive" id="removeKey"
       title="The key stays on the remote and sends nothing until you give it another command">Clear this key</button>`;
+    if (key.transport === "icon" && this._fixedSoftkeys()) {
+      // Such a key hides itself on a fixed-picture window; it is dropped when the layout is saved.
+      return `<div class="action-box key-editor">${FIXED_SOFTKEY_NOTE}
+        <div class="key-actions">${clearKey}</div></div>`;
+    }
     if (key.transport === "icon") {
       return `<div class="action-box key-editor">
         <div class="action-title"><b>On the remote</b><span>shows an icon, sends nothing</span></div>
         ${this._renderGlyphPicker(key, "glyph", "Icon only, no command", key.glyph,
           Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0), 115)}
+        ${kind === "native" ? '<p class="small">What the remote does when this key is pressed is not confirmed yet: it may send an empty command to the bridge.</p>' : ""}
         ${MENU_SHORTCUT_ICONS.has(key.glyph)
           ? '<p class="small" role="status">The remote treats this icon as a menu shortcut: pressing the key shows "No list under this shortcut". Pick another icon if that is not wanted.</p>' : ""}
         <div class="key-actions">
@@ -3365,10 +3416,14 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._hidFunctionOptions(key.function)
       }</select></label>` : ""}
       ${key.transport === "ir" ? `
-        ${(kind === "hid" || kind === "ir") && (page.index || key.index < 4)
-          ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? (kind === "hid" ? 0x07D3 : 115),
-            Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0),
-            kind === "hid" ? 0x07D3 : 115) : ""}
+        ${this._fixedSoftkeys() && !page.index && key.index < 4 ? FIXED_SOFTKEY_NOTE
+          : (kind === "hid" || kind === "ir") && (page.index || key.index < 4)
+            ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? (kind === "hid" ? 0x07D3 : 115),
+              Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0
+                // A command key on Main A–D with a menu-shortcut icon shows "No list under this
+                // shortcut" when pressed and sends nothing, so those icons are not offered.
+                && !(kind === "ir" && !page.index && MENU_SHORTCUT_ICONS.has(code))),
+              kind === "hid" ? 0x07D3 : 115) : ""}
         ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
             <option value="">Choose…</option>${
             this._physicalSources.map((source, index) => `<option value="${index}" ${key.code_hex === source.code_hex ? "selected" : ""}>${escapeHtml(source.label)}</option>`).join("")
@@ -4154,6 +4209,12 @@ class SwitchBotUrcPanel extends HTMLElement {
       .appearance-grid{display:grid;gap:12px}.appearance-part{display:flex;align-items:center;gap:16px;min-width:0;padding:14px;border:1px solid var(--divider-color,#e2e5e8);border-radius:16px;background:var(--secondary-background-color,#f5f6f8)}.appearance-part-body{flex:1;min-width:0}.appearance-part-body label{display:grid;gap:3px;font-size:12px;font-weight:700}.appearance-part-body select{margin-top:3px}.appearance-part-body p{margin:6px 0 0}.artwork-preview,.app-icon-preview{display:grid;place-items:center;flex:none;width:100px;height:100px;border-radius:14px;background:#171d24;color:#fff}.artwork-preview img{display:block;max-width:96px;max-height:96px;object-fit:contain}.app-icon-preview .ic-img{width:74px;height:74px;object-fit:contain}.appearance-profile-save{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.appearance-draft{font-size:11px;font-weight:700;color:var(--primary-color,#03a9f4)}
       .native-type-panel{display:grid;gap:10px;min-width:0}.native-type-heading{display:grid;gap:3px}.native-type-heading b{font-size:15px}.native-type-heading span{font-size:12px;color:var(--secondary-text-color,#68727d)}.native-type-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:8px}
       .native-type-choice{display:grid;place-items:center;min-width:0;min-height:72px;padding:6px;border:1px solid var(--divider-color,#d9dee3);border-radius:8px;background:var(--card-background-color,#fff);cursor:pointer}.native-type-choice:hover{border-color:var(--primary-color,#03a9f4)}.native-type-choice.selected{border-color:var(--primary-color,#03a9f4);box-shadow:inset 0 0 0 1px var(--primary-color,#03a9f4);background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff))}.native-type-choice:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}.native-type-art{display:grid;place-items:center;width:56px;height:56px;border-radius:6px;background:#171d24;color:#fff}.native-type-art img{max-width:54px;max-height:54px;object-fit:contain}.add-native-type-panel{margin:14px 0}
+      .ir-type-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin:8px 0}
+      .ir-type-choice{display:grid;justify-items:center;gap:4px;min-width:0;padding:8px 6px;border:1px solid var(--divider-color,#d9dee3);border-radius:8px;background:var(--card-background-color,#fff);color:inherit;font:inherit;cursor:pointer;text-align:center}
+      .ir-type-choice:hover{border-color:var(--primary-color,#03a9f4)}.ir-type-choice:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+      .ir-type-choice.selected{border-color:var(--primary-color,#03a9f4);box-shadow:inset 0 0 0 1px var(--primary-color,#03a9f4);background:color-mix(in srgb,var(--primary-color,#03a9f4) 8%,var(--card-background-color,#fff))}
+      .ir-type-choice b{font-size:13px;font-weight:600}.ir-type-choice small{font-size:11px;border-radius:999px;padding:1px 7px;white-space:nowrap}
+      .ir-type-choice small.custom{background:color-mix(in srgb,#2e9d57 18%,transparent);color:#2e9d57}.ir-type-choice small.fixed{background:color-mix(in srgb,#8a8f98 22%,transparent);color:var(--secondary-text-color,#68727d)}
       .appearance-editor{display:grid;gap:10px;padding-top:16px;border-top:1px solid var(--divider-color,#e2e5e8)}.appearance-editor label{display:grid;gap:6px;font-size:12px;font-weight:700}.appearance-editor input{height:42px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:10px;background:var(--card-background-color,#fff);color:inherit;font:inherit}.appearance-field-label{font-size:12px;font-weight:700}.appearance-icon-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px}.appearance-icon-choice{display:grid;justify-items:center;align-content:center;gap:5px;min-height:88px;padding:8px 5px;border:1px solid var(--divider-color,#dfe3e8);border-radius:12px;background:var(--secondary-background-color,#f5f6f8);color:inherit;cursor:pointer}.appearance-icon-choice:hover{border-color:var(--primary-color,#03a9f4)}.appearance-icon-choice.selected{border:2px solid var(--primary-color,#03a9f4);background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff))}.appearance-icon-choice .ic-img{width:43px;height:43px;object-fit:contain;padding:4px;border-radius:8px;background:#171d24}.appearance-icon-choice span{font-size:10px;font-weight:700;text-align:center;line-height:1.15}.appearance-note{margin:0}.appearance-icon-choice .ic-art{width:76px;height:52px;object-fit:contain;padding:4px;border-radius:8px;background:#171d24}.appearance-icon-choice .ic-art-default{display:grid;place-items:center;color:#fff;font-size:22px}.appearance-actions{display:flex;gap:8px;flex-wrap:wrap}.appearance-details{display:grid;gap:4px}.appearance-details span{display:block;font:11px/1.5 ui-monospace,monospace;color:var(--secondary-text-color,#68727d)}.appearance .native-profile-warnings{margin:0;padding:12px}
       .native-profile-warnings{display:grid;gap:10px;margin:16px 0 0;padding:14px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:8px;background:var(--card-background-color,#fff)}
       .profile-capacity-warning{display:grid;gap:3px;margin-top:14px;padding:11px 13px;border-left:3px solid #bd6a0f;border-radius:5px;background:#bd6a0f12;font-size:12px}.profile-capacity-warning span{color:var(--secondary-text-color,#68727d)}

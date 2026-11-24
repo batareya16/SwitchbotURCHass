@@ -5,7 +5,10 @@ from copy import deepcopy
 from pathlib import Path
 
 from . import commands as c
-from .ir_glyphs import catalog_glyphs, stock_softkey_glyphs
+from .ir_glyphs import (
+    MENU_SHORTCUT_FUNCTIONS, catalog_glyphs, fixed_softkey_functions, page_only_positions,
+    stock_softkey_glyphs,
+)
 
 
 def _validate_glyph(glyph):
@@ -438,6 +441,9 @@ def validate(remote: dict, draft: dict) -> dict:
     if not isinstance(pages, list) or not 1 <= len(pages) <= 5:
         raise ValueError("Use Main and up to four pages A–D")
     seen_pages = set()
+    device_type = str(remote.get("device_type", "")).upper()
+    fixed_softkeys = expected == "ir" and fixed_softkey_functions(device_type) is not None
+    blocked_positions = page_only_positions(device_type) if expected == "ir" else frozenset()
     for page in pages:
         number = page.get("index")
         if type(number) is not int or not 0 <= number <= 4 or number in seen_pages:
@@ -446,6 +452,14 @@ def validate(remote: dict, draft: dict) -> dict:
         if "title" in page:
             page["title"] = _menu_title(page["title"])
         buttons = page.get("buttons")
+        if fixed_softkeys and number == 0 and isinstance(buttons, list):
+            # This window draws a fixed picture on A–D and ignores any icon, so a chosen icon is
+            # dropped (an older layout may carry one) and so is an icon-only key, which it would hide.
+            buttons[:] = [key for key in buttons
+                          if not (key.get("transport") == "icon" and key.get("index", 9) < 4)]
+            for key in buttons:
+                if key.get("index", 9) < 4:
+                    key.pop("glyph", None)
         limit = 15 if expected == "hid" and number else 18
         minimum = 0 if number == 0 and len(pages) > 1 else 1
         if not isinstance(buttons, list) or not minimum <= len(buttons) <= limit:
@@ -486,7 +500,15 @@ def validate(remote: dict, draft: dict) -> dict:
                 _validate_glyph(key["glyph"])
                 if (expected in ("hid", "ir") or key.get("transport") == "icon") and key["glyph"] == 0:
                     raise ValueError("Choose a nonzero icon for an IR button")
+                if (expected == "ir" and not number and key.get("transport") == "ir"
+                        and key["glyph"] in MENU_SHORTCUT_FUNCTIONS):
+                    # The firmware reads these as a menu shortcut: with no page behind the key,
+                    # pressing it shows "No list under this shortcut" and sends nothing.
+                    raise ValueError("That icon is a menu shortcut; choose another for a key that sends a command")
             transport = key.get("transport")
+            if (transport == "ir" and not number and index in blocked_positions):
+                raise ValueError(
+                    f"Key {'ABCD'[index]} only opens a page on this type of remote and cannot send a command")
             allowed = ({"native", "icon"} if expected == "native" else {"hid", "ir"} if expected == "hid"
                        else {"stored", "ir", "icon"})
             if transport == "icon" and (number or index > 3 or key.get("glyph") is None):
@@ -557,6 +579,7 @@ def compile_pages(
     uploads = []
     packets = []
     device_type = str(remote["device_type"]).upper()
+    stock_softkeys = fixed_softkey_functions(device_type) if draft["kind"] == "ir" else None
     for page in draft["pages"]:
         number = page["index"]
         keys = []
@@ -580,6 +603,9 @@ def compile_pages(
                 function = int(key.get("glyph", key.get("function", default_function)))
                 if draft["kind"] == "hid" and function == 0:
                     function = default_function
+                if stock_softkeys and number == 0 and index < 4:
+                    # A fixed window shows an A–D key only for a record with its own id.
+                    function = stock_softkeys[index]
                 keys.append({"index": index, "ir_name": name,
                              "function": function})
             elif transport == "hid":
@@ -609,7 +635,7 @@ def compile_pages(
                         if child.get("link_record"):
                             records.append(bytes([position]) + bytes.fromhex(child["link_record"])[1:])
                         else:
-                            function = (39, 20, 210, 100)[position]
+                            function = (stock_softkeys or (39, 20, 210, 100))[position]
                             records.append(bytes([position]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
                 if len(records) > 18:
                     raise ValueError("Main page has more than 18 commands including page links")

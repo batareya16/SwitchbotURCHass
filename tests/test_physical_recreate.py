@@ -291,3 +291,81 @@ def test_a_native_icon_only_key_survives_draft_validation_and_layout():
         main["buttons"][-1]["glyph"] = bad
         with pytest.raises(ValueError):
             physical.validate(remote, draft)
+
+
+def _blank_ir_remote(device_type):
+    cloud_ir = load(INTEGRATION / "cloud_ir.py")
+    packets = cloud_ir.blank_profile(device_type, "Empty").build_pages(remote_index=5, name="Empty")
+    return {"device_type": f"IR_{device_type}", "device_id": "001122334455", "name": "Empty",
+            "physical_packets": [bytes(packet).hex() for packet in packets]}
+
+
+def _main_records(pages):
+    body = pages[0][7:]
+    return {body[83 + 36 * i]: body[83 + 36 * i:83 + 36 * (i + 1)] for i in range(body[82])}
+
+
+def test_a_fixed_picture_window_gets_its_own_a_to_d_ids_and_ignores_icons():
+    ids = {14: (91, 311, 312, 100), 6: (90, 89, 70, 100), 11: (39, 27, 28, 100), 1: (59, 70, 80, 100)}
+    for device_type, stock in ids.items():
+        remote = _blank_ir_remote(device_type)
+        # a command on a position that can hold one gets the position's own id, whatever the icon
+        free = 0
+        draft = {"kind": "ir", "pages": [{"index": 0, "buttons": [
+            {"index": free, "transport": "ir", "code_hex": "aabb", "glyph": 105}]}]}
+        if device_type == 1:                              # an air conditioner has no command keys
+            draft["pages"][0]["buttons"] = []
+            draft["pages"].append({"index": 2, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa"}]})
+            _, pages = physical.compile_pages(remote, draft, slot=1)
+            assert _main_records(pages)[1][1:3] == stock[1].to_bytes(2, "big")   # the link to page B
+            with pytest.raises(ValueError, match="only opens a page"):
+                physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
+                    {"index": 0, "transport": "ir", "code_hex": "aa"}]}]})
+            continue
+        _, pages = physical.compile_pages(remote, draft, slot=1)
+        assert _main_records(pages)[free][1:3] == stock[free].to_bytes(2, "big")
+        # a page behind D is linked with D's own id, so the key stays visible
+        draft["pages"].append({"index": 4, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa"}]})
+        _, pages = physical.compile_pages(remote, draft, slot=1)
+        assert _main_records(pages)[3][1:3] == stock[3].to_bytes(2, "big")
+    # an icon-only key and a chosen icon on A–D are dropped, not written
+    remote = _blank_ir_remote(14)
+    checked = physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
+        {"index": 1, "transport": "icon", "glyph": 105},
+        {"index": 2, "transport": "ir", "code_hex": "aa", "glyph": 105}]}]})
+    assert checked["pages"][0]["buttons"] == [{"index": 2, "transport": "ir", "code_hex": "aa"}]
+    # D only opens a page on a light remote, so it cannot hold a command
+    with pytest.raises(ValueError, match="only opens a page"):
+        physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
+            {"index": 3, "transport": "ir", "code_hex": "aa"}]}]})
+
+
+def test_a_command_key_on_a_tv_window_refuses_menu_shortcut_icons():
+    remote = _blank_ir_remote(2)
+    for glyph in (39, 100, 210):
+        with pytest.raises(ValueError, match="menu shortcut"):
+            physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
+                {"index": 0, "transport": "ir", "code_hex": "aa", "glyph": glyph}]}]})
+    ok = physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": [
+        {"index": 0, "transport": "ir", "code_hex": "aa", "glyph": 105}]}]})
+    assert ok["pages"][0]["buttons"][0]["glyph"] == 105
+    # rows of a menu may use any icon
+    physical.validate(remote, {"kind": "ir", "pages": [
+        {"index": 0, "buttons": []},
+        {"index": 1, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa", "glyph": 39}]}]})
+
+
+def test_the_panel_and_the_integration_agree_on_the_fixed_types_and_shortcut_icons():
+    import re
+    glyphs = load(INTEGRATION / "ir_glyphs.py")
+    source = (INTEGRATION / "frontend" / "switchbot-urc-panel.js").read_text()
+    def literal(name):
+        text = re.search(rf"const {name} = new Set\(\[(.*?)\]\)", source, re.S).group(1)
+        return {int(value) for value in re.findall(r"\d+", text)}
+    assert literal("IR_FIXED_SOFTKEY_TYPES") == set(glyphs.FIXED_SOFTKEY_TYPES)
+    assert literal("MENU_SHORTCUT_ICONS") == set(glyphs.MENU_SHORTCUT_FUNCTIONS)
+
+
+def test_every_native_page_builder_call_passes_the_icon_only_keys():
+    for name, expected in (("studio_manage.py", 2), ("studio_physical.py", 1)):
+        assert (INTEGRATION / name).read_text().count("icon_only=") == expected, name

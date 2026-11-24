@@ -1090,8 +1090,8 @@ test('the IR ways to add a remote sit in one IR tab, with an empty remote among 
   instance._add = {kind: 'blank', name: '', icon: 'device', blankType: 6};
   html = instance._renderAddRemote();
   for (const kind of ['catalog', 'cloud', 'blank']) assert.match(html, new RegExp(`data-add-kind="${kind}"`));
-  assert.match(html, /data-add-field="blank_type"/);
-  assert.match(html, /<option value="6" selected>Fan<\/option>/);
+  assert.match(html, /data-blank-type="6" aria-pressed="true"/);              // the fan card is the chosen one
+  assert.match(html, /Fixed A–D icons/);
   assert.match(html, /profile-09\.png/);                                       // the fan's own picture
   instance._sources.remote_capacity.ir.available = 0;
   assert.match(instance._installCapacityError(instance._add), /IR remotes/);   // an empty one counts as IR
@@ -1155,4 +1155,69 @@ test('an A–D key with no command offers an icon on IR and Native, a note on HI
   assert.match(withIcon('native', 70), /No list under this shortcut/);
   assert.doesNotMatch(withIcon('ir', 115), /No list under this shortcut/);
   assert.match(withIcon('ir', 115), /id="addCommandToIconKey"/);
+});
+
+test('a rebuilt IR layout shows the icon chosen in the editor, not the stock picture', () => {
+  const instance = panel();
+  instance._remote = () => ({remote_id: 'tv', pages: [],
+    ir_screen_preview: {catalog_glyphs: {5: 22}, softkeys: [39, 20, 210, 100]}});
+  instance._status = () => ['ready'];
+  const page = {index: 1, buttons: [
+    {button_id: 'p1_k0', button_index: 0, button_function: 5, label: 'Chosen', button_glyph: 115},
+    {button_id: 'p1_k1', button_index: 1, button_function: 5, label: 'Stock'},
+  ]};
+  const html = instance._renderScreen(page);
+  assert.match(html, /keyfun-0073\.png[\s\S]*Chosen/);
+  assert.match(html, /keyfun-0016\.png[\s\S]*Stock/);
+});
+
+test('IR windows that draw a fixed A–D picture offer no icon for those keys', () => {
+  const editor = (deviceType, key) => {
+    const instance = panel();
+    instance._remote = () => ({remote_id: 'ir', device_type: deviceType, pages: []});
+    instance._physical = {kind: 'ir', pages: [{index: 0, buttons: key ? [key] : []}]};
+    instance._renderCatalogPicker = () => '';
+    instance._nativeGlyph = () => '';
+    instance._pageControl = () => '';
+    return instance._renderKeyEditor({button_page: 0, button_index: 0, button_id: 'p0_k0'});
+  };
+  const key = {index: 0, transport: 'ir', code_hex: 'aa'};
+  for (const type of ['IR_1', 'IR_6', 'IR_11', 'IR_14']) {
+    assert.match(editor(type, key), /fixed picture/);
+    assert.doesNotMatch(editor(type, key), /Button icon/);
+    assert.doesNotMatch(editor(type, null), /Icon only/);
+  }
+  assert.match(editor('IR_2', key), /Button icon/);
+  assert.match(editor('IR_2', null), /Icon only, no command/);
+});
+
+test('the IR type picker marks which types let you choose A–D icons', () => {
+  const instance = panel();
+  const html = instance._irTypeChoices(
+    [{value: 2, label: 'TV'}, {value: 14, label: 'Light'}, {value: 6, label: 'Fan'}], 14, 'blank-type');
+  assert.match(html, /data-blank-type="2"[\s\S]*?Custom A–D icons/);
+  assert.match(html, /data-blank-type="14" aria-pressed="true"[\s\S]*?Fixed A–D icons/);
+  assert.match(html, /data-blank-type="6"[\s\S]*?Fixed A–D icons/);
+  // the catalog numbers its types differently: its light (3) is the remote's 14
+  const catalog = instance._irTypeChoices(
+    [{value: 3, label: 'Light'}, {value: 4, label: 'IPTV'}], 3, 'catalog-type-card',
+    (value) => ({3: 14, 4: 3})[value]);
+  assert.match(catalog, /data-catalog-type-card="3"[\s\S]*?Fixed A–D icons/);
+  assert.match(catalog, /data-catalog-type-card="4"[\s\S]*?Custom A–D icons/);
+});
+
+test('an IR command key on Main A–D is not offered menu-shortcut icons, and No icon stays', () => {
+  const instance = panel();
+  instance._remote = () => ({remote_id: 'ir', device_type: 'IR_2', pages: []});
+  instance._physical = {kind: 'ir', pages: [{index: 0, buttons: [{index: 0, transport: 'ir', code_hex: 'aa'}]},
+    {index: 1, buttons: [{index: 0, transport: 'ir', code_hex: 'aa'}]}]};
+  instance._renderCatalogPicker = () => '';
+  instance._nativeGlyph = () => '';
+  instance._pageControl = () => '';
+  const main = instance._renderKeyEditor({button_page: 0, button_index: 0, button_id: 'p0_k0'});
+  assert.doesNotMatch(main, /data-glyph-code="39"/);           // a menu shortcut
+  assert.match(main, /data-glyph-code="105"/);
+  assert.match(main, />No icon</);
+  const row = instance._renderKeyEditor({button_page: 1, button_index: 0, button_id: 'p1_k0'});
+  assert.match(row, /data-glyph-code="39"/);                   // a menu row takes any icon
 });
