@@ -3308,8 +3308,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._hidFunctionOptions(key.function)
       }</select></label>` : ""}
       ${key.transport === "ir" ? `
-        ${kind === "hid" && (page.index || key.index < 4)
-          ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? 0x07D3,
+        ${(kind === "hid" || kind === "ir") && (page.index || key.index < 4)
+          ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? (kind === "hid" ? 0x07D3 : 115),
             Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0)) : ""}
         ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
             <option value="">Choose…</option>${

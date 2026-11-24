@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.53.10
+
+- Keys of an IR remote that send an IR code you pasted or learned (including a remote you made empty) now have a **Button icon** choice, as HID remotes do. The icon is the picture the remote shows for the key; with an icon chosen, the remote also shows that icon's own caption instead of the key's name. Keys copied from the app's profile keep what they had.
+- The README now leads with finding the integration in HACS search, and keeps adding a custom repository as a fallback.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.9
 
 - Studio now draws the remote's tiles in the order the remote lists them, from the highest slot down, in the picture of the remote and in the Remote selector. Dragging tiles and **Apply order** follow the same order: the order shown from top to bottom is the order the remote ends up with. Not confirmed on a real Universal Remote yet.

@@ -472,13 +472,16 @@ def validate(remote: dict, draft: dict) -> dict:
             if "title" in key:
                 key["title"] = _menu_title(key["title"])
             if "glyph" in key:
+                # An IR remote's own (typed or learned) keys carry their icon as the key's
+                # function id, the same way an HID remote's IR keys do. Stored commands keep
+                # the record they came with.
                 supports_glyph = expected == "native" or (
-                    expected == "hid" and key.get("transport") == "ir"
+                    expected in ("hid", "ir") and key.get("transport") == "ir"
                 )
                 if not supports_glyph or (not number and index > 3):
                     raise ValueError("This position does not support a screen icon")
                 _validate_glyph(key["glyph"])
-                if expected == "hid" and key["glyph"] == 0:
+                if expected in ("hid", "ir") and key["glyph"] == 0:
                     raise ValueError("Choose a nonzero icon for an IR button")
             transport = key.get("transport")
             allowed = {"native"} if expected == "native" else {"hid", "ir"} if expected == "hid" else {"stored", "ir"}

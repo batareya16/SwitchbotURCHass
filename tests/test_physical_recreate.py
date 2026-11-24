@@ -200,3 +200,28 @@ def test_hid_ir_glyph_changes_only_the_visible_function():
     key["function"] = 25
     with pytest.raises(ValueError, match="screen icon"):
         physical.validate(remote, draft)
+
+
+def test_ir_remote_keys_take_a_screen_icon_as_their_function():
+    cloud_ir = load(INTEGRATION / "cloud_ir.py")
+    blank = cloud_ir.blank_profile(2, "Empty")
+    packets = blank.build_pages(remote_index=5, name="Empty")
+    remote = {"device_type": "IR_2", "device_id": "001122334455", "name": "Empty",
+              "physical_packets": [bytes(packet).hex() for packet in packets]}
+    key = {"index": 4, "transport": "ir", "code_hex": "aabbccdd"}
+    draft = {"kind": "ir", "pages": [{"index": 0, "buttons": []},
+                                     {"index": 1, "buttons": [key]}]}
+    # no icon chosen: the generic function, so the key shows its own name
+    _, pages = physical.compile_pages(remote, draft, slot=1)
+    assert pages[1][90:93] == bytes([4, 0, 115])
+    # a chosen icon becomes the function id the remote draws the picture from
+    key["glyph"] = 105
+    _, pages = physical.compile_pages(remote, draft, slot=1)
+    assert pages[1][90:93] == bytes([4, 0, 105])
+    key["glyph"] = 0
+    with pytest.raises(ValueError, match="nonzero"):
+        physical.validate(remote, draft)
+    # a stored command keeps the record it came with and takes no icon
+    key.update(glyph=105, transport="stored", record="00" * 36)
+    with pytest.raises(ValueError, match="screen icon"):
+        physical.validate(remote, draft)
