@@ -30,13 +30,20 @@ If you want several Bridge remotes, look for a dongle that can run several **con
 
 ### 1. Install the integration
 
-1. In **HACS**, open **⋮ → Custom repositories**, add `https://github.com/batareya16/SwitchbotURCHass` and select **Integration**.
-2. Download **SwitchBot Universal Remote (WoRWS)** and restart Home Assistant.
+1. In **HACS**, search for **SwitchBot Universal Remote (WoRWS)**.
+2. Download it and restart Home Assistant.
 3. Open **Settings → Devices & services**. Use the discovery card for your Universal Remote, or choose **Add integration** and search for **SwitchBot Universal Remote (WoRWS)**. If the Bluetooth address is blank, enter the address of the physical Universal Remote.
 4. Leave the communication key fields blank and choose **Connect SwitchBot cloud**. Sign in with your SwitchBot email and password. If asked, select the home that contains the Universal Remote. The integration fetches the key and keeps the sign-in tokens for renewal. It does not store the password.
 5. Open **Remote Studio** from the Home Assistant sidebar. Use an administrator account.
 
-If you already have the remote's communication key and key ID, you can enter them and skip account sign-in. The account is needed for the IR catalog and your saved IR remotes. If your account uses Google, Apple or Amazon sign-in, the setup form needs a SwitchBot email and password login. [HACS custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/)
+If you already have the remote's communication key and key ID, you can enter them and skip account sign-in. The account is needed for the IR catalog and your saved IR remotes. If your account uses Google, Apple or Amazon sign-in, the setup form needs a SwitchBot email and password login.
+
+<details>
+<summary>Not found in HACS search? Add it as a custom repository</summary>
+
+In **HACS**, open **⋮ → Custom repositories**, add `https://github.com/batareya16/SwitchbotURCHass` and select **Integration**. Then continue with step 2. [HACS custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/)
+
+</details>
 
 <details>
 <summary>Manual installation without HACS</summary>
