@@ -62,7 +62,7 @@ def test_a_learned_remote_without_a_code_bank_is_laid_out_from_its_key_detail():
 
 
 def test_a_blank_remote_of_every_type_installs_as_header_sync_pages_sync():
-    assert cloud_ir.BLANK_REMOTE_TYPES == (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14)
+    assert cloud_ir.BLANK_REMOTE_TYPES == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
     for device_type in cloud_ir.BLANK_REMOTE_TYPES:
         blank = cloud_ir.blank_profile(device_type, "Empty")
         stages = [stage for stage, _packet, _accepted in
@@ -75,7 +75,7 @@ def test_a_blank_remote_of_every_type_installs_as_header_sync_pages_sync():
 
 
 def test_a_blank_remote_must_have_a_known_type():
-    for bad in (0, 9, 15, 24, 99):
+    for bad in (0, 15, 24, 99):
         try:
             cloud_ir.blank_profile(bad, "Empty")
         except ValueError:

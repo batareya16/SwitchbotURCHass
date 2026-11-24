@@ -10,11 +10,12 @@ c = load(INTEGRATION / "commands.py")
 physical = load(INTEGRATION / "physical_layout.py")
 
 
-def test_ir_preview_uses_catalog_translation_only_for_reconstructed_layout():
+def test_ir_preview_gives_stock_softkeys_only_for_reconstructed_layout():
     tv = {"device_type": "IR_2", "imported_from_cloud": True}
     preview = physical.ir_screen_preview(tv)
     assert preview["softkeys"] == (39, 20, 210, 100)
-    assert preview["catalog_glyphs"][40] == 22
+    # rows carry the firmware picture the page builders wrote: no catalog-tag translation
+    assert "catalog_glyphs" not in preview
     assert physical.ir_screen_preview({**tv, "device_type": "IR_16"}) == preview
     assert physical.ir_screen_preview({
         **tv, "physical_layout": {"kind": "ir", "pages": []},

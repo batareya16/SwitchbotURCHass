@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.53.27
+
+- DIY IR remotes ("Others", the type the SwitchBot app uses for a remote of learned keys only, for example one made on a Hub) can now be installed from your account. The install stopped with "IR key map must not be empty", because Studio had no layout for this type. It now lays them out as the app does: the first three learned keys on A, B and C, the rest (up to 15) on a page behind D, each with its own learned code.
+- New blank IR type **Other (DIY)** under **Add a remote → Empty remote**: a remote with no stock keys at all, so A–D carry no menu icons of their own. Give its keys commands and icons, add pages or a number pad, the same as on any generic IR remote.
+- Fix the menu rows of a remote from your account on Studio's picture of the remote: their icons were translated a second time as if they were the account's key numbers, so Forward showed as "8", and every row was named "Function N". A row now shows its own icon and the caption the remote writes for it: the icon's name (Rewind, Forward, Play…), or the key's own name for a learned key without an icon.
+- **Add a remote → From your account**: the **Type default** picture now follows the remote you pick (it kept showing the first one in the list), and a remote of learned keys shows the picture of its type (a learned soundbar shows the audio picture) instead of none.
+- Everything that waits on the remote, the account or Home Assistant now shows the same loading panel: a spinner with its message in a padded, rounded box (reading settings or scenes, loading remotes, the catalog or remote options, talking to the account, running a diagnostic). Busy buttons (Save, Install, Check availability) show a small spinner next to their text.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.26
 
 - **Re-read my remotes** now also finds the IR remotes of your SwitchBot account that are not on this Universal Remote yet, such as a remote made on a Hub. They are listed under **IR saved in your account** and are installed the same way, from the codes in your account. Before, only remotes already added to the Universal Remote in the app were read. Remotes deleted in the app are left out.

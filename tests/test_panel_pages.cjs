@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 let Panel;
 const context = {
-  HTMLElement: class {}, structuredClone, console, clearTimeout, TextEncoder, atob,
+  HTMLElement: class {}, structuredClone, console, clearTimeout, TextEncoder, TextDecoder, atob,
   customElements: {get() {}, define(_name, implementation) {Panel = implementation;}},
 };
 vm.createContext(context);
@@ -415,7 +415,7 @@ test('IR softkeys use the recorded glyph including a menu link, with empty keys 
   assert.doesNotMatch(softkeys, /keyfun-0000\.png/);
 });
 
-test('an imported TV shows the stock softkeys and translates catalog tags inside menus', () => {
+test('an imported TV shows the stock softkeys and draws menu rows by their own function', () => {
   const instance = panel();
   instance._remote = () => ({
     remote_id: 'tv', device_type: 'IR_2', pages: [],
@@ -431,8 +431,9 @@ test('an imported TV shows the stock softkeys and translates catalog tags inside
   const glyphs = [...softkeys.matchAll(/keyfun-([\da-f]+)\.png/g)].map((match) => match[1]);
   assert.deepEqual(glyphs, ['0027', '0014', '00d2', '0064']);
   const submenu = instance._renderScreen(page);
-  assert.match(submenu, /keyfun-0016\.png/);
-  assert.doesNotMatch(submenu, /keyfun-0028\.png/);
+  // the page builders already wrote the firmware picture: 40 is "0", never remapped as a tag
+  assert.match(submenu, /keyfun-0028\.png/);
+  assert.doesNotMatch(submenu, /keyfun-0016\.png/);
 });
 
 test('adding the first row selects its editor and gives it a new physical identity', () => {
@@ -1168,7 +1169,7 @@ test('a rebuilt IR layout shows the icon chosen in the editor, not the stock pic
   ]};
   const html = instance._renderScreen(page);
   assert.match(html, /keyfun-0073\.png[\s\S]*Chosen/);
-  assert.match(html, /keyfun-0016\.png[\s\S]*Stock/);
+  assert.match(html, /keyfun-0005\.png[\s\S]*Stock/);
 });
 
 test('IR windows that draw a fixed A–D picture offer no icon for those keys', () => {
@@ -1405,4 +1406,48 @@ test('a key that only opens a page is not offered a command', () => {
   assert.equal(audio._pageOnlyKey(0, 1), false);
   assert.equal(audio._pageOnlyKey(1, 0), false);
   assert.equal(irPanel('IR_2', [{ index: 0, buttons: [] }])._pageOnlyKey(0, 0), false);
+});
+
+test('a list row of an account remote shows its own picture and the caption the remote writes', () => {
+  const record = (fn, kind, text = '') => [0, fn >> 8, fn & 0xff, kind]
+    .concat([...Buffer.from(text)], Array(32 - Buffer.from(text).length).fill(0))
+    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  assert.equal(context.irRecordCaption(record(26, 1)), 'Forward');
+  assert.equal(context.irRecordCaption(record(25, 2, 'rw')), 'Rewind');
+  assert.equal(context.irRecordCaption(record(115, 2, 'Party')), 'Party');
+  assert.equal(context.irRecordCaption(record(2003, 2, 'Bass')), 'Bass');
+  const instance = irPanel('IR_11', [{ index: 0, buttons: [] }, { index: 4, buttons: [
+    { index: 0, transport: 'stored', function: 26, record: record(26, 1) },
+    { index: 1, transport: 'stored', function: 115, record: record(115, 2, 'Party') }] }]);
+  instance._nativeProfiles = []; instance._physicalFunctions = [];
+  const rows = instance._pages().find((page) => page.index === 4).buttons;
+  assert.deepEqual(rows.map((row) => row.label), ['Forward', 'Party']);
+  instance._nativeGlyph = (item) => `<img data-code="${item.button_glyph ?? item.button_function}">`;
+  instance._remote = () => ({ remote_id: 'r', device_type: 'IR_11', pages: [],
+    ir_screen_preview: { catalog_glyphs: { 26: 48 } } });
+  const screen = instance._renderScreen(instance._pages().find((page) => page.index === 4));
+  assert.match(screen, /data-code="26"/);                   // not remapped to 48 ("8")
+});
+
+test('an account remote of a custom type shows the picture of its base type when added', () => {
+  assert.equal(context.irArtworkType(24), 11);     // learned audio -> audio
+  assert.equal(context.irArtworkType(16), 2);      // learned TV -> TV
+  assert.equal(context.irArtworkType(9), 9);
+  const instance = panel();
+  instance._entry = () => ({ icons: [] });
+  instance._sources = { cloud_remotes: [
+    { remote_id: 'tv', name: 'TV', device_type: 2 }, { remote_id: 'bar', name: 'Soundbar', device_type: 24 }] };
+  const picker = (remoteId) => instance._renderAddIconPicker({ kind: 'cloud', remoteId });
+  assert.match(picker('tv'), /profile-18\.png/);
+  assert.match(picker('bar'), /profile-01\.png/);
+});
+
+test('waiting is shown with one loading panel and a spinner', () => {
+  assert.match(context.loadingNote('Reading settings from the remote…'),
+    /^<div class="loading-note" role="status"[^>]*><span class="spinner" aria-hidden="true"><\/span><span>Reading settings from the remote…<\/span><\/div>$/);
+  assert.match(context.loadingNote('<x>', true), /loading-note compact[\s\S]*&lt;x&gt;/);
+  assert.match(context.busyLabel('Saving…'), /^<span class="spinner inline" aria-hidden="true"><\/span>Saving…$/);
+  const source = fs.readFileSync(path.join(__dirname,
+    '../custom_components/switchbot_urc/frontend/switchbot-urc-panel.js'), 'utf8');
+  assert.doesNotMatch(source, /<p[^>]*>(Reading|Loading|Talking|Running)[^<]*…<\/p>/);
 });

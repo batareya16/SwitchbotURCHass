@@ -48,7 +48,7 @@ def build(type_id, key_map, **extra):
 
 
 def test_layout_types_cover_every_assigned_type_and_custom_variant():
-    assert set(misc.LAYOUT_TYPES) == {8, 22, 11, 24, 12, 25, 13, 26}
+    assert set(misc.LAYOUT_TYPES) == {8, 22, 9, 11, 24, 12, 25, 13, 26}
     assert misc.LAYOUT_TYPES[11] is misc.LAYOUT_TYPES[24]
     assert misc.LAYOUT_TYPES[12] is misc.LAYOUT_TYPES[25]
     assert misc.LAYOUT_TYPES[13] is misc.LAYOUT_TYPES[26]
@@ -407,3 +407,53 @@ def test_water_heater_text_key_named_like_a_default_key_stays_off_page_four():
     assert names(pages[0])[0] == (15, 60, 2, b"5")
     assert full_records(pages[1]) == []
     assert (3, 100, 4) in short(pages[0])
+
+
+# ---- DIY / Others (9) ------------------------------------------------------------------------
+
+def _diy_item(names):
+    blob = misc.commands  # noqa: F841 - keep the module import used above
+    import base64
+    code = base64.b64encode(bytes.fromhex("303030fdff35822f811a22242224216b0030")).decode()
+    return {"code": "no_data", "keyMap": "", "type": 9, "remoteName": "Hub lamp",
+            "keyDetail": [{"keyName": name, "keyType": "text", "code": code} for name in names]}
+
+
+def _records(packet):
+    body = packet[7:]
+    return [body[83 + 36 * i:83 + 36 * (i + 1)] for i in range(body[82])]
+
+
+def test_a_diy_remote_puts_three_learned_keys_on_a_to_c_and_the_rest_behind_d():
+    cloud_ir = load(INTEGRATION / "cloud_ir.py")
+    profile = cloud_ir.profile_from_cloud(
+        _diy_item(["Power", "Warm", "Cold", "Night", "Party"]),
+        remote_id="01-202611250001-12345678", name="Hub lamp")
+    stages = profile.build_install(remote_index=6, name="Hub lamp", remote_count=1)
+    names = [stage for stage, _packet, _accepted in stages]
+    assert names.count("ir_transfer_init") == 5                      # one upload per learned key
+    pages = [packet for stage, packet, _ in stages if stage.startswith("ir_page_")]
+    assert [packet[88] for packet in pages] == [0, 4]
+    main = {record[0]: record for record in _records(pages[0])}
+    for position, (function, label) in enumerate(((30, b"Power"), (31, b"Warm"), (32, b"Cold"))):
+        assert main[position][1:4] == function.to_bytes(2, "big") + b"\x02"
+        assert main[position][4:].rstrip(b"\0") == label
+    assert main[3][1:4] == (100).to_bytes(2, "big") + b"\x04"          # D opens page 4
+    rows = _records(pages[1])
+    assert [row[4:].rstrip(b"\0") for row in rows] == [b"Night", b"Party"]
+    assert all(row[1:4] == (115).to_bytes(2, "big") + b"\x02" for row in rows)
+
+
+def test_a_small_diy_remote_hides_the_keys_it_has_no_command_for():
+    cloud_ir = load(INTEGRATION / "cloud_ir.py")
+    profile = cloud_ir.profile_from_cloud(
+        _diy_item(["Power", "Warm"]), remote_id="01-202611250001-12345678", name="Hub lamp")
+    pages = profile.build_pages(remote_index=6, name="Hub lamp")
+    assert len(pages) == 1
+    main = {record[0]: record for record in _records(pages[0])}
+    assert main[2][1:4] == (32).to_bytes(2, "big") + b"\xfe"           # C hidden
+    assert main[3][1:4] == (100).to_bytes(2, "big") + b"\xfe"          # D hidden: no page
+    # an empty DIY remote is a clean generic IR remote: four hidden places, no stock keys
+    blank = cloud_ir.blank_profile(9, "Mine").build_pages(remote_index=6, name="Mine")
+    assert len(blank) == 1
+    assert sorted((r[0], r[3]) for r in _records(blank[0])) == [(0, 0xFE), (1, 0xFE), (2, 0xFE), (3, 0xFE)]

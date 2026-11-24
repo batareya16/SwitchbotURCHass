@@ -290,7 +290,8 @@ class CloudIrProfile:
         }
 
 
-# Remote types an empty IR remote can be made of: those with a layout, DIY (9) excluded.
+# Remote types an empty IR remote can be made of: those with a layout, DIY (9) included: it has
+# no stock keys at all, so it starts as a clean generic IR remote.
 BLANK_REMOTE_TYPES = tuple(sorted({2, *PAGE_LAYOUTS} - {*range(15, 28)}))
 
 

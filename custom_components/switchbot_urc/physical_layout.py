@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import commands as c
 from .ir_glyphs import (
-    MENU_SHORTCUT_FUNCTIONS, NUMBER_PAD_FUNCTIONS, NUMBER_PAD_LINK, catalog_glyphs,
+    MENU_SHORTCUT_FUNCTIONS, NUMBER_PAD_FUNCTIONS, NUMBER_PAD_LINK,
     fixed_softkey_functions, list_link_functions, list_page_positions, number_pad_always,
     number_pad_positions, page_only_positions, stock_softkey_glyphs,
 )
@@ -31,10 +31,9 @@ def ir_screen_preview(remote: dict) -> dict | None:
     if not device_type.startswith("IR_"):
         return None
     if remote.get("imported_from_cloud") and not remote.get("physical_layout"):
-        return {
-            "catalog_glyphs": catalog_glyphs(device_type),
-            "softkeys": stock_softkey_glyphs(device_type),
-        }
+        # The rows already carry the firmware pictures the page builders wrote, so only the A–D
+        # softkeys (which are not rows) come from the stock layout.
+        return {"softkeys": stock_softkey_glyphs(device_type)}
     try:
         for packet in source_packets(remote):
             c.rewrite_ir_page(packet, remote_index=packet[7], name="")

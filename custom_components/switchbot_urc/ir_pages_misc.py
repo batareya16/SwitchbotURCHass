@@ -170,8 +170,8 @@ _SLR_LAYOUT = _Layout(
     defaults=frozenset(_SLR_MAIN),
 )
 
-# DIY (type 9, module ...526) is not covered: it has no cloud key map. Its keys all come from the
-# remote's own ``keyDetail`` list (named keys, first three on A-C, the rest on page 4).
+# DIY ("Others", type 9, module ...526) has no cloud key map: its keys all come from the remote's
+# own ``keyDetail`` list, laid out by ``build_diy_pages`` below.
 
 
 _PAGE4_CAP = 15      # the app writes at most 15 learned/text keys on page 4
@@ -352,6 +352,61 @@ def _builder(layout: _Layout) -> Callable[..., tuple[bytes, ...]]:
     return build
 
 
+def build_diy_pages(
+    *,
+    remote_index: int,
+    device_type: int,
+    remote_id: bytes,
+    name: str,
+    key_map: list[tuple[int, int, int]],
+    icon: int = 0,
+    custom_keys: frozenset[str] = frozenset(),
+    learned_keys: tuple[tuple[str, str], ...] = (),
+) -> tuple[bytes, ...]:
+    """A DIY ("Others") remote, as the app's DIY handler (``getDefaultKeysCmd``) lays it out.
+
+    Its keys are the learned keys, in the account's order: the first three on A, B and C (pictures
+    30, 31, 32 on firmware 30 and later, so on V48), the rest on page 4 behind D (function 100), at
+    most 15. Every key is a named command (kind 2) whose code is uploaded under that name. A, B or C
+    with no key, and D with no page, are written hidden (kind 254), as the app does.
+    """
+    del key_map, custom_keys                      # a DIY remote has neither
+    if len(remote_id) != 11:
+        raise ValueError("IR remote id must be exactly 11 bytes")
+    name_bytes = bytearray(commands.pad(name.encode("utf-8"), 64))
+    name_bytes[63] = 0
+    labels = [str(label) for label, _kind in learned_keys]
+
+    def record(position: int, function: int, kind: int, payload: bytes) -> bytes:
+        return bytes([position & 0xFF]) + function.to_bytes(2, "big") + bytes([kind]) + payload.ljust(32, b"\0")
+
+    def page_packet(page: int, records: list[bytes]) -> bytes:
+        body = bytes([remote_index & 0xFF, device_type & 0xFF, commands.CTRL_IR, 0, icon & 0xFF]) \
+            + remote_id + bytes(name_bytes) + bytes([0, page, len(records)]) + b"".join(records)
+        return b"\x0f\x62\x06" + commands.s16(len(body)) + commands.s16(commands.crc16_modbus(body)) + body
+
+    soft = (30, 31, 32)
+    main, seen = [], set()
+    for position, label in enumerate(labels[:3]):
+        if label in seen:
+            continue
+        seen.add(label)
+        main.append(record(position, soft[position], 2, _label(label)))
+    rest, seen = [], set()
+    for label in labels[3:]:
+        if label in seen or len(rest) >= _PAGE4_CAP:
+            continue
+        seen.add(label)
+        rest.append(record(len(rest), 115, 2, _label(label)))
+    main.append(record(3, 100, 4 if len(labels) > 3 else 254, (100).to_bytes(2, "big")))
+    for position in range(len(labels), 3):
+        main.append(record(position, soft[position], 254, soft[position].to_bytes(2, "big")))
+    pages = [page_packet(0, main)]
+    if rest:
+        pages.append(page_packet(4, rest))
+    return tuple(pages)
+
+
 build_audio_pages = _builder(_ADO_LAYOUT)
 build_water_heater_pages = _builder(_WH_LAYOUT)
 build_robot_pages = _builder(_RBT_LAYOUT)
@@ -360,6 +415,7 @@ build_camera_pages = _builder(_SLR_LAYOUT)
 # remote type id (and its *_CUSTOM variant, type + 14) -> page builder
 LAYOUT_TYPES: dict[int, Callable[..., tuple[bytes, ...]]] = {
     8: build_camera_pages, 22: build_camera_pages,
+    9: build_diy_pages,
     11: build_audio_pages, 24: build_audio_pages,
     12: build_water_heater_pages, 25: build_water_heater_pages,
     13: build_robot_pages, 26: build_robot_pages,

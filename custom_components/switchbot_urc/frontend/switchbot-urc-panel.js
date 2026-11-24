@@ -36,7 +36,7 @@ const HID_PROFILE_ARTWORK = {
 const BLANK_IR_TYPES = [
   [2, "TV"], [1, "Air conditioner"], [14, "Light"], [6, "Fan"], [11, "Audio"], [3, "IPTV"],
   [4, "Set-top box"], [5, "DVD / Blu-ray"], [7, "Projector"], [10, "Air purifier"],
-  [12, "Water heater"], [13, "Robot vacuum"], [8, "Camera"],
+  [12, "Water heater"], [13, "Robot vacuum"], [8, "Camera"], [9, "Other (DIY)"],
 ];
 const IR_KINDS = ["catalog", "cloud", "blank"];
 // IR windows that draw a fixed picture on Main A-D (light, fan, audio and air conditioner): the
@@ -85,6 +85,40 @@ const IR_INFRARED_WINDOW = new Set([5, 7, 8, 9, 10, 12, 13, 15, 19, 21, 22, 23, 
 const IR_PAGE_ONLY_POSITIONS = { 1: [0, 1, 2, 3], 6: [2, 3], 20: [2, 3], 11: [0, 3], 24: [0, 3], 14: [3], 27: [3] };
 // Main A–D positions (A = 0) that open a list on the fixed-picture windows.
 const IR_FIXED_LIST_POSITIONS = { 1: [0, 1, 2, 3], 6: [2, 3], 20: [2, 3], 14: [3], 27: [3] };
+
+// One look for everything that waits on the remote, the account or the server: a panel with a
+// ring spinner for a step that fills its place, a small ring inside a button that is busy.
+function loadingNote(text, compact = false) {
+  return `<div class="loading-note${compact ? " compact" : ""}" role="status" aria-live="polite">`
+    + `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(text)}</span></div>`;
+}
+
+function busyLabel(text) {
+  return `<span class="spinner inline" aria-hidden="true"></span>${escapeHtml(text)}`;
+}
+
+// What the remote writes on a list row of a stored IR record (WoRWS V48, submenu-row-captions.md):
+// the record's own text when its function is 115 (or 0x7D3 / 0 on a named record), otherwise the
+// name of its picture.
+function irRecordCaption(recordHex) {
+  const bytes = String(recordHex || "").match(/../g)?.map((pair) => parseInt(pair, 16)) || [];
+  if (bytes.length < 36) return "";
+  const fn = (bytes[1] << 8) | bytes[2];
+  const kind = bytes[3];
+  const field = bytes.slice(4, 36);
+  const end = field.indexOf(0);
+  const text = new TextDecoder().decode(new Uint8Array(end < 0 ? field : field.slice(0, end))).trim();
+  if ((fn === 115 && kind !== 4 && kind !== 255) || (kind === 2 && (fn === 2003 || fn === 0))) return text;
+  return NATIVE_GLYPH_LABELS[fn] || "";
+}
+
+// A custom IR type (an account remote of learned keys) shows the picture of its base type: 15–22
+// are types 1–8 plus 14, 23–27 are types 10–14 plus 13 (as ir_glyphs._profile).
+function irArtworkType(type) {
+  if (type >= 15 && type <= 22) return type - 14;
+  if (type >= 23 && type <= 27) return type - 13;
+  return type;
+}
 
 function irPagePositions(deviceType) {
   const text = String(deviceType || "").toUpperCase();
@@ -798,6 +832,8 @@ class SwitchBotUrcPanel extends HTMLElement {
             // The remote writes a row's caption from the picture (glyph) it carries, so that is the
             // caption to show; the stock function's name only describes the row's command.
             label: page.index === 0 ? positions[key.index] || functionLabel
+              : !page.number_pad && key.transport === "stored" && !key.title
+                ? irRecordCaption(key.record) || source?.label || functionLabel
               : page.number_pad && key.index < NUMBER_PAD_FUNCTIONS.length
                 ? `Number pad ${NUMBER_PAD_LABELS[key.index]}`
                 : `${key.title || glyphCaption || source?.label || functionLabel}${page.number_pad ? " (not on the number pad)" : ""}`,
@@ -1397,13 +1433,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!keys.length) {
         return `<p class="scr-empty">This page has no buttons yet</p>`;
       }
-      const catalogGlyphs = this._remote()?.ir_screen_preview?.catalog_glyphs;
       return keys.map((item) => {
         const [status] = this._status(item);
         const on = item.button_id === this._buttonId;
         const draft = this._draftLabel(item);
-        const shown = catalogGlyphs && !Number.isInteger(item.button_glyph)
-          ? { button_glyph: catalogGlyphs[item.button_function] } : item;
+        // The function on a written row is already the firmware picture (the page builders turn
+        // the account's key ids into it), so it is drawn as it is.
+        const shown = item;
         const iconCode = shown.button_glyph ?? shown.button_function;
         const keyKind = this._physical?.kind;
         // A key set to "no icon" draws nothing, as the picker shows it.
@@ -1751,7 +1787,7 @@ class SwitchBotUrcPanel extends HTMLElement {
           </div>
         </header>
         <div id="studioFeedback">${this._renderStudioFeedback()}</div>
-        ${this._loading ? `<div class="loading"><span></span>Loading remotes…</div>` : ""}
+        ${this._loading ? loadingNote("Loading remotes…") : ""}
         ${!this._loading && !entries.length ? `<div class="empty"><b>No configured Universal Remote found.</b><br>Set up the integration first.</div>` : ""}
         ${entries.length ? `
           <section class="selectors">
@@ -1891,7 +1927,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `<dialog id="deviceSettingsDialog" class="device-settings-dialog" aria-labelledby="deviceSettingsTitle">
       <div class="editor-head"><div><h2 id="deviceSettingsTitle">Remote settings</h2><p class="small">Applies to this Universal Remote and all its device remotes and scenes.</p></div>
         <button type="button" class="secondary compact" id="closeDeviceSettings" ${state.busy === "save" ? "disabled" : ""} aria-label="Close remote settings">Close</button></div>
-      ${state.busy === "read" ? '<p role="status">Reading settings from the remote…</p>' : ""}
+      ${state.busy === "read" ? loadingNote("Reading settings from the remote…") : ""}
       ${values ? `<form id="deviceSettingsForm"><fieldset ${state.busy ? "disabled" : ""}>
         ${toggle("touch_wheel", "Touch wheel scrolling", "Scroll through device and menu lists using the touch wheel.")}
         ${toggle("lift_to_wake", "Wake when picked up")}
@@ -1906,7 +1942,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         </div><p class="small">Changing the language may restart the remote.</p>
         </fieldset>${this._feedback(state.error || state.status, state.error ? "error" : "success", "Remote settings")}
         <footer class="studio-save"><span></span>
-          <button type="submit" class="primary compact" id="saveDeviceSettings" ${state.busy || !Object.keys(this._deviceSettingsChanges()).length ? "disabled" : ""}>${state.busy === "save" ? "Saving…" : "Save"}</button></footer></form>` : ""}
+          <button type="submit" class="primary compact" id="saveDeviceSettings" ${state.busy || !Object.keys(this._deviceSettingsChanges()).length ? "disabled" : ""}>${state.busy === "save" ? busyLabel("Saving…") : "Save"}</button></footer></form>` : ""}
       ${!values ? this._feedback(state.error, "error", "Remote settings") : ""}
       ${!state.busy && (!values || state.error) ? '<button class="secondary" id="retryDeviceSettings">Read settings again</button>' : ""}
     </dialog>`;
@@ -2033,7 +2069,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       </div>
       <p class="small">Fetch the key when the remote starts answering with undecodable
         responses: it rotates on its own, and the account holds the current one.</p>
-      ${cloud.busy ? `<p class="small">Talking to the account…</p>` : ""}
+      ${cloud.busy ? loadingNote("Talking to the account…", true) : ""}
       ${this._feedback(cloud.error, "error", "SwitchBot account")}
       ${!cloud.error ? this._feedback(cloud.note, "success", "SwitchBot account") : ""}
     </details>`;
@@ -2096,7 +2132,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       </div>
       <p class="small">Use <b>Repair list order</b> when a tile opens the remote above it: the remote's list has
         a gap or a repeated slot, and this sets every slot once without touching the tiles.</p>
-      ${diag?.busy ? `<p class="small">Running…</p>` : ""}
+      ${diag?.busy ? loadingNote("Running…", true) : ""}
       ${this._feedback(diag?.error, "error", "Diagnostics")}
       ${diag?.rows ? `<table><thead><tr><th>Query</th><th>Answer</th></tr></thead><tbody>${
         diag.rows.map((row) => `<tr><td><code>${escapeHtml(row.query)}</code></td>
@@ -2189,7 +2225,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       <span>Text remotes available <b>${textAvailable}/${textTotal}</b></span>
       ${sources?.capacity_read_failed ? '<span>Could not check availability.</span>' : ""}
       ${unknown ? `<button id="checkRemoteCapacity" class="secondary compact" ${checking ? "disabled" : ""}>${
-        checking ? "Checking…" : "Check availability"}</button>` : ""}
+        checking ? busyLabel("Checking…") : "Check availability"}</button>` : ""}
     </div>`;
   }
 
@@ -2325,7 +2361,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     if (table.loading) {
       return `<details class="device-table" open><summary>Installed on the remote</summary>
-        <div class="loading"><span></span>Asking the remote…</div></details>`;
+        ${loadingNote("Asking the remote…")}</details>`;
     }
     if (table.error) {
       return `<details class="device-table" open><summary>Installed on the remote</summary>
@@ -2488,13 +2524,13 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `<div class="workspace scene-workspace">
       <section class="remote-stage"><div class="device-wrap">${sceneFace}</div></section>
       <aside class="editor">
-        ${busy === "read" ? '<p role="status">Reading scenes from the remote…</p>' : ""}
+        ${busy === "read" ? loadingNote("Reading scenes from the remote…") : ""}
         ${draft ? `<nav class="mode-tabs"><button data-scene-tab="actions" class="${!this._scenePanel.appearance ? "selected" : ""}">Custom actions</button>
           <button data-scene-tab="appearance" class="${this._scenePanel.appearance ? "selected" : ""}">Appearance</button></nav>
           <div ${busy ? "inert" : ""}>${this._scenePanel.appearance ? appearance : actions}</div>
           ${this._feedback(error || status, error ? "error" : "success", draft.name || "Scene")}
           <footer class="studio-save"><span></span>
-            <button class="primary compact" id="saveScene" ${busy ? "disabled" : ""}>${busy === "save" ? "Saving…" : "Save"}</button>
+            <button class="primary compact" id="saveScene" ${busy ? "disabled" : ""}>${busy === "save" ? busyLabel("Saving…") : "Save"}</button>
           </footer>
 `
           : '<div class="empty small">Choose a scene on the remote, or add one.</div>'}
@@ -2625,7 +2661,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<section class="add-remote">
         <div class="action-title"><b>Add a remote</b></div>
         ${add.loading
-          ? '<p class="small" role="status">Loading remote options…</p>'
+          ? loadingNote("Loading remote options…")
           : this._feedback(`Could not load remote options. ${add.loadError}`, "error", "Add a remote")}
         <div class="key-actions">
           ${add.loadError ? '<button class="primary" id="retryAddRemote">Retry</button>' : ""}
@@ -2726,7 +2762,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${this._feedback(add.error || capacityError, add.error ? "error" : "warning", "Add a remote")}
       <div class="key-actions">
         <button class="primary" id="addRemoteConfirm" ${add.busy || capacityError ? "disabled" : ""}>${
-          add.busy ? "Installing…" : "Install"}</button>
+          add.busy ? busyLabel("Installing…") : "Install"}</button>
         <button class="secondary compact" id="addRemoteCancel">Cancel</button>
       </div>
     </section>`;
@@ -2747,8 +2783,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       ? this._nativeArtworkSrc(this._nativeProfile(add.nativeType || add.deviceType))
       : add.kind === "hid" ? this._hidArtworkSrc(add.deviceType)
         : add.kind === "matter" ? MATTER_ARTWORK
-          : IR_PROFILE_ARTWORK[irType]
-            ? `/switchbot_urc_static/artwork/profile-${IR_PROFILE_ARTWORK[irType]}.png` : "";
+          : IR_PROFILE_ARTWORK[irArtworkType(irType)]
+            ? `/switchbot_urc_static/artwork/profile-${IR_PROFILE_ARTWORK[irArtworkType(irType)]}.png` : "";
     const note = add.kind === "catalog" || add.kind === "cloud" || add.kind === "blank"
       ? "Type default keeps the picture of the IR model. A chosen icon replaces it."
       : add.kind === "matter"
@@ -2923,7 +2959,10 @@ class SwitchBotUrcPanel extends HTMLElement {
       });
       field.addEventListener("change", () => {
         const name = field.dataset.addField;
-        if (name === "remote_id") add.remoteId = field.value;
+        if (name === "remote_id") {
+          add.remoteId = field.value;
+          this._render();   // the "Type default" picture follows the chosen remote's type
+        }
         if (name === "device_type") {
           add.deviceType = field.value;
           if (add.kind === "native" || add.kind === "hid") this._render();
@@ -3758,7 +3797,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<p class="small">The bundled IR catalog is not installed, so a pasted code is the
         only way to set this key.</p>`;
     }
-    if (cat.available === null) return `<p class="small">Loading the IR catalog…</p>`;
+    if (cat.available === null) return loadingNote("Loading the IR catalog…", true);
     const option = (value, label, selected) =>
       `<option value="${escapeHtml(String(value))}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
     return `<details class="catalog" ${cat.brand ? "open" : ""}>
@@ -3780,7 +3819,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <option value="">Choose the button to copy…</option>${
           cat.buttons.map((item, index) => option(index, item.label, false)).join("")
         }</select></label>` : ""}
-      ${cat.busy ? `<p class="small">${escapeHtml(cat.busy)}</p>` : ""}
+      ${cat.busy ? loadingNote(cat.busy, true) : ""}
       ${this._feedback(cat.error, "error", "IR catalog")}
     </details>`;
   }
@@ -3926,7 +3965,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _renderSaveButton() {
-    return `<button class="primary compact" id="saveButton" ${this._canSave() ? "" : "disabled"}>${this._saving ? "Saving…" : "Save"}</button>`;
+    return `<button class="primary compact" id="saveButton" ${this._canSave() ? "" : "disabled"}>${this._saving ? busyLabel("Saving…") : "Save"}</button>`;
   }
 
   _updateSaveButton() {
@@ -4266,7 +4305,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!host || this._mode !== "actions") return;
     const token = Symbol("mount");
     this._mountToken = token;
-    host.innerHTML = `<div class="json-help">Loading the action editor…</div>`;
+    host.innerHTML = loadingNote("Loading the action editor…", true);
     const selectorAvailable = await this._ensureActionSelector();
     if (this._mountToken !== token || !host.isConnected || this._mode !== "actions") return;
     if (!selectorAvailable) {
@@ -4576,7 +4615,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       details.device-table{margin:8px 0;padding:12px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;background:var(--card-background-color,#fff)}
       details.device-table>summary{font-size:13px;font-weight:600;color:var(--primary-text-color,#17202a)}
       details.device-table[open]>summary{margin-bottom:10px}
-      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
+      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}.loading-note{display:flex;align-items:center;gap:12px;margin:14px 0;padding:14px 18px;border-radius:14px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 7%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 18%,transparent);color:var(--primary-text-color,#1c1f23);font-size:14px;line-height:1.4}.loading-note.compact{gap:10px;margin:8px 0;padding:10px 14px;border-radius:12px;font-size:13px}.spinner{flex:none;display:inline-block;box-sizing:border-box;width:20px;height:20px;border-radius:50%;border:2.5px solid color-mix(in srgb,var(--primary-color,#03a9f4) 20%,transparent);border-top-color:var(--primary-color,#03a9f4);animation:spin .75s cubic-bezier(.45,.05,.55,.95) infinite}.loading-note.compact .spinner{width:16px;height:16px;border-width:2px}.spinner.inline{width:14px;height:14px;border-width:2px;margin-right:8px;vertical-align:-2px;border-color:color-mix(in srgb,currentColor 25%,transparent);border-top-color:currentColor}@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2s}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
       .device-wrap{width:min(100%,360px)}
       .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
       .device .shell{stroke:#d2d5da;stroke-width:1.2}
