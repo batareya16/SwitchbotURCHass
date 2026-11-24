@@ -54,6 +54,81 @@ const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 11
 // Icon codes that mean "no icon" on an IR or HID key (the key's default function is one of them).
 // The picture is drawn empty in Studio, so what it shows is what the key is: no icon.
 const NO_ICON_CODES = new Set([115, 2003]);
+
+// The remote's own IR code: a fixed header, then every pulse and pause in 16 µs ticks (one byte
+// below 0x80, two bytes flagged 0x80, four bytes flagged 0xC0), 00, and the byte sum of all before.
+// Read from codes the remote already holds; the header is the same on every one of them.
+const IR_CODE_HEADER = [0x30, 0x30, 0x30, 0xfd, 0xff, 0x35];
+// The remote ends every code with a pause; a list that stops on a pulse gets one this long.
+const IR_TRAILING_PAUSE_US = 96096;
+
+function irCodeFromDurations(durations) {
+  const timings = durations.map((value) => Math.abs(Math.round(value)));
+  if (timings.length < 4 || timings.some((value) => !Number.isFinite(value) || value <= 0)) return null;
+  if (timings.length % 2) timings.push(IR_TRAILING_PAUSE_US);
+  const bytes = [...IR_CODE_HEADER];
+  for (const value of timings) {
+    const ticks = Math.max(1, Math.round(value / 16));
+    if (ticks < 0x80) bytes.push(ticks);
+    else if (ticks < 0x4000) bytes.push(0x80 | (ticks >> 8), ticks & 0xff);
+    else if (ticks < 0x40000000) bytes.push(0xc0 | (ticks >>> 24), (ticks >>> 16) & 0xff, (ticks >>> 8) & 0xff, ticks & 0xff);
+    else return null;
+  }
+  bytes.push(0);
+  bytes.push(bytes.reduce((sum, byte) => sum + byte, 0) & 0xff);
+  return bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Durations in µs from a code in another format, or null when the text is not one of them.
+function irDurationsFromText(text) {
+  const trimmed = text.trim();
+  // Pronto hex: 0000, carrier, the lengths of the two sequences, then pulse/pause counts in carrier periods.
+  const words = trimmed.split(/\s+/);
+  if (words.length >= 6 && words.every((word) => /^[0-9a-fA-F]{4}$/.test(word)) && words[0] === "0000") {
+    const values = words.map((word) => parseInt(word, 16));
+    const period = values[1] * 0.241246;
+    const pairs = values[2] + values[3];
+    const body = values.slice(4, 4 + pairs * 2);
+    if (!period || !pairs || body.length !== pairs * 2) return null;
+    return {format: "Pronto", durations: body.map((count) => count * period)};
+  }
+  // A list of pulse and pause lengths in µs, as Home Assistant and ESPHome write them (+9000 -4500 …).
+  if (/^[+-]?\d+([\s,;]+[+-]?\d+){3,}$/.test(trimmed)) {
+    return {format: "timing list", durations: trimmed.split(/[\s,;]+/).map(Number)};
+  }
+  // Base64 that starts with 67 A5: a count, a table of up to 16 lengths in µs, then one table index
+  // per half byte (low half first).
+  if (/^[A-Za-z0-9+/]+=*$/.test(trimmed) && trimmed.length >= 92) {
+    let raw;
+    try { raw = atob(trimmed); } catch (_error) { return null; }
+    const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+    if (bytes[0] !== 0x67 || bytes[1] !== 0xa5 || bytes.length < 69) return null;
+    const view = new DataView(bytes.buffer);
+    const count = view.getUint16(2, true);
+    const table = Array.from({length: 16}, (_unused, index) => view.getUint32(4 + index * 4, true));
+    const durations = [];
+    for (let index = 0; index < count; index += 1) {
+      const byte = bytes[68 + (index >> 1)];
+      if (byte === undefined) return null;
+      const value = table[index % 2 ? byte >> 4 : byte & 0x0f];
+      if (!value) return null;
+      durations.push(value);
+    }
+    return {format: "67 A5 code", durations};
+  }
+  return null;
+}
+
+// What a pasted IR code becomes in the key's code field: {hex, note}.
+function irCodeFromPaste(text) {
+  const found = irDurationsFromText(text);
+  if (found) {
+    const hex = irCodeFromDurations(found.durations);
+    if (hex) return {hex, note: `Converted from a ${found.format} (${found.durations.length} pulses and pauses).`};
+  }
+  return {hex: text.replace(/[^0-9a-fA-F]/g, "").toLowerCase(), note: ""};
+}
+
 const IR_PROFILE_ARTWORK = {
   1: "1a", 2: "18", 3: "19", 4: "0f", 5: "05", 6: "09", 7: "0e",
   8: "08", 9: "00", 10: "06", 11: "01", 12: "0a", 13: "10", 14: "0c",
@@ -3191,10 +3266,31 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     });
 
-    root.querySelector('[data-key-field="code_hex"]')?.addEventListener("input", (event) => {
+    const codeField = root.querySelector('[data-key-field="code_hex"]');
+    const codeNote = root.querySelector("[data-code-note]");
+    const takeCode = (text) => {
+      // A Pronto code, a timing list or a 67 A5 code becomes the remote's own code right away,
+      // so the field always shows what will be written.
+      const {hex, note} = irCodeFromPaste(text);
+      key.code_hex = hex;
+      if (note) codeField.value = hex;
+      if (codeNote) codeNote.textContent = note;
+    };
+    codeField?.addEventListener("paste", (event) => {
+      const text = event.clipboardData?.getData("text") ?? "";
+      if (!irDurationsFromText(text)) return;
+      event.preventDefault();
+      takeCode(text);
+    });
+    codeField?.addEventListener("input", (event) => {
       // Keep whatever is typed, including an odd length while it is still being pasted; the
       // backend validates before anything is written to the remote.
       key.code_hex = event.target.value.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+      if (codeNote) codeNote.textContent = "";
+    });
+    codeField?.addEventListener("change", (event) => {
+      // A timing list typed by hand is converted once the field is left.
+      if (irDurationsFromText(event.target.value)) takeCode(event.target.value);
     });
 
     root.querySelector('.key-editor [data-catalog="type"]')?.addEventListener("change", async (event) => {
@@ -3477,6 +3573,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         <label>IR code (hex)<textarea data-key-field="code_hex" spellcheck="false"
           placeholder="Paste the raw code, or copy one from a saved button above"
           >${escapeHtml(key.code_hex || "")}</textarea></label>
+        <p class="small">The remote's own code in hex. A Pronto code, a list of pulse and pause
+          lengths in µs (9000 4500 560 …) or a base64 code that starts with Z6V is converted when
+          pasted.</p>
+        <p class="small" data-code-note></p>
         ${this._renderCatalogPicker()}` : ""}
       <div class="key-actions">
         ${button.button_page || linkedPage ? "" : clearKey}

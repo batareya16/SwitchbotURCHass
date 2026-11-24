@@ -983,6 +983,45 @@ def build_create(
     return bytes([0x0F, 0x62, 0x06]) + length + crc + bytes(v)
 
 
+_PAGE_RECORD_SIZE = 36  # position, function (2), kind, 32-byte field
+
+
+def page_record_count(plaintext: bytes) -> int | None:
+    """The number of key records in a `0F 62 06` page write, or None for any other command.
+
+    The header before the records holds a one- or four-byte device type, so the count byte is
+    found where the rest of the body is exactly that many 36-byte records.
+    """
+    if bytes(plaintext[:3]) != b"\x0f\x62\x06" or len(plaintext) < 7:
+        return None
+    body = plaintext[7:]
+    for type_length in (1, 4):
+        index = type_length + 81
+        if index < len(body) and len(body) == index + 1 + _PAGE_RECORD_SIZE * body[index]:
+            return body[index]
+    return None
+
+
+def refused_empty_pages(plaintexts: list[bytes] | tuple[bytes, ...]) -> list[int]:
+    """Positions of page writes with no keys that the remote must not receive.
+
+    The screen list writes a page without keys at the position equal to its slot byte, whatever
+    row is there (DSP 0x2002153d), so after a reorder it overwrites another remote's row; that
+    hid a remote and shifted every tile by one. The one empty page that is safe is the header of
+    a new IR remote, which goes at the end of the list and is followed at once by the IR sync start
+    (`0F 62 0C <count> 01`) of the same install.
+    """
+    refused = []
+    for index, plaintext in enumerate(plaintexts):
+        if page_record_count(plaintext) != 0:
+            continue
+        following = bytes(plaintexts[index + 1]) if index + 1 < len(plaintexts) else b""
+        if following[:3] == b"\x0f\x62\x0c" and following[4:5] == b"\x01":
+            continue
+        refused.append(index)
+    return refused
+
+
 def rewrite_native_page_control_mode(packet: bytes, control_mode: int) -> bytes:
     """Change only the screen profile byte in a valid native 0F6206 page packet."""
     if not 0 <= control_mode <= 0xFF:

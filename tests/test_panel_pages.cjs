@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 let Panel;
 const context = {
-  HTMLElement: class {}, structuredClone, console, clearTimeout, TextEncoder,
+  HTMLElement: class {}, structuredClone, console, clearTimeout, TextEncoder, atob,
   customElements: {get() {}, define(_name, implementation) {Panel = implementation;}},
 };
 vm.createContext(context);
@@ -1273,4 +1273,57 @@ test('Diagnostics offers Repair list order, and the installed table does not', (
   const row = (slot) => ({slot, name: `R${slot}`, kind: 'IR', device_type: '02', target_mac: '', control_type: 2, device_id: 'aa'});
   instance._deviceTable = {rows: [row(0), row(1)], order: [0, 1], open: true};
   assert.doesNotMatch(instance._renderDeviceTable(), /repairTableOrder/);
+});
+
+// IR codes the remote already holds (a TV key and a key of another remote, read from Studio).
+const REMOTE_TV_CODE = '303030fdff35822f811a22242224216b2124222422242224212422692269222422692269226922692269226922242124222422242124222422242126216b216b216b216b2169226922692289d38231808d229776822f808d229776822f808d22c000f4240030';
+const REMOTE_OTHER_CODE = '303030fdff35822f811a226922242224212422242224212422242269226922692269226922692269226922242126216b21242269222422692224216b216b21242269222422692224216b21898e8231808d219778822f808d2297760078';
+
+function remoteCodeDurations(hex) {
+  const bytes = hex.match(/../g).map((pair) => parseInt(pair, 16));
+  const out = [];
+  let index = 6;
+  while (bytes[index]) {
+    const byte = bytes[index];
+    if ((byte & 0xc0) === 0xc0) {
+      out.push((((byte & 0x3f) << 24) | (bytes[index + 1] << 16) | (bytes[index + 2] << 8) | bytes[index + 3]) * 16);
+      index += 4;
+    } else if (byte & 0x80) { out.push((((byte & 0x7f) << 8) | bytes[index + 1]) * 16); index += 2; }
+    else { out.push(byte * 16); index += 1; }
+  }
+  return out;
+}
+
+test('the remote IR code format is rebuilt byte for byte from its own timings', () => {
+  for (const code of [REMOTE_TV_CODE, REMOTE_OTHER_CODE]) {
+    assert.equal(context.irCodeFromDurations(remoteCodeDurations(code)), code);
+  }
+});
+
+test('a 67 A5 base64 code is converted to the remote format when pasted', () => {
+  const off = 'Z6VLADkCAABrBgAAqggAAHARAAA6IwAA6JkAAOBzAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0AAAAAAAAAAAQEBAQEBAQEBAQEAAAABAAAAAAEBAQABBQJGAkAA==';
+  const result = context.irCodeFromPaste(off);
+  assert.equal(result.hex, '303030fdff35823481172424242424242424242424242424242424672467246724672467246724672467246724672467242424242424246724242424242424242467246724672424246724899f8234808b24973e8234808b2497760037');
+  assert.match(result.note, /67 A5 code \(75 pulses and pauses\)/);
+  // NEC header 9 ms / 4.5 ms, then the bits; the code ends on the pause the remote expects.
+  const durations = remoteCodeDurations(result.hex);
+  assert.equal(durations.length, 76);
+  assert.ok(Math.abs(durations[0] - 9018) <= 8 && Math.abs(durations[1] - 4464) <= 8);
+  assert.equal(durations.at(-1), 96096);
+});
+
+test('a timing list and a Pronto code are converted, plain hex is kept', () => {
+  const list = context.irCodeFromPaste('+9000 -4500 +560 -560 +560 -1690 +560');
+  assert.deepEqual(remoteCodeDurations(list.hex), [9008, 4496, 560, 560, 560, 1696, 560, 96096]);
+  assert.match(list.note, /timing list/);
+  // Pronto: carrier word 0x006D (38 kHz), one pair in the first sequence and one in the repeat.
+  const pronto = context.irCodeFromPaste('0000 006D 0001 0001 0156 00AB 0015 0040');
+  const timings = remoteCodeDurations(pronto.hex);
+  assert.equal(timings.length, 4);
+  assert.ok(Math.abs(timings[0] - 9000) < 40 && Math.abs(timings[1] - 4500) < 40);
+  assert.match(pronto.note, /Pronto/);
+  // The remote's own hex, with or without spaces, is not touched.
+  assert.deepEqual({...context.irCodeFromPaste(REMOTE_TV_CODE)}, {hex: REMOTE_TV_CODE, note: ''});
+  assert.equal(context.irCodeFromPaste('30 30 30 FD FF 35').hex, '303030fdff35');
+  assert.equal(context.irDurationsFromText('hello'), null);
 });

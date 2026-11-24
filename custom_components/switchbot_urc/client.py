@@ -12,7 +12,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import establish_connection
 
-from .commands import HID_PAIR_STATUS_COMMAND
+from .commands import HID_PAIR_STATUS_COMMAND, refused_empty_pages
 from .const import CHAR_NOTIFY, CHAR_WRITE
 from .crypto import UrcCrypto
 
@@ -61,6 +61,19 @@ class UrcPreflightQueryTimeout(TimeoutError):
 
 class UrcConnectionSetupError(ConnectionError):
     """BLE connection/service setup failed before an application command was written."""
+
+
+class UrcEmptyPageRefused(ValueError):
+    """A page without keys was refused before anything reached the remote."""
+
+
+def _refuse_empty_pages(plaintexts) -> None:
+    """Never let a page without keys reach the remote, except the header of a new IR install."""
+    if refused_empty_pages(list(plaintexts)):
+        raise UrcEmptyPageRefused(
+            "Studio refused to write a page without keys: the remote would put it over another "
+            "remote's row and shift the tiles. Add at least one key to the page."
+        )
 
 
 class UrcPreflightRejected(RuntimeError):
@@ -846,6 +859,7 @@ class UrcClient:
 
     async def send_command(self, plaintext: bytes, timeout: float = 20.0) -> bytes:
         """Run one encrypted command, via the add-on proxy when available, else over local BLE."""
+        _refuse_empty_pages([plaintext])
         if self._use_management_proxy:
             responses = await self._run_proxy_steps_with_refresh(
                 [{"kind": "command", "plaintext": plaintext.hex(), "timeout": timeout}]
@@ -935,6 +949,7 @@ class UrcClient:
         preflight_check: Callable[[bytes], bool] | None = None,
     ) -> tuple[bytes, bytes]:
         """Verify state and run one mutation, via the add-on proxy when available."""
+        _refuse_empty_pages([plaintext])
         if self._use_management_proxy:
             # The add-on runs the handshake, the preflight 0F63 query and the mutation in one
             # session on its own controller, then returns both responses.
@@ -1105,6 +1120,7 @@ class UrcClient:
         """Run encrypted commands and optionally append a readback from the same session."""
         if readback_subcommand is not None and (not plaintexts or not 0 <= readback_subcommand <= 0xFF):
             raise ValueError("readback requires at least one command and a valid subcommand")
+        _refuse_empty_pages(plaintexts)
         if self._use_management_proxy:
             # One management session on the add-on's controller: handshake once, then every page
             # in order. The caller validates each response (bind pages, IR sync acks, etc.).

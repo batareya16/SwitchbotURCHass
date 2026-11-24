@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.53.19
+
+- Studio no longer sends the remote a page without keys, by any path: Studio's editors, **Write again**, installs and the `send_command` action. The remote writes such a page over whichever tile sits at that position in its list. After a reorder that is another remote, which then disappears from the screen while every tile opens the one before it. Such a write is now refused before anything is sent, with "Add at least one key to the page". The one page without keys the remote needs, the start of a new IR remote's install, still goes through.
+- An IR key's code can now be pasted in other formats: a Pronto code, a list of pulse and pause lengths in µs as Home Assistant and ESPHome write them (`+9000 -4500 +560 …`), or a base64 code that starts with `Z6V` (a header `67 A5`, a table of lengths and one table index per half byte). Studio turns it into the remote's own code when it is pasted, shows it in the field, and says what it was converted from. The remote's code is 16 µs ticks after a fixed header, ending with a pause and a byte sum; a code that stops on a pulse gets a 96 ms pause.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.18
 
 - New **Repair list order** in **Diagnostics**. When a tile on the remote opens the remote above it, the remote's list has a gap or a repeated slot. This sends the order the list already has and names every row to the remote by its full id, so the remote sets the place of every tile once. The tiles themselves are not touched, and the table is read back afterwards.
