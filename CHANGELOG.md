@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.53.18
+
+- New **Repair list order** in **Diagnostics**. When a tile on the remote opens the remote above it, the remote's list has a gap or a repeated slot. This sends the order the list already has and names every row to the remote by its full id, so the remote sets the place of every tile once. The tiles themselves are not touched, and the table is read back afterwards.
+- **Apply order** now also names every row to the remote by its full id. Before, the Bluetooth, HID and text tiles were found by the first six bytes of their address, and when several shared one (Bridge profiles on one bridge) the remote renumbered only the first, which left a gap and a repeat in its list. Remotes that share an address can now be ordered.
+- An IR remote with no key on its Main page is not saved again (a page without keys is not kept by the remote, which then opens the screen it showed before). The panel says "An IR remote needs at least one key on Main" next to **Save** instead of leaving it grey. This undoes the change of 0.53.16.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.17
 
 - **No icon** is now a proper state of an IR or HID key. A key on no icon shows an empty picture and the words "No icon" in its **Button icon** choice, the **No icon** button is pressed, and both icon codes the firmware uses for it are named so in the list. On Studio's picture of the remote the key is drawn without a picture, on the menu rows and on A–D. A new IR key starts on no icon, and **Reset to default** returns to it.

@@ -23,8 +23,9 @@ def test_command_layout_matches_what_the_firmware_parses():
     assert packet[3:5] == len(body).to_bytes(2, "big") and len(body) == 1 + 14 * 2
     assert packet[5:7] == commands.crc16_modbus(body).to_bytes(2, "big")
     assert body[0] == 2
-    # [destination slot][device type][id kind][id11]; IR is matched by id (1), the rest by MAC (0)
-    assert body[1:15] == bytes([1, 0x72, 0]) + ROWS[3][3]
+    # [destination slot][device type][id kind][id11]; every row is matched by its full id (1): by
+    # MAC (0) the DSP renumbers only the first of several rows that share an address
+    assert body[1:15] == bytes([1, 0x72, 1]) + ROWS[3][3]
     assert body[15:29] == bytes([0, 0x18, 1]) + ROWS[0][3]
 
 
@@ -111,13 +112,37 @@ def test_only_clean_changes_are_sent(studio):
     assert client.sent == []
 
 
-def test_rows_sharing_a_bluetooth_address_cannot_be_ordered(studio):
+def test_rows_sharing_a_bluetooth_address_are_ordered_by_their_full_id(studio):
     twin = bytes.fromhex("911fe01b888a0100000000")  # same six-byte address as slot 3, other tail
     rows = ROWS[:4] + [(4, 0x72, commands.CTRL_NATIVE, twin)]
     hass, entry, connection, out, client = setup(studio, rows=rows)
     reorder(studio, hass, connection, msg([1, 0, 2, 3, 4], rows))
-    assert out["errors"] and "share one Bluetooth address" in out["errors"][0][1]
-    assert client.sent == []
+    assert out["errors"] == [] and len(client.sent) == 1
+    body = client.sent[0][7:]
+    assert [body[1 + 14 * i + 2] for i in range(5)] == [1] * 5     # every row by its id
+
+
+def test_a_repair_sends_the_order_the_table_has_with_every_row_matched_by_id(studio):
+    hass, entry, connection, out, client = setup(studio)
+    reorder(studio, hass, connection, {**msg([0, 1, 2, 3, 4]), "repair": True})
+    assert out["errors"] == [] and len(client.sent) == 1
+    body = client.sent[0][7:]
+    assert body[0] == 5
+    for i, row in enumerate(ROWS):
+        record = body[1 + 14 * i:1 + 14 * (i + 1)]
+        assert record == bytes([i, row[1], 1]) + row[3]            # same slot, matched by id
+    assert [r[3] for r in client.rows] == [r[3] for r in ROWS]    # the order is unchanged
+    # a repair never reorders
+    reorder(studio, hass, connection, {**msg([1, 0, 2, 3, 4]), "repair": True})
+    assert "keeps the order" in out["errors"][0][1] and len(client.sent) == 1
+
+
+def test_a_repair_closes_a_gap_in_the_slots(studio):
+    gappy = [(0, *ROWS[0][1:]), (1, *ROWS[1][1:]), (3, *ROWS[2][1:]), (4, *ROWS[3][1:]), (5, *ROWS[4][1:])]
+    hass, entry, connection, out, client = setup(studio, rows=gappy)
+    reorder(studio, hass, connection, {**msg([0, 1, 3, 4, 5], gappy), "repair": True})
+    assert out["errors"] == []
+    assert [row["slot"] for row in out["results"][0]["rows"]] == [0, 1, 2, 3, 4]
 
 
 def test_a_rejected_or_ignored_order_is_reported(studio):

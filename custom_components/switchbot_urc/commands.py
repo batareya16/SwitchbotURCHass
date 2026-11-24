@@ -1134,8 +1134,13 @@ def build_delete(
 
 
 def sort_id_kind(control_type: int) -> int:
-    """How V48 finds a row for the order command: 1 = by the 11-byte id (IR), 0 = by the 6-byte MAC."""
-    return 1 if control_type == CTRL_IR else 0
+    """How V48 finds a row for the order command: 1 = by the 11-byte id, 0 = by the 6-byte MAC.
+
+    Always by the id. By MAC the DSP takes the first row with that address, so rows that share one
+    (native profiles on one bridge) leave all but one with a stale slot: a duplicate and a gap
+    in the list, and every tile below the gap opens its neighbour. The ARM side ignores the byte.
+    """
+    return 1
 
 
 def build_sort_devices(rows: list[tuple[int, int, int, bytes]]) -> bytes:
@@ -1145,7 +1150,7 @@ def build_sort_devices(rows: list[tuple[int, int, int, bytes]]) -> bytes:
     exactly once, with the new slots forming 0..n-1. ARM ``0x3930`` checks the length and CRC and that
     the count equals the number of installed remotes, then ``0x58ac`` moves each matching entry
     (matched by its full id) to its new slot; DSP ``0x20020d94`` sets the same slot in its rows
-    (matched by the six-byte MAC, or by the id for IR). A partial or repeated list would leave
+    (matched by the full id, whatever the type). A partial or repeated list would leave
     duplicates, so it is refused here.
     """
     count = len(rows)

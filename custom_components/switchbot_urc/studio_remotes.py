@@ -360,6 +360,8 @@ async def _delete_table_row(hass, connection, msg):
     vol.Required("entry_id"): str,
     # Current slots, listed in the order they should have afterwards.
     vol.Required("order"): [int],
+    # Repair: send the order the table already has, so every row's slot is set again by its id.
+    vol.Optional("repair", default=False): bool,
     # The table the panel showed; nothing is sent if the remote no longer holds exactly this.
     vol.Required("expected"): [vol.Schema({
         vol.Required("slot"): int, vol.Required("device_type"): int,
@@ -392,16 +394,15 @@ async def _reorder_table(hass, connection, msg):
         order = list(msg["order"])
         if sorted(order) != sorted(row[0] for row in snapshot):
             raise ValueError("The new order must list every installed remote exactly once")
-        if order == sorted(order):
+        repair = bool(msg.get("repair"))
+        if repair:
+            if order != sorted(order):
+                raise ValueError("A repair keeps the order the remote lists")
+        elif order == sorted(order):
             raise ValueError("The order is unchanged")
         by_slot = {row[0]: row for row in snapshot}
-        # The DSP finds a native, HID or text row by its six-byte address, so two rows that share
-        # one address cannot be told apart and their order cannot be set.
-        macs = [by_slot[slot][3][:6] for slot in order if by_slot[slot][2] != c.CTRL_IR]
-        if len(set(macs)) != len(macs):
-            raise ValueError(
-                "Two remotes share one Bluetooth address, so the remote cannot tell them apart "
-                "when ordering; the order of this table cannot be set")
+        # Every row is named to the remote by its full id, so rows that share an address are still
+        # told apart (by address the DSP would renumber only the first of them).
         rows = [(position, by_slot[slot][1], by_slot[slot][2], by_slot[slot][3])
                 for position, slot in enumerate(order)]
         command = c.build_sort_devices(rows)

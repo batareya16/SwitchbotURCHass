@@ -1222,7 +1222,7 @@ test('an IR command key on Main A–D is not offered menu-shortcut icons, and No
   assert.match(row, /data-glyph-code="39"/);                   // a menu row takes any icon
 });
 
-test('clearing the last key of an IR remote can still be saved, unlike Native', () => {
+test('an IR remote with every key cleared cannot be saved, and the panel says why', () => {
   const status = (kind) => {
     const instance = panel();
     instance._physical = {kind, template: 'LOCK', pages: [{index: 0, buttons: []}]};
@@ -1231,7 +1231,7 @@ test('clearing the last key of an IR remote can still be saved, unlike Native', 
     instance._hasAppearanceChanges = () => false;
     return instance._saveStatus();
   };
-  assert.equal(status('ir'), '');
+  assert.match(status('ir'), /needs at least one key on Main/);
   assert.match(status('native'), /Add a command to Main/);
 });
 
@@ -1259,4 +1259,18 @@ test('No icon is a real state: named in the picker and drawn empty on the screen
   // a Native remote keeps drawing its own picture for these codes
   instance._physical = {kind: 'native', pages: []};
   assert.doesNotMatch(instance._renderScreen(page), /scr-icon no-icon/);
+});
+
+test('Diagnostics offers Repair list order, and the installed table does not', () => {
+  const instance = panel();
+  instance._physicalBusy = false;
+  instance._diagnostics = null;
+  let html = instance._renderDiagnostics();
+  assert.match(html, /id="repairTableOrder" (?!disabled)/);
+  assert.match(html, /when a tile opens the remote above it/);
+  instance._physicalBusy = true;
+  assert.match(instance._renderDiagnostics(), /id="repairTableOrder" disabled/);
+  const row = (slot) => ({slot, name: `R${slot}`, kind: 'IR', device_type: '02', target_mac: '', control_type: 2, device_id: 'aa'});
+  instance._deviceTable = {rows: [row(0), row(1)], order: [0, 1], open: true};
+  assert.doesNotMatch(instance._renderDeviceTable(), /repairTableOrder/);
 });

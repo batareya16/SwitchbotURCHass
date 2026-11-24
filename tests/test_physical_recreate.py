@@ -371,14 +371,13 @@ def test_every_native_page_builder_call_passes_the_icon_only_keys():
         assert (INTEGRATION / name).read_text().count("icon_only=") == expected, name
 
 
-def test_an_ir_remote_can_be_saved_with_every_key_cleared():
+def test_an_ir_remote_is_not_saved_with_an_empty_main_page():
+    # A page with no records is not kept by the remote, which then opens the screen it showed
+    # before; so the layout is refused instead of written.
     remote = _blank_ir_remote(2)
-    empty = {"kind": "ir", "pages": [{"index": 0, "buttons": []}]}
-    assert physical.validate(remote, empty)["pages"][0]["buttons"] == []
-    _, pages = physical.compile_pages(remote, empty, slot=1)
-    assert pages[0][7:][82] == 0                          # a Main page with no records
-    # Native and HID remotes still need a command on Main
-    native = {"device_type": "LOCK", "device_id": "001122334455", "name": "Lock", "icon": "lock"}
     with pytest.raises(ValueError, match="1–18 buttons"):
-        physical.validate(native, {"kind": "native", "template": "LOCK",
-                                   "pages": [{"index": 0, "buttons": []}]})
+        physical.validate(remote, {"kind": "ir", "pages": [{"index": 0, "buttons": []}]})
+    # a Main with no keys is fine when menus hold the rows
+    physical.validate(remote, {"kind": "ir", "pages": [
+        {"index": 0, "buttons": []},
+        {"index": 1, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa"}]}]})

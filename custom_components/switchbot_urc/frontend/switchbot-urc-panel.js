@@ -1915,7 +1915,11 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button class="secondary compact" data-diagnostic="queries" title="Read every 0F63 query the remote answers; changes nothing">Read the remote's state</button>
         <button class="secondary compact" data-diagnostic="bridge" title="Look for each bridge address on the air">Check the bridges</button>
         <button class="secondary compact" data-diagnostic="bindings" title="Which remote each saved action belongs to; reads nothing from the device">Why did that action run?</button>
+        <button class="secondary compact" type="button" id="repairTableOrder" ${this._physicalBusy ? "disabled" : ""}
+          title="Keeps the order of the remote's list and sets every slot again, by each row's full id; the tiles are not touched">Repair list order</button>
       </div>
+      <p class="small">Use <b>Repair list order</b> when a tile opens the remote above it: the remote's list has
+        a gap or a repeated slot, and this sets every slot once without touching the tiles.</p>
       ${diag?.busy ? `<p class="small">Running…</p>` : ""}
       ${this._feedback(diag?.error, "error", "Diagnostics")}
       ${diag?.rows ? `<table><thead><tr><th>Query</th><th>Answer</th></tr></thead><tbody>${
@@ -2077,6 +2081,36 @@ class SwitchBotUrcPanel extends HTMLElement {
       await this._readDeviceTable();
     }
     return applied;
+  }
+
+  // Send the order the remote already lists, so that it sets every row's slot again by its full id.
+  async _repairTableOrder() {
+    if (this._physicalBusy) return;
+    if (!this._deviceTable?.rows) await this._readDeviceTable();
+    const table = this._deviceTable;
+    if (!table?.rows?.length) return;
+    if (this._orderChanged(table)) {
+      this._notify("Apply or reset the new order first.", "warning");
+      return;
+    }
+    if (!confirm("Repair the order of the tiles in the Universal Remote's list? The order stays as it is; "
+      + "the remote sets the place of every tile again. The tiles themselves are not touched.")) return;
+    this._physicalBusy = true;
+    this._render();
+    try {
+      await this._hass.callWS({ type: `${DOMAIN}/studio/physical/reorder`, entry_id: this._entryId,
+        order: table.rows.map((row) => row.slot), repair: true,
+        expected: table.rows.map((row) => ({ slot: row.slot, device_type: parseInt(row.device_type, 16),
+          control_type: row.control_type, device_id: row.device_id })) });
+      this._notify("The list order was repaired. Check the tiles on the remote.", "success");
+    } catch (error) {
+      this._notify(error?.message || String(error), "error");
+    } finally {
+      this._physicalBusy = false;
+      this._sources = null;
+      await this._load();
+      await this._readDeviceTable();
+    }
   }
 
   async _deleteTableRow(data) {
@@ -3598,11 +3632,12 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (mappingDrafts.some(({ mode, valid }) => mode === "actions" && !valid)) {
       return "Fix the invalid actions JSON before saving.";
     }
-    // An empty IR remote is a real state (an empty remote is installed that way), so clearing the
-    // last key of one can be saved; Native and HID remotes need a command on Main.
-    if (this._physicalChanges() && this._physical.kind !== "ir"
-        && this._physical.pages.length === 1 && !this._physical.pages[0].buttons.length) {
-      return "Add a command to Main or keep a menu with at least one row.";
+    // A Main page with no keys is not written: the remote keeps no page for it and then opens
+    // whatever was on screen before. So a layout needs a key on Main (or a menu with rows).
+    if (this._physicalChanges() && this._physical.pages.length === 1 && !this._physical.pages[0].buttons.length) {
+      return this._physical.kind === "ir"
+        ? "An IR remote needs at least one key on Main. Add a command, or delete the remote."
+        : "Add a command to Main or keep a menu with at least one row.";
     }
     if (this._physicalChanges() && this._physical.pages.some((page) => page.index && !page.buttons.length)) {
       return "Add a row to each new menu or remove the empty menu.";
@@ -3675,6 +3710,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     });
     root.getElementById("readDeviceTable")?.addEventListener("click", () => this._readDeviceTable());
+    root.getElementById("repairTableOrder")?.addEventListener("click", () => this._repairTableOrder());
     root.querySelector(".device-table")?.addEventListener("toggle", (event) => {
       if (this._deviceTable && !this._deviceTable.loading) this._deviceTable.open = event.target.open;
     });
