@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.23
+
+- Fix a new command on an IR remote's A–D key starting on the key's menu icon (123 on A, and similar on B–D): giving an empty A key a command kept the 123 picture, and the remote then showed "No list under this shortcut" instead of sending the code. A new key now starts on no icon, a key that already carries a menu icon says so in its editor, and such a key is not saved until it gets another icon. The same applies to a Native A–D key whose action is a menu function (for example Mode).
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.22
 
 - A key that does what another button does now says so. A key with no actions of its own runs the Quick bind of its action: a menu row whose action is OFF turns the light off like the OFF button. Studio now marks such a key "same as OFF" on the remote picture, and its **Quick bind** tab explains that it copies the OFF button and how to change that (**Custom actions**, or **Disabled** to make it do nothing). The remote itself always sends the key's own command; the icon only changes the picture.

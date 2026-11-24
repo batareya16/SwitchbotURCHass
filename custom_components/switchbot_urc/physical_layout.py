@@ -612,6 +612,14 @@ def validate(remote: dict, draft: dict) -> dict:
                     # pressing it shows "No list under this shortcut" and sends nothing.
                     raise ValueError("That icon is a menu shortcut; choose another for a key that sends a command")
             transport = key.get("transport")
+            if (not number and index < 4 and not fixed_softkeys
+                    and (expected, transport) in (("ir", "ir"), ("ir", "stored"), ("native", "native"))
+                    and _key_function(key) in MENU_SHORTCUT_FUNCTIONS):
+                # The key's own function (its icon unless one is chosen) decides on these windows:
+                # a menu function makes the key open a menu, or show "No list under this shortcut"
+                # with none behind it, instead of sending its command.
+                raise ValueError(f"Key {'ABCD'[index]} carries a menu icon and would not send its "
+                                 "command; choose another icon for it")
             if (transport == "ir" and not number and index in blocked_positions):
                 raise ValueError(
                     f"Key {'ABCD'[index]} only opens a page on this type of remote and cannot send a command")

@@ -50,7 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.22"
+FRONTEND_VERSION = "0.53.23"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:

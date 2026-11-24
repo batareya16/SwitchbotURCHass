@@ -3324,10 +3324,16 @@ class SwitchBotUrcPanel extends HTMLElement {
       const target = this._physical.pages.find((item) => item.index === button.button_page);
       if (!target || target.buttons.some((item) => item.index === button.button_index)) return;
       const kindNow = this._physical.kind;
+      // The stock picture of an empty A–D key is often its page link (123 on A): as a command
+      // key's function it would make the remote open a menu instead of sending, so it starts on
+      // no icon instead.
+      const stockFunction = button.default_function ?? 115;
+      const commandFunction = kindNow === "ir" && !button.button_page && button.button_index < 4
+        && MENU_SHORTCUT_ICONS.has(stockFunction) ? 115 : stockFunction;
       target.buttons.push({
         index: button.button_index,
         transport: kindNow === "native" ? "native" : kindNow === "hid" ? "hid" : "ir",
-        function: kindNow === "native" ? NATIVE_CUSTOM_FUNCTION : button.default_function ?? 115,
+        function: kindNow === "native" ? NATIVE_CUSTOM_FUNCTION : commandFunction,
         code_hex: "",
       });
       this._selectButton(this._button());
@@ -3684,6 +3690,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       ${key.transport === "hid" ? `<label>This key sends<select data-key-field="function">${
         this._hidFunctionOptions(key.function)
       }</select></label>` : ""}
+      ${kind === "ir" && !page.index && key.index < 4 && !this._fixedSoftkeys()
+        && MENU_SHORTCUT_ICONS.has(key.glyph ?? key.function) ? `<p class="small" role="status">This key
+        carries the menu icon ${escapeHtml(NATIVE_GLYPH_LABELS[key.glyph ?? key.function] || String(key.glyph ?? key.function))}:
+        the remote would show "No list under this shortcut" and send nothing. Choose another icon
+        below before saving.</p>` : ""}
       ${key.transport === "ir" ? `
         ${this._fixedSoftkeys() && !page.index && key.index < 4 ? FIXED_SOFTKEY_NOTE
           : page.number_pad && key.index < NUMBER_PAD_FUNCTIONS.length ? ""
