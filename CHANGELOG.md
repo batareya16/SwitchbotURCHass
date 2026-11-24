@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.14
+
+- Fix a newly added remote being drawn as another remote when you drag it on the remote's screen. The slot saved with a remote goes stale when the remote's table changes under it, so two tiles could share a slot, and the panel then showed one of them twice. A tile's slot now follows the last read of the remote's table, and two tiles can no longer claim one slot; a tile whose slot is out of date cannot be dragged until the table is read again (**Refresh**).
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.13
 
 - The A–D keys of light, fan, audio and air conditioner IR remotes no longer disappear after Studio writes the layout. These remotes draw a fixed picture on A–D and show a key only when it carries its own function id, so Studio now writes that id for each key and for the links to pages A–D.

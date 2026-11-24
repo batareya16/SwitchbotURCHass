@@ -296,3 +296,35 @@ def test_serialised_text_remote_reports_its_wire_icon_and_firmware_picture(studi
     hass, entry, _, _ = make(studio, FakeRemote([]), [old])
     row = studio._serialize_entry(hass, entry)["remotes"][0]
     assert (row["icon"], row["icon_code"], row["artwork_id"]) == ("device", 0, None)
+
+
+def test_two_tiles_never_claim_one_slot_and_the_device_table_decides(studio, monkeypatch):
+    # A saved slot goes stale when the remote's table changes under it: here the newly added
+    # remote and an older one both carry slot 5, and the table says where each one really is.
+    older = {"index": 5, "name": "Mi Box S", "device_type": "MATTER_TEXT",
+             "device_id": "4d5400000001", "remote_id": "old00001", "buttons": [],
+             "matter_captions": CAPTIONS}
+    newer = {**older, "index": 5, "name": "New remote", "device_id": "4d5400000002",
+             "remote_id": "new00002"}
+    hass, entry, _, _ = make(studio, FakeRemote([]), [older, newer])
+    monkeypatch.setattr(studio, "_repair_identities", lambda *_: None)
+    monkeypatch.setattr(studio.er, "async_get", lambda _: types.SimpleNamespace(
+        async_get_entity_id=lambda *_: None))
+
+    def slots():
+        return {row["name"]: row["remote_slot"] for row in studio._serialize_entry(hass, entry)["remotes"]}
+
+    # no table read yet: the saved slots collide, so only one tile keeps it
+    first = slots()
+    assert sorted(value for value in first.values() if value is not None) == [5]
+    # the table names both: each tile gets its own real slot
+    studio.studio_physical.store_device_table(hass, entry, [
+        (2, 0x27, 0, studio.studio_physical.local_identity_bytes(older)),
+        (6, 0x27, 0, studio.studio_physical.local_identity_bytes(newer)),
+    ])
+    assert slots() == {"Mi Box S": 2, "New remote": 6}
+    # the table names only the new remote: the stale record gives up the slot it does not hold
+    studio.studio_physical.store_device_table(hass, entry, [
+        (5, 0x27, 0, studio.studio_physical.local_identity_bytes(newer)),
+    ])
+    assert slots() == {"Mi Box S": None, "New remote": 5}

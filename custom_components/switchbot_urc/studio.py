@@ -49,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.13"
+FRONTEND_VERSION = "0.53.14"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -384,6 +384,20 @@ def _icon_name(code: int) -> str:
                 f"0x{code:02x}")
 
 
+def _tile_slot(remote: dict[str, Any], table_slots: dict[bytes, int]) -> tuple[int | None, bool]:
+    """Where a remote sits in the remote's own list, and whether the device table said so.
+
+    The slot saved with a remote goes stale when the remote's table changes under it (a sync that
+    restores other tiles, an order applied elsewhere), so the last table read wins when it names
+    this remote.
+    """
+    identity = studio_physical.local_identity_bytes(remote)
+    if identity is not None and identity in table_slots:
+        return table_slots[identity], True
+    saved = remote.get("index")
+    return (saved if isinstance(saved, int) else None), False
+
+
 def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     _repair_identities(hass, entry)
     registry = er.async_get(hass)
@@ -391,10 +405,16 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     battery_entity = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
     battery_state = hass.states.get(battery_entity) if battery_entity else None
     remotes = []
+    cached_table = studio_physical.cached_device_table(hass, entry)
+    table_slots = {bytes(row[3]): row[0] for row in cached_table} if cached_table else {}
+    slot_from_table: set[str] = set()
     for remote in entry.options.get("remotes", []):
         if not isinstance(remote, dict) or not studio_physical.remote_identity(remote):
             continue
         remote_id = studio_physical.remote_identity(remote)
+        tile_slot, from_table = _tile_slot(remote, table_slots)
+        if from_table:
+            slot_from_table.add(remote_id)
         binding = _binding_for(entry, remote_id)
         layout = remote.get("custom_layout")
         device_type = str(remote.get("device_type", "Unknown"))
@@ -409,7 +429,7 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "device_type": device_type,
                 "reachability": _reachability(remote),
                 "layout_editable": not remote.get("ir_profile_pending", False),
-                "remote_slot": remote.get("index"),
+                "remote_slot": tile_slot,
                 "ir_screen_preview": ir_screen_preview(remote),
                 "can_move": str(remote.get("device_type", "")).upper() in commands.NATIVE_DEVTYPE,
                 "icon": str(remote.get("icon", "")),
@@ -453,6 +473,18 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
                 "icon": _icon_name(wire_icon), "icon_code": wire_icon,
                 "icon_editable": page_icon_editable(remote),
             })
+    # Two tiles must never claim one place: the panel moves tiles by their slot, and a shared slot
+    # draws one of them as the other. The one the table names keeps the slot; a stale record loses
+    # it and is simply not draggable until the next read of the remote's table.
+    claimed: set[int] = set()
+    for item in sorted(remotes, key=lambda row: row["remote_id"] not in slot_from_table):
+        slot = item["remote_slot"]
+        if type(slot) is not int:
+            continue
+        if slot in claimed:
+            item["remote_slot"] = None
+        else:
+            claimed.add(slot)
     # The remote's own list order, whatever order the records were saved in. The remote lists its
     # rows from the highest slot down, so the highest slot comes first here too.
     remotes.sort(key=lambda item: (type(item["remote_slot"]) is not int,
