@@ -54,6 +54,20 @@ const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 11
 // Icon codes that mean "no icon" on an IR or HID key (the key's default function is one of them).
 // The picture is drawn empty in Studio, so what it shows is what the key is: no icon.
 const NO_ICON_CODES = new Set([115, 2003]);
+const LIST_ROW_ICON_HINT = "In a list every icon is only the picture: the row always sends its command.";
+// What an icon does besides its picture (WoRWS V48, decoded): on Main A–D of IR and Native
+// remotes a menu icon makes the key open a list (or show "No list under this shortcut" with no
+// page) and 123 opens the number pad. Everywhere else, list rows included, every icon is only
+// the picture.
+const GLYPH_GROUPS = [
+  { id: "plain", title: "Icons", note: "the picture only" },
+  { id: "menu", title: "Menu icons", note: "on Main A–D they open a list" },
+  { id: "pad", title: "123", note: "on Main A–D it opens the number pad" },
+];
+function glyphGroup(code) {
+  if (code === 39) return "pad";
+  return MENU_SHORTCUT_ICONS.has(code) ? "menu" : "plain";
+}
 
 // The remote's number pad (window 6, WoRWS V48, decoded, not run): what a "123" key opens. It
 // always draws 1–9 and 0 in a phone grid with four keys under them, and each sends the first IR
@@ -191,7 +205,7 @@ const NATIVE_GLYPH_LABELS = {
   "31": null,
   "32": null,
   "33": null,
-  "39": "More Buttons",
+  "39": "123 (number pad)",
   "40": "0",
   "41": "1",
   "42": "2",
@@ -973,7 +987,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   // blankCode is the icon code the remote shows as "no icon" (its own placeholder picture), so the
   // picker can offer it by name instead of as one plain tile among two hundred.
-  _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null, blankCode = null) {
+  _renderGlyphPicker(owner, field, label, defaultFunction, allowedCodes = null, blankCode = null, hint = "") {
     const selected = owner[field];
     const current = selected ?? defaultFunction;
     const noIconMode = blankCode !== null;
@@ -989,17 +1003,21 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${selected === undefined ? "disabled" : ""}>Reset to default</button>
       ${blankCode === null ? "" : `<button class="secondary compact" data-glyph-field="${field}"
         data-glyph-code="${blankCode}" aria-pressed="${NO_ICON_CODES.has(current)}">No icon</button>`}
-      <div class="glyph-grid" role="group" aria-label="${label}">
-        ${Object.entries(NATIVE_GLYPH_LABELS).map(([value, caption]) => {
+      ${hint ? `<p class="small">${hint}</p>` : ""}
+      ${GLYPH_GROUPS.map((group) => {
+        const buttons = Object.entries(NATIVE_GLYPH_LABELS).map(([value, caption]) => {
           const code = Number(value);
           if (allowedCodes && !allowedCodes.includes(code)) return "";
+          if (glyphGroup(code) !== group.id) return "";
           const iconId = `0x${code.toString(16).padStart(4, "0")}`;
           const name = noIconMode && NO_ICON_CODES.has(code) ? "No icon" : caption || "No caption";
           return `<button type="button" data-glyph-field="${field}" data-glyph-code="${code}"
             aria-label="${escapeHtml(name)} (${iconId})" aria-pressed="${code === current}">
             ${noIconMode && NO_ICON_CODES.has(code) ? emptyGlyph : this._nativeGlyph({ button_function: code })}<span>${escapeHtml(name)}</span></button>`;
-        }).join("")}
-      </div>
+        }).join("");
+        return buttons ? `<div class="glyph-group"><b>${group.title}</b><span>${group.note}</span></div>
+          <div class="glyph-grid" role="group" aria-label="${escapeHtml(`${label}: ${group.title}`)}">${buttons}</div>` : "";
+      }).join("")}
     </details>`;
   }
 
@@ -1043,6 +1061,8 @@ class SwitchBotUrcPanel extends HTMLElement {
           <button class="secondary compact destructive" id="removeThisPage" ${this._physicalBusy ? "disabled" : ""}>Delete menu</button>
         </div>
         <p class="small">${page.buttons.length} row${page.buttons.length === 1 ? "" : "s"}</p>
+        ${this._physical?.kind === "hid" && page.buttons.length === 1
+          ? '<p class="small" role="status">Add a second row: with a single row the remote may send the key\'s own command instead of opening this page.</p>' : ""}
       </div>
       <div class="page-tools">
         <button class="primary compact" id="addKeyToPage" ${this._freeIndexOnPage(page.index) === null || this._physicalBusy ? "disabled" : ""}>＋ Add row</button>
@@ -3608,7 +3628,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const { page, key } = found;
     if (kind === "native" && page.index) {
-      return this._renderGlyphPicker(key, "glyph", "Button icon", key.function);
+      return this._renderGlyphPicker(key, "glyph", "Button icon", key.function, null, null, LIST_ROW_ICON_HINT);
     }
     const linkedPage = button.button_page === 0 && key.index < 4
       ? this._physical.pages.find((item) => item.index === key.index + 1)
@@ -3637,8 +3657,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       </div>`;
     }
     if (kind === "native") {
+      // A command key on Main A–D with a menu icon shows "No list under this shortcut" when
+      // pressed and sends nothing (dev_BLE runs the menu test first), so those are not offered.
       const glyphPicker = key.index < 4
-        ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function) : "";
+        ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function,
+          Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => !MENU_SHORTCUT_ICONS.has(code))) : "";
       const stockKey = this._nativeProfile(this._physical.native_type || this._physical.template)
         ?.main_keys?.some((slot) => slot.index === key.index && slot.actionable);
       const canClear = !linkedPage && (key.index < 4 || !stockKey);
@@ -3667,7 +3690,8 @@ class SwitchBotUrcPanel extends HTMLElement {
                 // A command key on Main A–D with a menu-shortcut icon shows "No list under this
                 // shortcut" when pressed and sends nothing, so those icons are not offered.
                 && !(kind === "ir" && !page.index && MENU_SHORTCUT_ICONS.has(code))),
-              kind === "hid" ? 0x07D3 : 115) : ""}
+              kind === "hid" ? 0x07D3 : 115, page.index ? LIST_ROW_ICON_HINT
+                : kind === "hid" ? "On an HID remote every icon is only the picture: the key always sends its command." : "") : ""}
         ${(this._physicalSources || []).length ? `<label>Copy from a button already on one of your remotes<select data-key-field="ir_source">
             <option value="">Choose…</option>${
             this._physicalSources.map((source, index) => `<option value="${index}" ${key.code_hex === source.code_hex ? "selected" : ""}>${escapeHtml(source.label)}</option>`).join("")
@@ -4564,6 +4588,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       .glyph-picker summary{cursor:pointer;line-height:32px}
       .glyph-picker summary .native-glyph{display:inline-block;vertical-align:middle;margin:0 8px 0 5px;padding:4px;background:#171c23;border-radius:6px}
       .glyph-picker[open] summary{margin-bottom:10px}
+      .glyph-group{display:flex;gap:8px;align-items:baseline;margin:12px 0 0;font-size:13px}
+      .glyph-group span{font-size:12px;color:var(--secondary-text-color,#68727d)}
       .glyph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,104px),1fr));gap:8px;max-height:320px;overflow:auto;margin-top:10px;padding:2px}
       .glyph-grid button{display:grid;justify-items:center;align-content:start;gap:6px;min-height:66px;padding:8px 6px;background:#171c23;color:#eaf0f4;border:1px solid #657181;border-radius:7px;cursor:pointer}
       .glyph-grid button span{font-size:12px;line-height:1.25;overflow-wrap:anywhere}

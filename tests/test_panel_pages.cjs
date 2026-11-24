@@ -1376,3 +1376,17 @@ test('each IR window offers a list or the number pad only where the remote opens
   // a list cannot be moved onto a TV's A key
   assert.deepEqual([...irPanel('IR_2', [{ index: 0, buttons: [] }])._availablePageIndexes()], [2, 3, 4]);
 });
+
+test('the icon picker groups icons by what they do and offers only those that work there', () => {
+  assert.equal(context.glyphGroup(39), 'pad');
+  assert.equal(context.glyphGroup(100), 'menu');
+  assert.equal(context.glyphGroup(105), 'plain');
+  const instance = irPanel('IR_2', [{ index: 0, buttons: [] }]);
+  instance._nativeGlyph = () => '<img>';
+  const all = instance._renderGlyphPicker({}, 'glyph', 'Button icon', 115, null, null, 'hint here');
+  for (const title of ['Icons', 'Menu icons', '123']) assert.match(all, new RegExp(`<b>${title}</b>`));
+  assert.match(all, /hint here/);
+  const plainOnly = instance._renderGlyphPicker({}, 'glyph', 'Button icon', 115, [105, 5]);
+  assert.match(plainOnly, /<b>Icons<\/b>/);
+  assert.doesNotMatch(plainOnly, /Menu icons|<b>123<\/b>/);
+});

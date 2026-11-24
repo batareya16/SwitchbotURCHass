@@ -606,8 +606,8 @@ def validate(remote: dict, draft: dict) -> dict:
                 _validate_glyph(key["glyph"])
                 if (expected in ("hid", "ir") or key.get("transport") == "icon") and key["glyph"] == 0:
                     raise ValueError("Choose a nonzero icon for an IR button")
-                if (expected == "ir" and not number and key.get("transport") == "ir"
-                        and key["glyph"] in MENU_SHORTCUT_FUNCTIONS):
+                if (not number and key["glyph"] in MENU_SHORTCUT_FUNCTIONS
+                        and (expected, key.get("transport")) in (("ir", "ir"), ("native", "native"))):
                     # The firmware reads these as a menu shortcut: with no page behind the key,
                     # pressing it shows "No list under this shortcut" and sends nothing.
                     raise ValueError("That icon is a menu shortcut; choose another for a key that sends a command")

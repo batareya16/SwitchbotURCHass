@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.53.21
+
+- The icon picker sorts the remote's icons by what they do: **Icons** (the picture only), **Menu icons** (on Main A–D they make the key open a list) and **123** (on Main A–D it opens the number pad). Each place offers only the icons that work there, with a note on what an icon does in it. In a list every icon is only the picture and the row always sends its command, so lists offer all of them; on an HID remote the key always sends its command too.
+- The icon that used to be called "More Buttons" (39) is now **123 (number pad)**: it is the "123" picture, and the only icon that opens the number pad.
+- A Native command key on Main A–D can no longer take a menu icon: the remote reads it as a menu shortcut and shows "No list under this shortcut" instead of sending the action. IR remotes already had this rule.
+- An HID page with a single row now says to add a second one: with one row the remote may send the key's own command instead of opening the page.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.20
 
 - New **number pad** for IR remotes, the screen the remote's "123" key opens. Select A (or, on most IR types, any of A–D) and choose **Turn key A into a number pad**. Studio shows the pad as the remote draws it: 1–9 and 0 in a phone grid with four keys under them (3-digit input, 10, 11, 12). Select a key on the pad and give it an IR code, the same way as any other key; a key without a code is drawn dim, as the remote does. The pad's keys are written with the ids the remote's pad looks for (40–49 for the digits, 203 and 200–202 under them), and the key that opens it with 39.
