@@ -109,10 +109,11 @@ def test_ir_menu_uses_its_cached_link_record_when_the_page_moves():
     device_id = "00112233445566778899aa"
     fn = 210
     link = {"keyIndex": 0, "keyFun": fn, "key_type": 4}
-    main = c.build_create(1, 2, c.CTRL_IR, 0, 0, device_id, "TV", 1, [link])
-    submenu = c.build_create(1, 2, c.CTRL_IR, 0, 0, device_id, "TV", 1,
+    # A DVD remote: its A key opens a list when its function is not 39 (a TV's A opens the number pad).
+    main = c.build_create(1, 5, c.CTRL_IR, 0, 0, device_id, "DVD", 1, [link])
+    submenu = c.build_create(1, 5, c.CTRL_IR, 0, 0, device_id, "DVD", 1,
                              [{"keyIndex": 0, "keyFun": 25}], page_index=1)
-    remote = {"device_type": "IR_2", "device_id": device_id,
+    remote = {"device_type": "IR_5", "device_id": device_id,
               "physical_packets": [main.hex(), submenu.hex()]}
     draft = physical.draft_for(remote)
     assert draft["pages"][0]["buttons"] == []
@@ -210,7 +211,7 @@ def test_ir_remote_keys_take_a_screen_icon_as_their_function():
               "physical_packets": [bytes(packet).hex() for packet in packets]}
     key = {"index": 4, "transport": "ir", "code_hex": "aabbccdd"}
     draft = {"kind": "ir", "pages": [{"index": 0, "buttons": []},
-                                     {"index": 1, "buttons": [key]}]}
+                                     {"index": 2, "buttons": [key]}]}
     # no icon chosen: the generic function, so the key shows its own name
     _, pages = physical.compile_pages(remote, draft, slot=1)
     assert pages[1][90:93] == bytes([4, 0, 115])
@@ -352,7 +353,7 @@ def test_a_command_key_on_a_tv_window_refuses_menu_shortcut_icons():
     # rows of a menu may use any icon
     physical.validate(remote, {"kind": "ir", "pages": [
         {"index": 0, "buttons": []},
-        {"index": 1, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa", "glyph": 39}]}]})
+        {"index": 2, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa", "glyph": 39}]}]})
 
 
 def test_the_panel_and_the_integration_agree_on_the_fixed_types_and_shortcut_icons():
@@ -380,4 +381,4 @@ def test_an_ir_remote_is_not_saved_with_an_empty_main_page():
     # a Main with no keys is fine when menus hold the rows
     physical.validate(remote, {"kind": "ir", "pages": [
         {"index": 0, "buttons": []},
-        {"index": 1, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa"}]}]})
+        {"index": 2, "buttons": [{"index": 0, "transport": "ir", "code_hex": "aa"}]}]})

@@ -158,3 +158,62 @@ def page_only_positions(device_type: str) -> frozenset[int]:
     if fixed_softkey_functions(device_type) is None:
         return frozenset()
     return _PAGE_ONLY_POSITIONS[_profile(device_type)]
+
+
+# The number pad (window 6, `digit`; WoRWS V48 0x20029c84, decoded, not run). A key whose function is
+# 39 ("123") opens it instead of a list. It always draws the same 14 keys: the digits in a phone grid
+# (1–9, then 0 under 8) and four keys under them. Each one sends the first IR command on the remote
+# whose function is its own id (0x20022248), wherever that command is, and only IR commands are sent.
+NUMBER_PAD_LINK = 39
+# In the order Studio keeps them on the pad page: 1–9, 0, then the keys under the grid (A–D).
+NUMBER_PAD_FUNCTIONS = (41, 42, 43, 44, 45, 46, 47, 48, 49, 40, 203, 200, 201, 202)
+
+# Which window an IR remote type opens (its wire type; the custom types are their own numbers).
+_TV_WINDOW = frozenset({2, 3, 4, 16, 17, 18})
+_AUDIO_WINDOW = frozenset({11, 24})
+_INFRARED_WINDOW = frozenset({5, 7, 8, 9, 10, 12, 13, 15, 19, 21, 22, 23, 25, 26})
+# Main A–D positions that open a list page, per window (key callbacks of each window). The TV and
+# audio windows open the number pad from A whatever the key's function, never a list.
+_LIST_POSITIONS = {
+    **dict.fromkeys(_TV_WINDOW, frozenset({1, 2, 3})),
+    **dict.fromkeys(_AUDIO_WINDOW, frozenset({3})),
+    **dict.fromkeys(_INFRARED_WINDOW, frozenset({0, 1, 2, 3})),
+    1: frozenset({0, 1, 2, 3}),                         # air conditioner
+    6: frozenset({2, 3}), 20: frozenset({2, 3}),        # fan
+    14: frozenset({3}), 27: frozenset({3}),             # light
+}
+# A list link on a window that reads the key's function needs one of the menu-shortcut functions
+# other than 39, which would open the number pad. These are the stock pictures, 100 on A.
+_LIST_LINK_FUNCTIONS = (100, 20, 210, 100)
+
+
+def _window_type(device_type: str) -> int | None:
+    if str(device_type).upper() == "IR_TV":
+        return 2
+    return _wire_type(device_type)
+
+
+def number_pad_positions(device_type: str) -> frozenset[int]:
+    """Main A–D positions whose key can open the number pad on this IR remote type."""
+    wire = _window_type(device_type)
+    if wire in _TV_WINDOW or wire in _AUDIO_WINDOW:
+        return frozenset({0})
+    if wire in _INFRARED_WINDOW:
+        return frozenset({0, 1, 2, 3})
+    return frozenset()
+
+
+def number_pad_always(device_type: str) -> bool:
+    """True when the page under A is always the number pad (TV and audio windows)."""
+    wire = _window_type(device_type)
+    return wire in _TV_WINDOW or wire in _AUDIO_WINDOW
+
+
+def list_page_positions(device_type: str) -> frozenset[int] | None:
+    """Main A–D positions that open a list page, or None for a type whose window is not known."""
+    return _LIST_POSITIONS.get(_window_type(device_type))
+
+
+def list_link_functions(device_type: str) -> tuple[int, ...]:
+    """The function each A–D key carries when it opens a list page."""
+    return fixed_softkey_functions(device_type) or _LIST_LINK_FUNCTIONS

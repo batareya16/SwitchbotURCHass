@@ -1327,3 +1327,52 @@ test('a timing list and a Pronto code are converted, plain hex is kept', () => {
   assert.equal(context.irCodeFromPaste('30 30 30 FD FF 35').hex, '303030fdff35');
   assert.equal(context.irDurationsFromText('hello'), null);
 });
+
+function irPanel(deviceType, pages) {
+  const instance = panel();
+  instance._physical = { kind: 'ir', pages };
+  instance._physicalBaseline = structuredClone(instance._physical);
+  instance._physicalOrigins = {};
+  instance._pageIndex = 0;
+  instance._remote = () => ({ remote_id: 'vacuum', device_type: deviceType, pages: [] });
+  return instance;
+}
+
+test('a number pad page has its 14 keys, the missing ones as dim placeholders', () => {
+  const instance = irPanel('IR_2', [
+    { index: 0, buttons: [] },
+    { index: 1, number_pad: true, buttons: [{ index: 9, transport: 'ir', code_hex: 'aa', function: 40 }] },
+  ]);
+  const pad = instance._pages().find((page) => page.index === 1);
+  assert.equal(pad.number_pad, true);
+  assert.equal(pad.name, 'Number pad');
+  assert.equal(pad.buttons.length, 14);
+  assert.equal(pad.buttons[9].label, 'Number pad 0');
+  assert.equal(pad.buttons[9].layout_empty, false);
+  assert.equal(pad.buttons[0].layout_empty, true);
+  assert.equal(pad.buttons[0].default_function, 41);
+  assert.equal(pad.buttons[10].default_function, 203);
+  const screen = instance._renderNumberPad(pad);
+  assert.equal((screen.match(/data-button=/g) || []).length, 14);
+  assert.match(screen, /data-button="p1_k9"[^>]*>0</);
+  assert.match(screen, /scr-pad-key k [^"]* empty[^"]*"[\s\S]*?data-button="p1_k0"/);
+});
+
+test('each IR window offers a list or the number pad only where the remote opens one', () => {
+  const offers = (deviceType, index) => {
+    const instance = irPanel(deviceType, [{ index: 0, buttons: [] }]);
+    const html = instance._pageControl({ button_page: 0, button_index: index }, null);
+    return { list: html.includes('openCustomPage'), pad: html.includes('openNumberPad') };
+  };
+  assert.deepEqual(offers('IR_2', 0), { list: false, pad: true });     // TV: A is the pad
+  assert.deepEqual(offers('IR_2', 1), { list: true, pad: false });
+  assert.deepEqual(offers('IR_5', 0), { list: true, pad: true });      // DVD: either
+  assert.deepEqual(offers('IR_14', 0), { list: false, pad: false });   // light: A sends a command
+  assert.deepEqual(offers('IR_14', 3), { list: true, pad: false });
+  assert.deepEqual(offers('IR_11', 0), { list: false, pad: true });    // audio
+  // only one number pad per remote: its keys are found by function across the whole remote
+  const instance = irPanel('IR_5', [{ index: 0, buttons: [] }, { index: 1, number_pad: true, buttons: [] }]);
+  assert.ok(!instance._pageControl({ button_page: 0, button_index: 2 }, null).includes('openNumberPad'));
+  // a list cannot be moved onto a TV's A key
+  assert.deepEqual([...irPanel('IR_2', [{ index: 0, buttons: [] }])._availablePageIndexes()], [2, 3, 4]);
+});

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.53.20
+
+- New **number pad** for IR remotes, the screen the remote's "123" key opens. Select A (or, on most IR types, any of A–D) and choose **Turn key A into a number pad**. Studio shows the pad as the remote draws it: 1–9 and 0 in a phone grid with four keys under them (3-digit input, 10, 11, 12). Select a key on the pad and give it an IR code, the same way as any other key; a key without a code is drawn dim, as the remote does. The pad's keys are written with the ids the remote's pad looks for (40–49 for the digits, 203 and 200–202 under them), and the key that opens it with 39.
+- The digit pages of TV, IPTV, set-top box, DVD and audio remotes from the catalog or your account now open as this number pad in Studio, not as a list.
+- A page is only offered where the remote opens one. On TV, IPTV, set-top box and audio remotes the page under A is always the number pad, so it cannot be a list; on light, fan and air-conditioner remotes only the keys that open a page on the remote can get one (light D, fan C and D, air conditioner A–D, audio D).
+- Fix a list page under A on DVD, projector, camera and other generic IR remotes opening the number pad on the remote: Studio linked it with the "123" function. A list is now linked with a menu function that opens a list.
+- A key outside the number pad can no longer carry one of the pad's icons (0–9, 10, 11, 12, 3-digit input) while the remote has a number pad, since the pad would send that key's command.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.19
 
 - Studio no longer sends the remote a page without keys, by any path: Studio's editors, **Write again**, installs and the `send_command` action. The remote writes such a page over whichever tile sits at that position in its list. After a reorder that is another remote, which then disappears from the screen while every tile opens the one before it. Such a write is now refused before anything is sent, with "Add at least one key to the page". The one page without keys the remote needs, the start of a new IR remote's install, still goes through.

@@ -55,6 +55,30 @@ const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 11
 // The picture is drawn empty in Studio, so what it shows is what the key is: no icon.
 const NO_ICON_CODES = new Set([115, 2003]);
 
+// The remote's number pad (window 6, WoRWS V48, decoded, not run): what a "123" key opens. It
+// always draws 1–9 and 0 in a phone grid with four keys under them, and each sends the first IR
+// command on the remote whose function is its own id. Listed in the order of the pad page.
+const NUMBER_PAD_FUNCTIONS = [41, 42, 43, 44, 45, 46, 47, 48, 49, 40, 203, 200, 201, 202];
+const NUMBER_PAD_LABELS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "3-digit", "10", "11", "12"];
+// IR remote types by the window they open (same tables as ir_glyphs.py). The TV and audio windows
+// open the number pad from A and never a list; the generic IR window opens it from a key whose
+// function is 39 and a list from any other menu key.
+const IR_TV_WINDOW = new Set([2, 3, 4, 16, 17, 18]);
+const IR_AUDIO_WINDOW = new Set([11, 24]);
+const IR_INFRARED_WINDOW = new Set([5, 7, 8, 9, 10, 12, 13, 15, 19, 21, 22, 23, 25, 26]);
+// Main A–D positions (A = 0) that open a list on the fixed-picture windows.
+const IR_FIXED_LIST_POSITIONS = { 1: [0, 1, 2, 3], 6: [2, 3], 20: [2, 3], 14: [3], 27: [3] };
+
+function irPagePositions(deviceType) {
+  const text = String(deviceType || "").toUpperCase();
+  const type = text === "IR_TV" ? 2 : Number.parseInt(text.replace(/^IR_/, ""), 10);
+  if (IR_TV_WINDOW.has(type)) return { pad: [0], list: [1, 2, 3] };
+  if (IR_AUDIO_WINDOW.has(type)) return { pad: [0], list: [3] };
+  if (IR_INFRARED_WINDOW.has(type)) return { pad: [0, 1, 2, 3], list: [0, 1, 2, 3] };
+  // A window Studio does not know opens a list from any of A–D, as before.
+  return { pad: [], list: IR_FIXED_LIST_POSITIONS[type] || [0, 1, 2, 3] };
+}
+
 // The remote's own IR code: a fixed header, then every pulse and pause in 16 µs ticks (one byte
 // below 0x80, two bytes flagged 0x80, four bytes flagged 0xC0), 00, and the byte sum of all before.
 // Read from codes the remote already holds; the header is the same on every one of them.
@@ -669,7 +693,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const supported = this._physical?.kind === "native"
       ? (profile?.subpages || []).filter((page) => page.link_index != null)
         .map((page) => ({ index: page.index, link: page.link_index }))
-      : [1, 2, 3, 4].map((index) => ({ index, link: index - 1 }));
+      : [1, 2, 3, 4].map((index) => ({ index, link: index - 1 }))
+        .filter(({ link }) => this._physical?.kind !== "ir" || this._irPagePositions().list.includes(link));
     return supported.filter(({ index, link }) => !current.has(index)
       && !mainButtons.some((key) => key.index === link)).map(({ index }) => index);
   }
@@ -717,9 +742,16 @@ class SwitchBotUrcPanel extends HTMLElement {
             if (this._physical.kind !== "native") return true;
             return nativeProfile?.main_positions?.includes(index);
           }) : [];
+        // A number pad always has its 14 keys; one with no command is a placeholder, as the remote
+        // draws it dimmed. Anything else left on such a page comes after them.
         const physicalKeys = page.index === 0
           ? visibleMainPositions.map((index) => page.buttons.find((item) => item.index === index)
-            || { index }) : page.buttons;
+            || { index })
+          : page.number_pad
+            ? [...NUMBER_PAD_FUNCTIONS.map((padFunction, index) =>
+              page.buttons.find((item) => item.index === index) || { index, pad_function: padFunction }),
+            ...page.buttons.filter((item) => item.index >= NUMBER_PAD_FUNCTIONS.length)]
+            : page.buttons;
         const buttons = physicalKeys.map((key) => {
           const currentId = `p${page.index}_k${key.index}`;
           const origin = this._physicalOrigins[currentId];
@@ -737,25 +769,28 @@ class SwitchBotUrcPanel extends HTMLElement {
             button_id: currentId,
             button_page: page.index,
             button_index: key.index,
-            button_function: key.function ?? source?.button_function ?? profileKey?.function ?? 0,
+            button_function: key.function ?? key.pad_function ?? source?.button_function ?? profileKey?.function ?? 0,
             button_glyph: key.glyph,
             // A main-page position the layout has no key for (one that was removed): it is empty on
             // the remote, so the face must not draw the stock profile's picture on it.
-            layout_empty: page.index === 0 && !page.buttons.includes(key),
-            default_function: source?.default_function ?? profileKey?.function,
+            layout_empty: (page.index === 0 || page.number_pad) && !page.buttons.includes(key),
+            default_function: key.pad_function ?? source?.default_function ?? profileKey?.function,
             layout_state: page.buttons.includes(key)
               ? this._layoutState({ button_page: page.index, button_index: key.index }) : "unchanged",
             position: page.index === 0 ? positions[key.index] || "" : "",
             // The remote writes a row's caption from the picture (glyph) it carries, so that is the
             // caption to show; the stock function's name only describes the row's command.
             label: page.index === 0 ? positions[key.index] || functionLabel
-              : key.title || glyphCaption || source?.label || functionLabel,
+              : page.number_pad && key.index < NUMBER_PAD_FUNCTIONS.length
+                ? `Number pad ${NUMBER_PAD_LABELS[key.index]}`
+                : `${key.title || glyphCaption || source?.label || functionLabel}${page.number_pad ? " (not on the number pad)" : ""}`,
             actions: source?.actions || [],
             mode: source?.mode || "preset",
             has_override: source?.has_override || false,
           };
         });
-        return { index: page.index, name: page.title || (page.index === 0 ? "Main" : `Page ${"ABCD"[page.index - 1]}`), buttons };
+        return { index: page.index, number_pad: Boolean(page.number_pad),
+          name: page.title || (page.index === 0 ? "Main" : page.number_pad ? "Number pad" : `Page ${"ABCD"[page.index - 1]}`), buttons };
       });
     }
     const pages = [...(this._remote()?.pages || [])];
@@ -980,6 +1015,23 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _renderPageEditor(page, button, remote) {
+    if (page.number_pad) {
+      const set = page.buttons.filter((item) => !item.layout_empty).length;
+      return `<section class="page-editor">
+        <div>
+          <span class="page-kicker">Number pad · key ${"ABCD"[page.index - 1]}</span>
+          <div class="page-heading">
+            <h2>Number pad</h2>
+            <button class="secondary compact destructive" id="removeThisPage" ${this._physicalBusy ? "disabled" : ""}>Delete number pad</button>
+          </div>
+          <p class="small">${set} of ${NUMBER_PAD_FUNCTIONS.length} keys have a command</p>
+        </div>
+        <div class="explanation"><b>The remote's own number pad.</b><span>It always shows 1–9 and 0
+          with four keys under them (3-digit input, 10, 11, 12). Select a key on the pad to give it
+          an IR code; a key without one is drawn dim and does nothing.</span></div>
+        ${button ? this._editor(button, remote) : ""}
+      </section>`;
+    }
     const editingMenu = this._pageEditing || !button;
     const freePages = this._availablePageIndexes();
     const row = page.buttons.findIndex((item) => item.button_id === button?.button_id);
@@ -1313,6 +1365,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _renderScreen(page) {
     // Real HTML inside the SVG screen, so the list scrolls like the device's own does instead
     // of silently cutting off whatever does not fit.
+    if (page?.number_pad) return this._renderNumberPad(page);
     if ((page?.index ?? 0) !== 0) {
       const keys = page?.buttons || [];
       if (!keys.length) {
@@ -1373,6 +1426,28 @@ class SwitchBotUrcPanel extends HTMLElement {
       ? `<div class="scr-row on"><button class="k pick-remote" type="button" data-scene-appearance>
           <span class="scene-tile" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${this._scenePanel.draft.color}.png)">${this._sceneIcon(this._scenePanel.draft.icon)}</span>
           <span class="nm">${escapeHtml(this._scenePanel.draft.name || "New scene")}</span></button></div>` : "");
+  }
+
+  // The number pad as the remote draws it: 1–9 and 0 under 8, four keys below, a key with no
+  // command dimmed. Keys left on the page that the pad does not show are listed under it.
+  _renderNumberPad(page) {
+    const cell = (item, extraClass = "") => {
+      if (!item) return '<span class="scr-pad-gap" aria-hidden="true"></span>';
+      const [status] = this._status(item);
+      const on = item.button_id === this._buttonId;
+      const draft = this._draftLabel(item);
+      return `<div class="scr-pad-key k ${status}${extraClass}${item.layout_empty ? " empty" : ""}${on ? " on" : ""}${draft ? " unsaved" : ""}"
+        role="button" tabindex="0" data-button="${escapeHtml(item.button_id)}"
+        title="${escapeHtml(item.label)}${item.layout_empty ? " · no command yet" : ""}">${escapeHtml(NUMBER_PAD_LABELS[item.button_index])}</div>`;
+    };
+    const keys = page.buttons;
+    const digits = keys.slice(0, 9).map((item) => cell(item)).join("")
+      + cell(null) + cell(keys[9]) + cell(null);
+    const below = keys.slice(10, 14).map((item) => cell(item, " soft")).join("");
+    const others = keys.slice(14).map((item) => `<div class="scr-row k ${this._status(item)[0]}${item.button_id === this._buttonId ? " on" : ""}"
+        role="button" tabindex="0" data-button="${escapeHtml(item.button_id)}" title="${escapeHtml(item.label)}">
+        <span class="nm">${escapeHtml(item.label)}</span></div>`).join("");
+    return `<div class="scr-pad">${digits}</div><div class="scr-pad soft">${below}</div>${others}`;
   }
 
   _renderAppearance(remote) {
@@ -3199,13 +3274,13 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._render();
       }));
 
-    root.getElementById("openCustomPage")?.addEventListener("click", () => {
+    const openSubpage = (numberPad) => {
       const index = button.button_index + 1;
       const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
       if (this._physical.kind === "native" && !nativeProfile?.pages?.includes(index)) return;
       const home = this._physical.pages.find((item) => item.index === 0);
       if (!home || this._physical.pages.some((item) => item.index === index)) return;
-      this._physical.pages.push({ index, buttons: [] });
+      this._physical.pages.push(numberPad ? { index, number_pad: true, buttons: [] } : { index, buttons: [] });
       this._physical.pages.sort((a, b) => a.index - b.index);
       // The key gives up its command: the firmware will not let it both open a page and send.
       home.buttons = home.buttons.filter((item) => item.index !== button.button_index);
@@ -3214,11 +3289,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._mappingDrafts().delete(id);
       this._selectButton(null, false);
       this._pageIndex = index;
-      this._buttonId = null;
-      this._pageEditing = true;
+      this._buttonId = numberPad ? `p${index}_k0` : null;
+      this._pageEditing = !numberPad;
       this._physicalStatus = "";
       this._render();
-    });
+    };
+    root.getElementById("openCustomPage")?.addEventListener("click", () => openSubpage(false));
+    root.getElementById("openNumberPad")?.addEventListener("click", () => openSubpage(true));
 
     root.getElementById("addKeyHere")?.addEventListener("click", () => {
       const target = this._physical.pages.find((item) => item.index === button.button_page);
@@ -3344,6 +3421,17 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
 
     root.getElementById("removeKey")?.addEventListener("click", () => {
+      if (page.number_pad && page.buttons.length > 1) {
+        // A pad key keeps its place: the others are not renumbered as menu rows are.
+        page.buttons = page.buttons.filter((item) => item !== key);
+        const id = `p${page.index}_k${key.index}`;
+        delete this._physicalOrigins[id];
+        this._mappingDrafts().delete(id);
+        this._selectButton(this._page()?.buttons.find((item) => item.button_index === key.index) || null, false);
+        this._physicalStatus = "";
+        this._render();
+        return;
+      }
       if (page.index) {
         this._removeMenuRow(page, key);
         return;
@@ -3461,12 +3549,25 @@ class SwitchBotUrcPanel extends HTMLElement {
       return `<p class="small">Key <b>${letter}</b> already opens <b>${escapeHtml(existing.name)}</b>.
         <button class="link-button" data-page-link="${target}">Open it</button></p>`;
     }
+    const ir = this._physical.kind === "ir" ? this._irPagePositions() : null;
+    const canList = !ir || ir.list.includes(index);
+    const canPad = Boolean(ir?.pad.includes(index)) && !this._physical.pages.some((item) => item.number_pad);
+    if (!canList && !canPad) return "";
     return `<div class="key-actions">
-        <button class="secondary compact" id="openCustomPage">Turn key ${letter} into a page</button>
+        ${canList ? `<button class="secondary compact" id="openCustomPage">Turn key ${letter} into a page</button>` : ""}
+        ${canPad ? `<button class="secondary compact" id="openNumberPad">Turn key ${letter} into a number pad</button>` : ""}
       </div>
-      <p class="small">The key stops sending a command and instead opens a new screen of its
+      ${canList ? `<p class="small">The key stops sending a command and instead opens a new screen of its
         own, where you can put as many buttons as fit. That is how the remote works: a key does
-        one or the other, never both.</p>`;
+        one or the other, never both.</p>` : ""}
+      ${canPad ? `<p class="small">A number pad is the remote's "123" screen: 1–9 and 0 with four keys
+        under them, each sending the IR code you give it.${canList ? "" : ` On this type of remote key
+        ${letter} can only open the number pad.`}</p>` : ""}`;
+  }
+
+  // Where this IR remote's window opens a list page or the number pad (A = 0).
+  _irPagePositions() {
+    return irPagePositions(this._remote()?.device_type);
   }
 
   // True when this IR remote's window draws a fixed picture on Main A-D.
@@ -3559,6 +3660,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       }</select></label>` : ""}
       ${key.transport === "ir" ? `
         ${this._fixedSoftkeys() && !page.index && key.index < 4 ? FIXED_SOFTKEY_NOTE
+          : page.number_pad && key.index < NUMBER_PAD_FUNCTIONS.length ? ""
           : (kind === "hid" || kind === "ir") && (page.index || key.index < 4)
             ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function ?? (kind === "hid" ? 0x07D3 : 115),
               Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => code > 0
@@ -3579,7 +3681,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         <p class="small" data-code-note></p>
         ${this._renderCatalogPicker()}` : ""}
       <div class="key-actions">
-        ${button.button_page || linkedPage ? "" : clearKey}
+        ${(button.button_page && !page.number_pad) || linkedPage ? "" : clearKey}
       </div>
       ${pageControl}
     </div>`;
@@ -4471,6 +4573,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row.custom .nm{color:#8df0bd}.scr-row.disabled .nm{color:#ff9aa2}
       .scr-row.on .nm{color:#fff}
       .scr-row.unsaved{outline:1px dashed #ffffff80;outline-offset:-1px}
+      .scr-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:6px 12px}
+      .scr-pad.soft{grid-template-columns:repeat(4,1fr);gap:4px;padding-top:2px}
+      .scr-pad-key{display:grid;place-items:center;height:30px;border:1px solid #ffffff40;border-radius:8px;
+        font:700 15px/1 system-ui,sans-serif;cursor:pointer}
+      .scr-pad-key.soft{height:24px;font-size:10px}
+      .scr-pad-key.empty{opacity:.4;border-style:dashed}
+      .scr-pad-key:hover{background:#ffffff14}.scr-pad-key.on{background:#ffffff2e;opacity:1}
+      .scr-pad-key.custom{color:#8df0bd}.scr-pad-key.unsaved{outline:1px dashed #ffffff80;outline-offset:1px}
+      .scr-pad-key:focus-visible{outline:2px solid #03a9f4;outline-offset:-2px}
       .remote-button.unsaved{border-style:dashed}
       .remote-button.none i{display:none}
       .legend i.unsaved{width:12px;border:1px dashed currentColor;border-radius:3px}

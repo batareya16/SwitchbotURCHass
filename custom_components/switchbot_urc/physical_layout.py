@@ -6,8 +6,9 @@ from pathlib import Path
 
 from . import commands as c
 from .ir_glyphs import (
-    MENU_SHORTCUT_FUNCTIONS, catalog_glyphs, fixed_softkey_functions, page_only_positions,
-    stock_softkey_glyphs,
+    MENU_SHORTCUT_FUNCTIONS, NUMBER_PAD_FUNCTIONS, NUMBER_PAD_LINK, catalog_glyphs,
+    fixed_softkey_functions, list_link_functions, list_page_positions, number_pad_always,
+    number_pad_positions, page_only_positions, stock_softkey_glyphs,
 )
 
 
@@ -63,6 +64,105 @@ def _restore_ir_menu_links(remote: dict, pages: list[dict]) -> None:
         number = page["index"]
         if number in records:
             page.setdefault("link_record", records[number])
+
+
+def _key_function(key: dict) -> int | None:
+    """The firmware function an IR key carries: its icon for a typed code, else its record's."""
+    if key.get("transport") == "stored":
+        try:
+            return int.from_bytes(bytes.fromhex(str(key.get("record", "")))[1:3], "big")
+        except ValueError:
+            return None
+    value = key.get("glyph", key.get("function"))
+    return value if type(value) is int else None
+
+
+def _link_function(page: dict) -> int | None:
+    try:
+        record = bytes.fromhex(str(page.get("link_record") or ""))
+    except ValueError:
+        return None
+    return int.from_bytes(record[1:3], "big") if len(record) == 36 else None
+
+
+def _place_number_pad_keys(page: dict) -> None:
+    """Give each number pad key the position of its function; anything else goes after them."""
+    placed, others, taken = [], [], set()
+    for key in sorted(page.get("buttons", []), key=lambda item: item.get("index", 0)):
+        function = _key_function(key)
+        if function in NUMBER_PAD_FUNCTIONS and function not in taken:
+            taken.add(function)
+            placed.append({**key, "index": NUMBER_PAD_FUNCTIONS.index(function)})
+        else:
+            others.append(key)
+    for offset, key in enumerate(others):
+        placed.append({**key, "index": len(NUMBER_PAD_FUNCTIONS) + offset})
+    page["buttons"] = placed
+
+
+def _mark_number_pads(device_type: str, pages: list[dict]) -> None:
+    """Mark the pages the remote shows as its number pad rather than as a list.
+
+    The TV and audio windows always open the number pad from A; the other IR windows open it from
+    a key whose function is 39 and a list from any other menu key.
+    """
+    positions = number_pad_positions(device_type)
+    for page in pages:
+        number = page["index"]
+        if not number or number - 1 not in positions:
+            page.pop("number_pad", None)
+            continue
+        if (number_pad_always(device_type) or page.get("number_pad")
+                or _link_function(page) == NUMBER_PAD_LINK):
+            page["number_pad"] = True
+            _place_number_pad_keys(page)
+        else:
+            page.pop("number_pad", None)
+
+
+def _check_number_pad_keys(buttons) -> None:
+    """Only the pad's own keys, once each, at the position of their function."""
+    if not isinstance(buttons, list):
+        return
+    seen = set()
+    for key in buttons:
+        function = _key_function(key) if isinstance(key, dict) else None
+        if key.get("transport") not in ("ir", "stored") or function not in NUMBER_PAD_FUNCTIONS:
+            raise ValueError("A number pad holds only the digits 0–9 and the four keys under "
+                             "them; remove the other keys from it")
+        if function in seen:
+            raise ValueError("A number pad key is there twice")
+        seen.add(function)
+        key["index"] = NUMBER_PAD_FUNCTIONS.index(function)
+
+
+def _check_ir_pages(device_type: str, pages: list[dict]) -> None:
+    """Refuse a page the remote's window would not open the way Studio shows it."""
+    pad_positions = number_pad_positions(device_type)
+    list_positions = list_page_positions(device_type)
+    pad_pages = [page for page in pages if page.get("number_pad")]
+    for page in pages:
+        number = page["index"]
+        if not number:
+            continue
+        letter = "ABCD"[number - 1]
+        if page.get("number_pad"):
+            if number - 1 not in pad_positions:
+                raise ValueError(f"Key {letter} cannot open a number pad on this type of remote")
+            continue
+        if number == 1 and number_pad_always(device_type):
+            raise ValueError("Key A opens the number pad on this type of remote, not a list")
+        if list_positions is not None and number - 1 not in list_positions:
+            raise ValueError(f"Key {letter} cannot open a page on this type of remote")
+    if pad_pages:
+        for page in pages:
+            if page.get("number_pad"):
+                continue
+            for key in page["buttons"]:
+                if _key_function(key) in NUMBER_PAD_FUNCTIONS and key.get("transport") != "icon":
+                    raise ValueError("A key outside the number pad uses a number pad icon (0–9, "
+                                     "10, 11, 12 or 3-Digit Input); the number pad would send that "
+                                     "key's command. Choose another icon for it")
 
 
 def native_appearance(remote: dict) -> dict:
@@ -334,6 +434,7 @@ def draft_for(remote: dict) -> dict:
                     page.setdefault("title", titles.get(str(page["index"]), ""))
         elif draft.get("kind") == "ir":
             _restore_ir_menu_links(remote, draft["pages"])
+            _mark_number_pads(str(remote.get("device_type", "")), draft["pages"])
         return draft
     device_type = str(remote.get("device_type", "")).upper()
     if device_type in c.DEVTYPE:
@@ -386,6 +487,7 @@ def draft_for(remote: dict) -> dict:
     if not pages:
         raise ValueError("Physical pages are unavailable. Reinstall this IR profile once to cache its commands.")
     _restore_ir_menu_links(remote, pages)
+    _mark_number_pads(device_type, pages)
     return {"kind": "ir", "pages": pages}
 
 
@@ -451,6 +553,10 @@ def validate(remote: dict, draft: dict) -> dict:
         seen_pages.add(number)
         if "title" in page:
             page["title"] = _menu_title(page["title"])
+        if "number_pad" in page:
+            if page["number_pad"] is not True or expected != "ir" or not number:
+                raise ValueError("Only a page of an IR remote can be a number pad")
+            _check_number_pad_keys(page.get("buttons"))
         buttons = page.get("buttons")
         if fixed_softkeys and number == 0 and isinstance(buttons, list):
             # This window draws a fixed picture on A–D and ignores any icon, so a chosen icon is
@@ -542,6 +648,8 @@ def validate(remote: dict, draft: dict) -> dict:
             raise ValueError("Native submenu positions must be consecutive starting at zero")
     if 0 not in seen_pages:
         raise ValueError("The Main page is required")
+    if expected == "ir":
+        _check_ir_pages(device_type, pages)
     if expected in ("native", "hid", "ir"):
         main = next(page for page in pages if page["index"] == 0)
         reserved = {number - 1 for number in seen_pages if number}
@@ -632,10 +740,15 @@ def compile_pages(
                 for child in draft["pages"]:
                     if child["index"]:
                         position = child["index"] - 1
-                        if child.get("link_record"):
+                        number_pad = bool(child.get("number_pad"))
+                        # 39 opens the number pad and any other menu function a list, so a cached
+                        # link is kept only while it still opens what the page is.
+                        if (child.get("link_record")
+                                and (_link_function(child) == NUMBER_PAD_LINK) == number_pad):
                             records.append(bytes([position]) + bytes.fromhex(child["link_record"])[1:])
                         else:
-                            function = (stock_softkeys or (39, 20, 210, 100))[position]
+                            function = (NUMBER_PAD_LINK if number_pad
+                                        else list_link_functions(device_type)[position])
                             records.append(bytes([position]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
                 if len(records) > 18:
                     raise ValueError("Main page has more than 18 commands including page links")
