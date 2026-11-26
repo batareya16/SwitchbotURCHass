@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from dataclasses import asdict
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
 
+from . import cloud_sync
 from .cloud import parse_communication_credentials
 from .const import CONF_KEY, CONF_KEY_ID, DOMAIN
 from .cloud_ir import account_ir_codes, find_cloud_items
@@ -148,7 +150,80 @@ async def ws_cloud_ir_codes(hass, connection, msg):
         connection.send_error(msg["id"], "cloud_codes_failed", str(err))
 
 
+async def _sync_inputs(hass, entry):
+    """The remote's table and scenes, and the account's bound list, read together."""
+    from . import studio_physical, studio_scenes
+    from .studio_remotes import _client, remote_management_lock
+
+    client = _client(hass, entry)
+    async with remote_management_lock(hass):
+        table = await studio_physical.read_device_table(hass, entry, client)
+        scenes = [asdict(scene) for scene in (await studio_scenes._read(client)).values()]
+    cloud = cloud_client(hass, entry)
+    payload = await cloud.get_bindable_devices()
+    bound = [item for item in (payload or {}).get("bindDevices", []) if isinstance(item, dict)]
+    known = {str(item["remoteID"]) for key in ("bindDevices", "remotes")
+             for item in (payload or {}).get(key, []) if isinstance(item, dict) and item.get("remoteID")}
+    return cloud, table, scenes, bound, known, payload
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/cloud/sync_status",
+    vol.Required("entry_id"): str,
+})
+@websocket_api.async_response
+async def ws_cloud_sync_status(hass, connection, msg):
+    """What the SwitchBot app would report as different between the account and the remote."""
+    try:
+        entry = _entry(hass, msg)
+        if not entry.data.get("cloud"):
+            raise ValueError("Connect the SwitchBot account first")
+        _cloud, table, scenes, bound, _known, _payload = await _sync_inputs(hass, entry)
+        connection.send_result(msg["id"], {"differences": cloud_sync.differences(bound, table, scenes)})
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio sync check failed")
+        connection.send_error(msg["id"], "cloud_sync_check_failed", str(err))
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/cloud/sync",
+    vol.Required("entry_id"): str,
+})
+@websocket_api.async_response
+async def ws_cloud_sync(hass, connection, msg):
+    """List exactly what is on the remote as this Universal Remote's remotes in the account."""
+    try:
+        entry = _entry(hass, msg)
+        if not entry.data.get("cloud"):
+            raise ValueError("Connect the SwitchBot account first")
+        cloud, table, scenes, bound, known, _payload = await _sync_inputs(hass, entry)
+        steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes)
+        if steps["create"]:
+            await cloud.create_ir_remotes(steps["create"])
+        if steps["remove"]:
+            await cloud.delete_bind_devices(steps["remove"])
+        if steps["items"]:
+            await cloud.update_bind_devices(steps["items"])
+        after = await cloud.get_bindable_devices()
+        bound_after = [item for item in (after or {}).get("bindDevices", []) if isinstance(item, dict)]
+        options = deepcopy(dict(entry.options))
+        options["cloud_remotes"] = cloud_items(after)
+        hass.config_entries.async_update_entry(entry, options=options)
+        connection.send_result(msg["id"], {
+            "created": len(steps["create"]), "removed": len(steps["remove"]),
+            "listed": len(steps["items"]), "skipped": steps["skipped"],
+            "differences": cloud_sync.differences(bound_after, table, scenes),
+        })
+    except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
+        _LOGGER.exception("Remote Studio account sync failed")
+        connection.send_error(msg["id"], "cloud_sync_failed", str(err))
+
+
 def register(hass) -> None:
+    websocket_api.async_register_command(hass, ws_cloud_sync_status)
+    websocket_api.async_register_command(hass, ws_cloud_sync)
     websocket_api.async_register_command(hass, ws_cloud_ir_codes)
     websocket_api.async_register_command(hass, ws_cloud_status)
     websocket_api.async_register_command(hass, ws_cloud_refresh)

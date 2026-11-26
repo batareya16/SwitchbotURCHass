@@ -26,7 +26,7 @@ from .catalog import DEVICE_TYPES, ICON_CHOICES, ICONS
 from .cloud import CloudError
 from .cloud_ir import blank_profile, find_cloud_items, generate_remote_id, profile_from_cloud
 from .const import DOMAIN, RESP_OK
-from .inventory import stable_id_for_local
+from .inventory import UNBOUND_MARK, stable_id_for_local
 from .studio_catalog import cloud_client
 from .studio_physical import (
     cached_device_table, local_identity_bytes, read_device_table, resolve, store_device_table,
@@ -602,11 +602,10 @@ async def _install_ir_remote(hass, connection, msg):
                 remote_id, str(record.get("createFrom") or "hub")))
             if not downloaded:
                 raise ValueError("The account holds no IR record for that remote")
-            # An account remote is always installed as a new remote under a fresh id, like a
-            # catalog one: the remote then holds nothing under that id (a half-written earlier
-            # upload, a copy that is already installed), and no existing remote is overwritten.
+            # An account remote is installed under its own id, as the app does, so the account
+            # can list it as a remote of this Universal Remote (one install per account remote).
             profile = profile_from_cloud(
-                downloaded[0], remote_id=generate_remote_id(), name=name, metadata=record)
+                downloaded[0], remote_id=remote_id, name=name, metadata=record)
 
         client = _client(hass, entry)
         status: list[str] = []
@@ -623,6 +622,9 @@ async def _install_ir_remote(hass, connection, msg):
         )
         if errors.get("base") in {"ir_device_table_full", "ir_capacity_full"}:
             raise ValueError("No more IR remotes can be added. You can replace an installed IR remote.")
+        if errors.get("replace_existing"):
+            raise ValueError("This remote from your account is already on the Universal Remote. "
+                             "Use Write again on it, or delete it first to install it afresh.")
         if errors or installed is None:
             raise ValueError(
                 f"{'; '.join(errors.values()) or 'install failed'}"
@@ -648,6 +650,21 @@ async def _install_ir_remote(hass, connection, msg):
                 _LOGGER.warning("catalog IR cloud save failed: %s", err)
                 cloud_warning = (
                     "Installed on the remote, but saving it to the SwitchBot account failed."
+                )
+        if source == "cloud" and cloud is not None:
+            # Listed in the account as a remote of this Universal Remote, as the app would.
+            try:
+                await cloud.link_account_ir(
+                    remote_id=remote_id, remote_index=remote_index, name=name,
+                    remote_type=profile.device_type,
+                    created_from=str(record.get("createFrom") or "hub"),
+                    register=bool(record.get(UNBOUND_MARK)),
+                )
+            except CloudError as err:
+                _LOGGER.warning("account IR cloud binding failed: %s", err)
+                cloud_warning = (
+                    "Installed on the remote, but the SwitchBot account could not list it "
+                    "as a remote of this Universal Remote."
                 )
         connection.send_result(msg["id"], {
             "remote_id": installed["remote_id"], "slot": remote_index,

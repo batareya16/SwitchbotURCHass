@@ -168,26 +168,7 @@ async def ws_save_scene(hass, connection, msg):
                 if actions:
                     bindings[str(index)] = {"scene": asdict(scene), "actions": actions}
             if target != current:
-                packet = build_scene_list(list(target.values()))
-                runtime["scene_write_unverified"] = True
-                response = b""
-                actual = None
-                try:
-                    replies = await client.send_command_sequence(
-                        [packet], readback_subcommand=SCENE_LIST_QUERY
-                    )
-                    if replies:
-                        response = replies[0]
-                    if len(replies) == 2:
-                        actual = parse_scene_list(replies[1])
-                except Exception:
-                    _LOGGER.debug("Scene transaction returned no usable readback", exc_info=True)
-                if actual is None:
-                    actual = await _read(client)
-                if actual != target:
-                    runtime["scene_write_unverified"] = actual != current
-                    detail = f" (response {response.hex()})" if response else ""
-                    raise ValueError(f"The remote did not save the requested scene list{detail}")
+                await _write_scene_list(client, runtime, current, target)
             _store_bindings(hass, entry, bindings)
             runtime["scene_write_unverified"] = False
             runtime["studio_scenes"] = _result(target, bindings)
@@ -197,6 +178,86 @@ async def ws_save_scene(hass, connection, msg):
         connection.send_error(msg["id"], "scene_save_failed", str(err))
         return
     connection.send_result(msg["id"], _result(target, bindings))
+
+
+async def _write_scene_list(client, runtime, current, target):
+    """Write the whole scene list and read it back; refuse anything but exactly `target`."""
+    packet = build_scene_list(list(target.values()))
+    runtime["scene_write_unverified"] = True
+    response = b""
+    actual = None
+    try:
+        replies = await client.send_command_sequence([packet], readback_subcommand=SCENE_LIST_QUERY)
+        if replies:
+            response = replies[0]
+        if len(replies) == 2:
+            actual = parse_scene_list(replies[1])
+    except Exception:
+        _LOGGER.debug("Scene transaction returned no usable readback", exc_info=True)
+    if actual is None:
+        actual = await _read(client)
+    if actual != target:
+        runtime["scene_write_unverified"] = actual != current
+        detail = f" (response {response.hex()})" if response else ""
+        raise ValueError(f"The remote did not save the requested scene list{detail}")
+
+
+def reorder_scenes(current, bindings, order):
+    """The scene list in a new order, and the Home Assistant actions that follow their scenes.
+
+    The remote shows its scenes by number, after all the remotes; there is no command to move one,
+    so the list is written again with the scenes numbered 0, 1, 2… in the new order. A press
+    announces the number, so each scene's actions move to its new number with it.
+    """
+    if sorted(order) != sorted(current) or len(set(order)) != len(order):
+        raise ValueError("The new order must list every scene exactly once")
+    target, moved = {}, {}
+    for new_index, old_index in enumerate(order):
+        old = current[old_index]
+        scene = Scene(new_index, old.name, old.icon, old.color)
+        target[new_index] = scene
+        binding = bindings.get(str(old_index))
+        if binding:
+            moved[str(new_index)] = {**deepcopy(binding), "scene": asdict(scene)}
+    return target, moved
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/studio/scenes/reorder",
+    vol.Required("entry_id"): str,
+    vol.Required("expected"): [_SCENE_FIELDS],
+    # The scenes' current numbers, in the order they should have afterwards.
+    vol.Required("order"): [vol.All(int, vol.Range(min=0, max=SCENE_LIMIT - 1))],
+})
+@websocket_api.async_response
+async def ws_reorder_scenes(hass, connection, msg):
+    entry, runtime = _entry_and_runtime(hass, connection, msg)
+    if entry is None:
+        return
+    client = runtime["client"]
+    try:
+        async with remote_management_lock(hass):
+            current = await _read(client)
+            expected = {row["index"]: Scene(**row) for row in msg["expected"]}
+            bindings = _reconcile_bindings(entry, current)
+            if current != expected:
+                _store_bindings(hass, entry, bindings)
+                runtime["scene_write_unverified"] = False
+                raise ValueError("The scene list changed on the remote. Refresh it first.")
+            target, moved = reorder_scenes(current, bindings, list(msg["order"]))
+            if target != current:
+                await _write_scene_list(client, runtime, current, target)
+            _store_bindings(hass, entry, moved)
+            runtime["scene_write_unverified"] = False
+            runtime["studio_scenes"] = _result(target, moved)
+            runtime.pop("studio_scenes_error", None)
+    except Exception as err:
+        _LOGGER.debug("Remote Studio scene reorder failed", exc_info=True)
+        connection.send_error(msg["id"], "scene_reorder_failed", str(err))
+        return
+    connection.send_result(msg["id"], {**_result(target, moved),
+                                       "moved": {str(old): new for new, old in enumerate(msg["order"])}})
 
 
 async def _run_scene_actions(hass, entry, index):
@@ -269,4 +330,5 @@ def listen_for_scenes(hass, entry, runtime):
 
 def register(hass):
     websocket_api.async_register_command(hass, ws_save_scene)
+    websocket_api.async_register_command(hass, ws_reorder_scenes)
     websocket_api.async_register_command(hass, ws_test_scene)

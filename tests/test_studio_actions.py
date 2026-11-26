@@ -739,3 +739,57 @@ def test_a_key_that_copies_another_buttons_quick_bind_says_which(studio):
     alone = [{"index": 0, "buttons": [record(0, 5, "OFF", "OFF")]}]
     studio._mark_shared_presets(alone)
     assert "preset_copies" not in alone[0]["buttons"][0]
+
+
+def test_scenes_are_reordered_by_rewriting_the_list_and_their_actions_follow(studio):
+    # The remote shows its scenes by number after all the remotes, and has no command to move one:
+    # the list is written again numbered in the new order, and each scene's actions move with it.
+    scenes = studio.studio_scenes
+    sleep = {"index": 0, "name": "Sleep", "icon": 21, "color": 6}
+    movie = {"index": 3, "name": "Movie", "icon": 18, "color": 2}
+    sleep_actions = [{"action": "scene.turn_on", "target": {"entity_id": "scene.sleep"}}]
+    movie_actions = [{"action": "script.turn_on", "target": {"entity_id": "script.movie"}}]
+    entry = types.SimpleNamespace(domain="switchbot_urc", options={"scene_bindings": {
+        "0": {"scene": sleep, "actions": sleep_actions},
+        "3": {"scene": movie, "actions": movie_actions},
+    }})
+
+    def frame(*rows):
+        packet = scenes.build_scene_list([scenes.Scene(**row) for row in rows])
+        return b"\x01\0\0\0" + packet[3:7] + packet[7:]
+
+    moved_movie = {**movie, "index": 0}
+    moved_sleep = {**sleep, "index": 1}
+    written = []
+
+    async def query(_subcommand):
+        return frame(sleep, movie)
+
+    async def sequence(commands, *, readback_subcommand):
+        written.extend(commands)
+        return [b"\x01", frame(moved_movie, moved_sleep)]
+
+    runtime = {"client": types.SimpleNamespace(query=query, send_command_sequence=sequence)}
+    hass = types.SimpleNamespace(
+        data={"switchbot_urc": {"entry": runtime}},
+        config_entries=types.SimpleNamespace(
+            async_get_entry=lambda _: entry,
+            async_update_entry=lambda item, *, options: setattr(item, "options", options),
+        ),
+    )
+    results, errors = [], []
+    connection = types.SimpleNamespace(
+        send_result=lambda _, payload: results.append(payload),
+        send_error=lambda _, code, message: errors.append((code, message)),
+    )
+    asyncio.run(scenes.ws_reorder_scenes(hass, connection, {
+        "id": 1, "entry_id": "entry", "expected": [sleep, movie], "order": [3, 0]}))
+    assert not errors and results
+    assert written == [scenes.build_scene_list([scenes.Scene(**moved_movie), scenes.Scene(**moved_sleep)])]
+    bindings = entry.options["scene_bindings"]
+    assert bindings["0"] == {"scene": moved_movie, "actions": movie_actions}
+    assert bindings["1"] == {"scene": moved_sleep, "actions": sleep_actions}
+    assert results[0]["moved"] == {"3": 0, "0": 1}
+    # an order that drops or repeats a scene is refused before anything is written
+    with pytest.raises(ValueError):
+        scenes.reorder_scenes({0: scenes.Scene(**sleep), 3: scenes.Scene(**movie)}, {}, [3, 3])

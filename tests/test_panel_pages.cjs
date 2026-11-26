@@ -1482,3 +1482,73 @@ test('copy from a button lists this remote\'s keys and the account\'s, named by 
   instance._accountCodes = { loading: true, codes: [] };
   assert.match(instance._renderCodeSources({}), /Loading the buttons of your SwitchBot account/);
 });
+
+test('the home list is two zones, remotes then scenes, and scenes move only among themselves', () => {
+  const instance = panel();
+  const remotes = [
+    { remote_id: 'tv', name: 'TV', kind: 'ir', remote_slot: 0, device_type: 'IR_2' },
+    { remote_id: 'scene:0', name: 'Sleep', kind: 'scene', scene_index: 0, icon: 1, color: 1 },
+    { remote_id: 'bar', name: 'Soundbar', kind: 'ir', remote_slot: 1, device_type: 'IR_11' },
+    { remote_id: 'scene:3', name: 'Movie', kind: 'scene', scene_index: 3, icon: 2, color: 2 },
+  ];
+  instance._entry = () => ({ remotes });
+  instance._remoteId = 'tv';
+  instance._sceneIcon = () => '';
+  instance._irArtworkSrc = () => '';
+  instance._hidArtworkSrc = () => '';
+  instance._iconImage = () => '';
+  let html = instance._renderScreen({ index: 0 });
+  const tiles = html.split('data-zone="scenes"')[0];
+  assert.match(tiles, /data-zone="tiles"[\s\S]*TV[\s\S]*Soundbar/);
+  assert.doesNotMatch(tiles, /Sleep|Movie/);
+  assert.match(html, /scr-zone-label[^>]*>Scenes<\/div>[\s\S]*data-zone="scenes"[\s\S]*Sleep[\s\S]*Movie/);
+  assert.match(html, /data-scene-grip="0"[\s\S]*data-scene-grip="3"/);
+  assert.match(html, /data-hint="Scenes stay below the remotes"/);
+  // a pending scene order is drawn and counts as a change; the remotes are untouched
+  instance._sceneOrder = [3, 0];
+  assert.equal(instance._sceneOrderChanged(), true);
+  assert.equal(instance._tileOrderChanged(), false);
+  assert.equal(instance._screenOrderChanged(), true);
+  html = instance._renderScreen({ index: 0 });
+  assert.match(html.split('data-zone="scenes"')[1], /Movie[\s\S]*Sleep/);
+  instance._sceneOrder = [0, 3];
+  assert.equal(instance._sceneOrderChanged(), false);
+});
+
+test('a menu row shows the caption the remote writes, and its editor has a caption field', () => {
+  assert.equal(context.irRowCaption(4, { index: 1, transport: 'ir', function: 115 }), 'D2');
+  assert.equal(context.irRowCaption(1, { index: 0, transport: 'ir', function: 115, title: 'Netflix' }), 'Netflix');
+  assert.equal(context.irRowCaption(1, { index: 0, transport: 'ir', function: 115, glyph: 26, title: 'Netflix' }), 'Forward');
+  assert.equal(context.irRowCaption(1, { index: 0, transport: 'ir', glyph: 30 }), 'TBD');   // icon with no name
+  const instance = panel();
+  const field = instance._renderCaptionField({ index: 2 }, { index: 3, transport: 'ir', function: 115, title: 'Музыка' });
+  assert.match(field, /Caption on the remote[\s\S]*value="Музыка"[\s\S]*placeholder="B4"/);
+  assert.match(field, /12\/31 bytes/);
+  assert.match(instance._renderCaptionField({ index: 2 }, { index: 3, transport: 'ir', glyph: 26 }),
+    /writes the icon's name on this row/);
+});
+
+test('the account section says what the SwitchBot app sees and offers to sync', () => {
+  const instance = panel();
+  instance._cloud = { connected: true, cached_remotes: 2, sync: { differences: [
+    'Slot 5: on the remote, not in the account', 'Old: in the account, not on the remote'] } };
+  let html = instance._renderCloud();
+  assert.match(html, /The SwitchBot app sees 2 differences[\s\S]*Slot 5: on the remote, not in the account/);
+  assert.match(html, /id="cloudSync"[^>]*>Sync with the SwitchBot app/);
+  instance._cloud.sync = { differences: [], note: 'Listed 8 in the account.' };
+  html = instance._renderCloud();
+  assert.match(html, /sees the remote as it is/);
+  assert.match(html, /Listed 8 in the account/);
+  instance._cloud.sync = { busy: 'Updating your SwitchBot account…' };
+  assert.match(instance._renderCloud(), /loading-note[\s\S]*Updating your SwitchBot account/);
+});
+
+test('Fetch a fresh key lives in Diagnostics, not in the account section', () => {
+  const instance = panel();
+  instance._cloud = { connected: true, cached_remotes: 1 };
+  instance._physicalBusy = false;
+  assert.doesNotMatch(instance._renderCloud(), /cloudRefreshKey/);
+  assert.match(instance._renderDiagnostics(), /id="cloudRefreshKey"[\s\S]*Fetch a fresh key/);
+  instance._cloud = { connected: false };
+  assert.doesNotMatch(instance._renderDiagnostics(), /cloudRefreshKey/);
+});

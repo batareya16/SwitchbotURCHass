@@ -87,6 +87,37 @@ def is_template_key(key: dict) -> bool:
     return len(record) == 36 and record[3] == 254
 
 
+def ir_key_name(number: int, key: dict) -> str:
+    """The name a typed IR code is uploaded under, which a menu row also shows as its caption.
+
+    On a menu row the remote writes this name (WoRWS V48 0x2002d76c: a named IR record whose
+    function is 115, 0x7D3 or 0 shows its own 32-byte field). A caption set in Studio is the name;
+    otherwise the row is named by its place, "A1" for the first row behind A. Main keys keep the
+    official editor's names (their position number); Main draws no caption.
+    """
+    title = str(key.get("title") or "").strip()
+    if number and title:
+        return title
+    return str(key["index"]) if number == 0 else f"{'ABCD'[number - 1]}{key['index'] + 1}"
+
+
+def _check_ir_key_names(pages: list[dict]) -> None:
+    """Every typed IR code needs its own name, short enough for the remote's 32-byte field."""
+    seen: dict[str, str] = {}
+    for page in pages:
+        for key in page["buttons"]:
+            if key.get("transport") != "ir":
+                continue
+            name = ir_key_name(page["index"], key)
+            data = name.encode("utf-8")
+            if not data or len(data) > 31 or "/" in name or "\0" in name:
+                raise ValueError(f"The caption \"{name}\" must be 1–31 bytes without \"/\" "
+                                 "(a letter outside Latin takes two bytes)")
+            if name in seen:
+                raise ValueError(f"Two keys are named \"{name}\"; give each its own caption")
+            seen[name] = name
+
+
 def _link_function(page: dict) -> int | None:
     try:
         record = bytes.fromhex(str(page.get("link_record") or ""))
@@ -671,6 +702,8 @@ def validate(remote: dict, draft: dict) -> dict:
         raise ValueError("The Main page is required")
     if expected == "ir":
         _check_ir_pages(device_type, pages)
+    if expected in ("ir", "hid"):
+        _check_ir_key_names(pages)
     if expected in ("native", "hid", "ir"):
         main = next(page for page in pages if page["index"] == 0)
         reserved = {number - 1 for number in seen_pages if number}
@@ -723,8 +756,8 @@ def compile_pages(
                     continue
                 keys.append(bytes([index]) + c.s16(function) + b"\x04" + c.pad(c.s16(function), 32))
             elif transport == "ir":
-                # Main names match the official HID editor; submenu names are stable and unique.
-                name = str(index) if number == 0 else f"p{number}_k{index}"
+                # The name the code is uploaded under; a menu row shows it as its caption.
+                name = ir_key_name(number, key)
                 code = bytes.fromhex(key["code_hex"])
                 if draft["kind"] == "hid":
                     uploads.extend(c.build_hid_ir_transfer(device_id=remote["device_id"], key_name=name, code=code))

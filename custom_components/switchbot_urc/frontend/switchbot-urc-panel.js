@@ -120,6 +120,22 @@ function irArtworkType(type) {
   return type;
 }
 
+// The name a typed IR code is uploaded under (physical_layout.ir_key_name): its caption, else its
+// place, "A1" for the first row behind A.
+function irKeyName(pageIndex, key) {
+  const title = String(key?.title || "").trim();
+  return title || `${"ABCD"[pageIndex - 1]}${key.index + 1}`;
+}
+
+// What the remote writes on a menu row of a typed IR code (WoRWS V48 0x2002d76c): its name while
+// the row has no icon of its own (functions 115, 0x7D3 and 0), else the icon's name, "TBD" if the
+// icon has none.
+function irRowCaption(pageIndex, key) {
+  const fn = key.glyph ?? key.function;
+  if (fn == null || fn === 0 || NO_ICON_CODES.has(fn)) return irKeyName(pageIndex, key);
+  return NATIVE_GLYPH_LABELS[fn] || "TBD";
+}
+
 // True for a stored stock A–D template record (kind 254: a picture with no command).
 function irTemplateRecord(key) {
   return key?.transport === "stored" && String(key.record || "").slice(6, 8).toLowerCase() === "fe";
@@ -839,6 +855,8 @@ class SwitchBotUrcPanel extends HTMLElement {
             label: page.index === 0 ? positions[key.index] || functionLabel
               : !page.number_pad && key.transport === "stored" && !key.title
                 ? irRecordCaption(key.record) || source?.label || functionLabel
+              : !page.number_pad && key.transport === "ir"
+                ? irRowCaption(page.index, key)
               : page.number_pad && key.index < NUMBER_PAD_FUNCTIONS.length
                 ? `Number pad ${NUMBER_PAD_LABELS[key.index]}`
                 : `${key.title || glyphCaption || source?.label || functionLabel}${page.number_pad ? " (not on the number pad)" : ""}`,
@@ -1367,7 +1385,27 @@ class SwitchBotUrcPanel extends HTMLElement {
     return remotes.map((item) => (this._isListTile(item) ? queue.shift() : item));
   }
 
-  _screenOrderChanged() {
+  // The scenes as drawn: the pending scene order, if any, else by number.
+  _screenScenes() {
+    const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
+    const order = this._sceneOrder;
+    if (!this._sceneOrderValid(scenes)) return scenes;
+    return order.map((index) => scenes.find((item) => item.scene_index === index));
+  }
+
+  _sceneOrderValid(scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene")) {
+    const order = this._sceneOrder;
+    return Boolean(order && order.length === scenes.length
+      && scenes.every((item) => order.includes(item.scene_index)));
+  }
+
+  _sceneOrderChanged() {
+    const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
+    return this._sceneOrderValid(scenes)
+      && scenes.some((item, index) => this._sceneOrder[index] !== item.scene_index);
+  }
+
+  _tileOrderChanged() {
     const tiles = (this._entry()?.remotes || []).filter((item) => this._isListTile(item));
     const order = this._screenOrder;
     return Boolean(order && order.length === tiles.length
@@ -1375,19 +1413,36 @@ class SwitchBotUrcPanel extends HTMLElement {
       && tiles.some((item, index) => order[index] !== item.remote_slot));
   }
 
-  // Drag a tile on the remote's screen by its grip (pointer events: mouse and touch). The rows are
-  // moved in the DOM while dragging, since drawing again would drop the pointer.
-  _startScreenDrag(event, grip) {
+  _screenOrderChanged() {
+    return this._tileOrderChanged() || this._sceneOrderChanged();
+  }
+
+  // Drag a tile or a scene on the remote's screen by its grip (pointer events: mouse and touch).
+  // The rows are moved in the DOM while dragging, since drawing again would drop the pointer. A
+  // row stays in its own zone (remotes, or scenes after them), as the remote draws them; while
+  // dragging, that zone is lit and the other one says why nothing can go there.
+  _startScreenDrag(event, grip, kind = "tiles") {
     const row = grip.closest(".scr-row");
     const list = row?.parentElement;
+    const screen = row?.closest(".scr-scroll");
     if (!row || !list || this._physicalBusy) return;
     event.preventDefault();
+    const selector = kind === "scenes" ? ".scr-row[data-scene-index]" : ".scr-row[data-screen-slot]";
     row.classList.add("dragging");
+    screen?.classList.add(`dragging-${kind}`);
+    let denied = null;
     // Listen on the window: moving the row in the DOM releases any pointer capture, after which
     // the grip no longer receives the pointer's events (the release would never be seen).
     const move = (moveEvent) => {
-      const under = this.shadowRoot.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
-        ?.closest?.(".scr-row[data-screen-slot]");
+      const target = this.shadowRoot.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const zone = target?.closest?.(".scr-zone");
+      const outside = zone && zone !== list ? zone : null;
+      if (outside !== denied) {
+        denied?.classList.remove("drop-denied");
+        outside?.classList.add("drop-denied");
+        denied = outside;
+      }
+      const under = target?.closest?.(selector);
       if (!under || under === row || under.parentElement !== list) return;
       const box = under.getBoundingClientRect();
       list.insertBefore(row, moveEvent.clientY > box.top + box.height / 2 ? under.nextSibling : under);
@@ -1397,8 +1452,11 @@ class SwitchBotUrcPanel extends HTMLElement {
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", finish);
       row.classList.remove("dragging");
-      this._screenOrder = Array.from(list.querySelectorAll(".scr-row[data-screen-slot]"))
-        .map((item) => Number(item.dataset.screenSlot));
+      screen?.classList.remove(`dragging-${kind}`);
+      denied?.classList.remove("drop-denied");
+      const order = Array.from(list.querySelectorAll(selector));
+      if (kind === "scenes") this._sceneOrder = order.map((item) => Number(item.dataset.sceneIndex));
+      else this._screenOrder = order.map((item) => Number(item.dataset.screenSlot));
       this._render();
     };
     window.addEventListener("pointermove", move);
@@ -1410,6 +1468,36 @@ class SwitchBotUrcPanel extends HTMLElement {
   // known ones take, and let the table's own safeguards (confirmation, exact-table check) run.
   async _applyScreenOrder() {
     if (!this._screenOrderChanged() || this._physicalBusy) return;
+    if (this._tileOrderChanged()) await this._applyTileOrder();
+    if (this._sceneOrderChanged() && !this._tileOrderChanged()) await this._applySceneOrder();
+    this._render();
+  }
+
+  // The scene list is written again in the new order (the remote has no command to move a scene);
+  // their Home Assistant actions move with them, and the selection follows the scene it was on.
+  async _applySceneOrder() {
+    const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
+    const order = this._sceneOrder;
+    this._physicalBusy = true;
+    this._render();
+    try {
+      const result = await this._hass.callWS({
+        type: `${DOMAIN}/studio/scenes/reorder`, entry_id: this._entryId, order,
+        expected: scenes.map((item) => ({ index: item.scene_index, name: item.name, icon: item.icon, color: item.color })),
+      });
+      const selected = /^scene:(\d+)$/.exec(this._remoteId || "");
+      if (selected && result?.moved?.[selected[1]] != null) this._remoteId = `scene:${result.moved[selected[1]]}`;
+      this._sceneOrder = null;
+      this._notify("Scene order saved on the remote.");
+      await this._load();
+    } catch (error) {
+      this._notify(error?.message || String(error), "warning");
+    } finally {
+      this._physicalBusy = false;
+    }
+  }
+
+  async _applyTileOrder() {
     await this._readDeviceTable();
     const table = this._deviceTable;
     if (!table?.rows?.length) return;
@@ -1419,7 +1507,6 @@ class SwitchBotUrcPanel extends HTMLElement {
     const queue = [...wanted].reverse();
     table.order = table.rows.map((row) => (known.has(row.slot) ? queue.shift() : row.slot));
     if (await this._applyTableOrder()) this._screenOrder = null;
-    this._render();
   }
 
   // The new-order bar sits above the remote's picture, so it never takes room from the tile list.
@@ -1461,7 +1548,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     }
     const remotes = this._screenRemotes();
     if (!remotes.length && !this._scenePanel?.draft) return `<p class="scr-empty">No remotes yet</p>`;
-    return remotes.map((item) => {
+    const row = (item) => {
       const current = item.remote_id === this._remoteId;
       // A tile on the remote's own list is moved by its grip; the rest of the row picks it.
       const grip = this._isListTile(item)
@@ -1469,7 +1556,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       const slotAttr = this._isListTile(item) ? ` data-screen-slot="${item.remote_slot}"` : "";
       if (item.kind === "scene") {
         const preview = current && this._scenePanel?.draft ? this._scenePanel.draft : item;
-        return `<div class="scr-row${current ? " on" : ""}"><button class="k pick-remote" type="button" data-remote="${escapeHtml(item.remote_id)}" title="${escapeHtml(item.name)} · Scene">
+        const sceneGrip = scenes.length > 1
+          ? `<span class="grip" data-scene-grip="${item.scene_index}" title="Drag to move this scene among the scenes">⠿</span>` : "";
+        return `<div class="scr-row${current ? " on" : ""}" data-scene-index="${item.scene_index}">${sceneGrip}<button class="k pick-remote" type="button" data-remote="${escapeHtml(item.remote_id)}" title="${escapeHtml(item.name)} · Scene">
           <span class="scene-tile" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${preview.color}.png)">${this._sceneIcon(preview.icon)}</span>
           <span class="nm">${escapeHtml(preview.name)}</span></button>
           ${current ? '<button class="k ic-btn" data-scene-appearance title="Edit name and appearance">✎</button>' : ""}</div>`;
@@ -1490,10 +1579,20 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${current && item.layout_editable ? `<button class="k ic-btn" data-icon-for="${escapeHtml(item.remote_id)}"
           title="Edit this remote's name and appearance">✎</button>` : ""}
       </div>`;
-    }).join("") + (this._scenePanel?.draft && this._scenePanel.draft.index == null
+    };
+    // The remote draws its tiles first and its scenes after them, whatever their order: each
+    // group is moved within itself, so the list is drawn as two zones.
+    const scenes = this._screenScenes();
+    const tiles = remotes.filter((item) => item.kind !== "scene");
+    const draftScene = this._scenePanel?.draft && this._scenePanel.draft.index == null;
+    return `<div class="scr-zone" data-zone="tiles" data-hint="Remotes stay above the scenes">${tiles.map(row).join("")}</div>`
+      + (scenes.length || draftScene ? `<div class="scr-zone-label" title="The remote always lists its scenes after its remotes">Scenes</div>
+        <div class="scr-zone" data-zone="scenes" data-hint="Scenes stay below the remotes">${scenes.map(row).join("")}`
+      : "") + (draftScene
       ? `<div class="scr-row on"><button class="k pick-remote" type="button" data-scene-appearance>
           <span class="scene-tile" style="background-image:url(/switchbot_urc_static/artwork/scene-background-${this._scenePanel.draft.color}.png)">${this._sceneIcon(this._scenePanel.draft.icon)}</span>
-          <span class="nm">${escapeHtml(this._scenePanel.draft.name || "New scene")}</span></button></div>` : "");
+          <span class="nm">${escapeHtml(this._scenePanel.draft.name || "New scene")}</span></button></div>` : "")
+      + (scenes.length || draftScene ? "</div>" : "");
   }
 
   // The number pad as the remote draws it: 1–9 and 0 under 8, four keys below, a key with no
@@ -2071,14 +2170,40 @@ class SwitchBotUrcPanel extends HTMLElement {
         cached${cloud.key_id ? `, communication key ${escapeHtml(cloud.key_id)}` : ""}.</p>
       <div class="key-actions">
         <button class="secondary compact" id="cloudRefresh" title="Fetch the remote list from your SwitchBot account again">Re-read my remotes</button>
-        <button class="secondary compact" id="cloudRefreshKey" title="The remote rotates this key; fetch the current one from the account">Fetch a fresh key</button>
       </div>
-      <p class="small">Fetch the key when the remote starts answering with undecodable
-        responses: it rotates on its own, and the account holds the current one.</p>
       ${cloud.busy ? loadingNote("Talking to the account…", true) : ""}
       ${this._feedback(cloud.error, "error", "SwitchBot account")}
       ${!cloud.error ? this._feedback(cloud.note, "success", "SwitchBot account") : ""}
+      ${this._renderCloudSync()}
     </details>`;
+  }
+
+  // The SwitchBot app compares the account's list of this Universal Remote's remotes and scenes
+  // with the remote, and offers to "clean" the remote on any difference.
+  _renderCloudSync() {
+    const sync = this._cloud?.sync || {};
+    const list = sync.differences || [];
+    const status = sync.busy ? loadingNote(sync.busy, true)
+      : sync.differences == null
+        ? '<p class="small">Check whether the SwitchBot app sees the remote as Studio left it.</p>'
+        : list.length
+          ? `<p class="small"><b>The SwitchBot app sees ${list.length} difference${list.length === 1 ? "" : "s"}</b>
+              and would offer to clean the remote:</p><ul class="sync-list">${list.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+          : '<p class="small"><b>The SwitchBot app sees the remote as it is.</b></p>';
+    return `<div class="sync-box">
+      <div class="action-title"><b>The SwitchBot app</b><span>its list of this remote's remotes and scenes</span></div>
+      ${status}
+      ${sync.note ? `<p class="small">${escapeHtml(sync.note)}</p>` : ""}
+      ${(sync.skipped || []).length ? `<p class="small">Not listed: ${escapeHtml(sync.skipped.join("; "))}</p>` : ""}
+      ${sync.error ? `<p class="small warning">${escapeHtml(sync.error)}</p>` : ""}
+      <div class="key-actions">
+        <button class="secondary compact" id="cloudSyncCheck" ${sync.busy ? "disabled" : ""}>Check</button>
+        <button class="primary compact" id="cloudSync" ${sync.busy ? "disabled" : ""}>Sync with the SwitchBot app</button>
+      </div>
+      <p class="small">Sync lists exactly what is on the remote, at its slots, as this Universal
+        Remote's remotes and scenes in your account, and removes what is no longer on it. An IR
+        remote made in Studio is saved to the account with its codes.</p>
+    </div>`;
   }
 
   async _ensureCloud() {
@@ -2106,6 +2231,31 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
     };
 
+    const syncRun = async (type, busy) => {
+      this._cloud = { ...this._cloud, sync: { ...(this._cloud.sync || {}), busy, error: "", note: "" } };
+      this._render();
+      try {
+        const result = await this._hass.callWS({ type, entry_id: this._entryId });
+        this._cloud = { ...this._cloud, sync: {
+          differences: result.differences || [], skipped: result.skipped || [],
+          note: result.listed != null
+            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${result.removed ? `, removed ${result.removed} no longer on the remote` : ""}.`
+            : "",
+        } };
+        if (result.listed != null) { this._sources = null; this._accountCodesFor = null; }
+      } catch (error) {
+        this._cloud = { ...this._cloud, sync: { ...(this._cloud.sync || {}), busy: "", error: error?.message || String(error) } };
+      }
+      this._render();
+    };
+    root.getElementById("cloudSyncCheck")?.addEventListener("click", () =>
+      syncRun(`${DOMAIN}/studio/cloud/sync_status`, "Comparing the remote with your account…"));
+    root.getElementById("cloudSync")?.addEventListener("click", () => {
+      if (!confirm("List what is on the remote as this Universal Remote's remotes and scenes in your "
+        + "SwitchBot account? Entries for remotes no longer on it are removed from the account's list.")) return;
+      syncRun(`${DOMAIN}/studio/cloud/sync`, "Updating your SwitchBot account…");
+    });
+
     root.getElementById("cloudRefresh")?.addEventListener("click", () => run(
       `${DOMAIN}/studio/cloud/refresh`,
       (result) => {
@@ -2117,14 +2267,21 @@ class SwitchBotUrcPanel extends HTMLElement {
         return `${result.remotes} remote${result.remotes === 1 ? "" : "s"} read from the account.`;
       }));
 
-    root.getElementById("cloudRefreshKey")?.addEventListener("click", () => run(
-      `${DOMAIN}/studio/cloud/refresh_key`,
-      (result) => {
-        this._cloud.key_id = result.key_id;
-        return result.changed
+    root.getElementById("cloudRefreshKey")?.addEventListener("click", async () => {
+      // Kept in Diagnostics: the integration refreshes the key by itself when the remote rejects it.
+      this._keyRefresh = { busy: true };
+      this._render();
+      try {
+        const result = await this._hass.callWS({ type: `${DOMAIN}/studio/cloud/refresh_key`, entry_id: this._entryId });
+        this._cloud = { ...this._cloud, key_id: result.key_id };
+        this._keyRefresh = { note: result.changed
           ? `New key ${result.key_id} stored; the integration is reloading.`
-          : `The stored key ${result.key_id} is already the current one.`;
-      }));
+          : `The stored key ${result.key_id} is already the current one.` };
+      } catch (error) {
+        this._keyRefresh = { error: error?.message || String(error) };
+      }
+      this._render();
+    });
   }
 
   _renderDiagnostics() {
@@ -2137,9 +2294,17 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button class="secondary compact" data-diagnostic="bindings" title="Which remote each saved action belongs to; reads nothing from the device">Why did that action run?</button>
         <button class="secondary compact" type="button" id="repairTableOrder" ${this._physicalBusy ? "disabled" : ""}
           title="Keeps the order of the remote's list and sets every slot again, by each row's full id; the tiles are not touched">Repair list order</button>
+        ${this._cloud?.connected ? `<button class="secondary compact" id="cloudRefreshKey"
+          title="The remote rotates this key; fetch the current one from the account">Fetch a fresh key</button>` : ""}
       </div>
       <p class="small">Use <b>Repair list order</b> when a tile opens the remote above it: the remote's list has
         a gap or a repeated slot, and this sets every slot once without touching the tiles.</p>
+      ${this._cloud?.connected ? `<p class="small"><b>Fetch a fresh key</b> is only needed if the remote keeps
+        answering with undecodable responses: the integration already fetches the current key from
+        the account by itself when the remote rejects one.</p>` : ""}
+      ${this._keyRefresh?.busy ? loadingNote("Fetching the key from the account…", true) : ""}
+      ${this._feedback(this._keyRefresh?.error, "error", "Communication key")}
+      ${!this._keyRefresh?.error ? this._feedback(this._keyRefresh?.note, "success", "Communication key") : ""}
       ${diag?.busy ? loadingNote("Running…", true) : ""}
       ${this._feedback(diag?.error, "error", "Diagnostics")}
       ${diag?.rows ? `<table><thead><tr><th>Query</th><th>Answer</th></tr></thead><tbody>${
@@ -3460,6 +3625,18 @@ class SwitchBotUrcPanel extends HTMLElement {
       key.code_hex = event.target.value.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
       if (codeNote) codeNote.textContent = "";
     });
+    const captionField = root.querySelector('[data-key-field="title"]');
+    captionField?.addEventListener("input", (event) => {
+      // Typed straight into the draft; the picture is redrawn when the field is left, so typing
+      // keeps its focus.
+      key.title = event.target.value;
+      const note = root.querySelector("[data-caption-note]");
+      const bytes = new TextEncoder().encode(event.target.value).length;
+      if (note && /bytes/.test(note.textContent)) {
+        note.textContent = `The remote writes this on the row (${bytes}/31 bytes; a letter outside Latin takes two and may not show).`;
+      }
+    });
+    captionField?.addEventListener("change", () => this._render());
     codeField?.addEventListener("change", (event) => {
       // A timing list typed by hand is converted once the field is left.
       if (irDurationsFromText(event.target.value)) takeCode(event.target.value);
@@ -3661,6 +3838,18 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${letter} can only open the number pad.`}</p>` : ""}`;
   }
 
+  // The caption a menu row shows on the remote: the name its code is uploaded under.
+  _renderCaptionField(page, key) {
+    const fn = key.glyph ?? key.function;
+    const shown = fn == null || fn === 0 || NO_ICON_CODES.has(fn);
+    const bytes = new TextEncoder().encode(String(key.title || "")).length;
+    return `<label>Caption on the remote<input type="text" data-key-field="title" spellcheck="false"
+        value="${escapeHtml(key.title || "")}" placeholder="${escapeHtml(irKeyName(page.index, { index: key.index }))}"></label>
+      <p class="small" data-caption-note>${shown
+        ? `The remote writes this on the row (${bytes}/31 bytes; a letter outside Latin takes two and may not show).`
+        : `The remote writes the icon's name on this row, not the caption. Reset the icon to show the caption.`}</p>`;
+  }
+
   // "Copy from a button": the IR keys already on this Universal Remote and every IR key in the
   // SwitchBot account (loaded once per integration entry, when an IR key editor first opens).
   _ensureAccountCodes() {
@@ -3848,6 +4037,7 @@ class SwitchBotUrcPanel extends HTMLElement {
                 && !(kind === "ir" && !page.index && MENU_SHORTCUT_ICONS.has(code))),
               null, page.index ? LIST_ROW_ICON_HINT
                 : kind === "hid" ? "On an HID remote every icon is only the picture: the key always sends its command." : "") : ""}
+        ${page.index && !page.number_pad ? this._renderCaptionField(page, key) : ""}
         ${this._renderCodeSources(key)}
         <label>IR code (hex)<textarea data-key-field="code_hex" spellcheck="false"
           placeholder="Paste the raw code, or copy one from a saved button above"
@@ -4098,11 +4288,15 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (this._deviceTable && !this._deviceTable.loading) this._deviceTable.open = event.target.open;
     });
     root.querySelectorAll("[data-screen-grip]").forEach((grip) => {
-      grip.addEventListener("pointerdown", (event) => this._startScreenDrag(event, grip));
+      grip.addEventListener("pointerdown", (event) => this._startScreenDrag(event, grip, "tiles"));
+    });
+    root.querySelectorAll("[data-scene-grip]").forEach((grip) => {
+      grip.addEventListener("pointerdown", (event) => this._startScreenDrag(event, grip, "scenes"));
     });
     root.getElementById("applyScreenOrder")?.addEventListener("click", () => this._applyScreenOrder());
     root.getElementById("resetScreenOrder")?.addEventListener("click", () => {
       this._screenOrder = null;
+      this._sceneOrder = null;
       this._render();
     });
     root.querySelectorAll("[data-delete-row]").forEach((button) => {
@@ -4700,7 +4894,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       details.device-table{margin:8px 0;padding:12px 16px;border:1px solid var(--divider-color,#e2e5e8);border-radius:14px;background:var(--card-background-color,#fff)}
       details.device-table>summary{font-size:13px;font-weight:600;color:var(--primary-text-color,#17202a)}
       details.device-table[open]>summary{margin-bottom:10px}
-      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}.loading-note{display:flex;align-items:center;gap:12px;margin:14px 0;padding:14px 18px;border-radius:14px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 7%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 18%,transparent);color:var(--primary-text-color,#1c1f23);font-size:14px;line-height:1.4}.loading-note.compact{gap:10px;margin:8px 0;padding:10px 14px;border-radius:12px;font-size:13px}.spinner{flex:none;display:inline-block;box-sizing:border-box;width:20px;height:20px;border-radius:50%;border:2.5px solid color-mix(in srgb,var(--primary-color,#03a9f4) 20%,transparent);border-top-color:var(--primary-color,#03a9f4);animation:spin .75s cubic-bezier(.45,.05,.55,.95) infinite}.loading-note.compact .spinner{width:16px;height:16px;border-width:2px}.spinner.inline{width:14px;height:14px;border-width:2px;margin-right:8px;vertical-align:-2px;border-color:color-mix(in srgb,currentColor 25%,transparent);border-top-color:currentColor}@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2s}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
+      .action.danger:hover{background:#fdf2f3;border-color:#e4939b}.reachability{margin:10px 0;padding:10px 14px;border-radius:12px;font-size:13px;background:var(--secondary-background-color,#f1f3f5)}.reachability.full{background:#25bd7614}.reachability.conditional{background:#f0a52014}.reachability.none{background:#ee5b6614}.apply-bar{display:flex;align-items:center;gap:12px;margin:18px 0;padding:14px 18px;border-radius:14px;background:var(--card-background-color,#fff);box-shadow:0 6px 18px #0000000a;font-size:13px}.apply-bar.dirty{background:color-mix(in srgb,var(--primary-color,#03a9f4) 10%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 28%,transparent)}.apply-bar .spacer{flex:1}.key-editor{display:grid;gap:14px;margin:20px 0;padding:18px 20px;border-radius:16px;background:var(--secondary-background-color,#f1f3f5)}.key-editor label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.key-editor select{margin:0}.key-editor textarea{min-height:70px;margin-top:4px}.key-editor details.catalog{border-top:1px solid var(--divider-color,#e2e5e8);padding-top:10px;display:grid;gap:10px}.key-editor details.catalog>summary{font-weight:700}.key-editor input[type=search]{height:40px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.key-editor select[size]{height:auto;padding:4px}.key-editor .warning{color:#d73a46}.add-remote{display:grid;gap:12px;margin:14px 0;padding:18px;border-radius:18px;background:var(--card-background-color,#fff);box-shadow:0 12px 40px #0000000a}.add-remote label{display:grid;gap:4px;font-size:12px;font-weight:700;color:var(--secondary-text-color,#68727d)}.add-remote label.inline{display:flex;align-items:center;gap:8px}.add-remote select{margin:0}.add-remote select[size]{height:auto;padding:4px}.add-remote input[type=text],.add-remote input[type=search]{height:44px;padding:0 12px;border:1px solid var(--divider-color,#dfe3e8);border-radius:11px;background:var(--card-background-color,#fff);color:inherit}.add-remote .mode-tabs button:disabled{opacity:.4;cursor:default}.add-remote .small{margin:0}.add-remote .warning{color:#d73a46}.diagnostics code{font:11px/1.5 ui-monospace,monospace}.diagnostics table{margin-top:10px}.key-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}.stage-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;margin-top:18px}@keyframes spin{to{transform:rotate(360deg)}}.sync-box{display:grid;gap:8px;margin:14px 0 4px;padding:14px 16px;border-radius:14px;background:var(--secondary-background-color,#f1f3f5)}.sync-list{margin:0;padding-left:18px;font-size:12px;line-height:1.5}.loading-note{display:flex;align-items:center;gap:12px;margin:14px 0;padding:14px 18px;border-radius:14px;background:color-mix(in srgb,var(--primary-color,#03a9f4) 7%,var(--card-background-color,#fff));border:1px solid color-mix(in srgb,var(--primary-color,#03a9f4) 18%,transparent);color:var(--primary-text-color,#1c1f23);font-size:14px;line-height:1.4}.loading-note.compact{gap:10px;margin:8px 0;padding:10px 14px;border-radius:12px;font-size:13px}.spinner{flex:none;display:inline-block;box-sizing:border-box;width:20px;height:20px;border-radius:50%;border:2.5px solid color-mix(in srgb,var(--primary-color,#03a9f4) 20%,transparent);border-top-color:var(--primary-color,#03a9f4);animation:spin .75s cubic-bezier(.45,.05,.55,.95) infinite}.loading-note.compact .spinner{width:16px;height:16px;border-width:2px}.spinner.inline{width:14px;height:14px;border-width:2px;margin-right:8px;vertical-align:-2px;border-color:color-mix(in srgb,currentColor 25%,transparent);border-top-color:currentColor}@media (prefers-reduced-motion:reduce){.spinner{animation-duration:2s}}@keyframes press{0%,100%{transform:scale(1)}20%{transform:scale(.9);background:#c9f6dc;box-shadow:0 0 0 7px #25bd7630}}
       .device-wrap{width:min(100%,360px)}
       .device{width:100%;height:auto;filter:drop-shadow(0 14px 26px #0000002b)}
       .device .shell{stroke:#d2d5da;stroke-width:1.2}
@@ -4722,6 +4916,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-row .grip{flex:0 0 9px;width:9px;overflow:hidden;font-size:12px;line-height:1;cursor:grab;touch-action:none;user-select:none;text-align:center;color:#ffffff7a}
       .scr-row .grip+.k{padding-left:3px}
       .scr-row.dragging{opacity:.6;background:#ffffff2e}
+      .scr-zone{position:relative;border-radius:7px;transition:opacity .15s,background .15s,outline-color .15s;outline:1px dashed transparent;outline-offset:2px}
+      .scr-zone-label{margin:10px 2px 4px;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#ffffff66}
+      .scr-scroll.dragging-tiles .scr-zone[data-zone="tiles"],.scr-scroll.dragging-scenes .scr-zone[data-zone="scenes"]{outline-color:#8bd4ffaa;background:#8bd4ff12}
+      .scr-scroll.dragging-tiles .scr-zone[data-zone="scenes"]>*,.scr-scroll.dragging-scenes .scr-zone[data-zone="tiles"]>*{opacity:.25}
+      .scr-scroll.dragging-tiles .scr-zone[data-zone="scenes"]::after,.scr-scroll.dragging-scenes .scr-zone[data-zone="tiles"]::after{content:attr(data-hint);position:absolute;inset:0;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;background:#0009;border-radius:7px;text-align:center;padding:4px}
+      .scr-zone.drop-denied{outline-color:#ff7b86;cursor:not-allowed}
+      .scr-zone.drop-denied::after{background:#5a1a20cc;color:#ffd5d9}
       .order-bar{display:flex;align-items:center;flex-wrap:nowrap;gap:6px;justify-content:center;margin-bottom:8px;font-size:12px;font-weight:700;white-space:nowrap}
       .order-bar>button.primary,.order-bar>button.secondary{height:26px;min-height:0;padding:0 10px;font-size:12px;line-height:1;border-radius:8px;flex:0 0 auto}
       .scr-row>.k{flex:1;display:flex;align-items:center;gap:9px;padding:6px 7px;cursor:pointer;

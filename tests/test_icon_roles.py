@@ -101,3 +101,24 @@ def test_template_icons_on_a_to_d_are_kept_when_one_key_is_changed():
     _, pages = physical.compile_pages(remote, draft, slot=6)
     body = pages[0][7:]
     assert 0 not in {body[83 + 36 * i] for i in range(body[82])}
+
+
+def test_a_menu_row_caption_is_the_name_its_code_is_uploaded_under():
+    # The remote writes a named IR row's own text while it has no icon of its own (115, 0x7D3, 0):
+    # that text is the name the code was uploaded under, so the caption is that name.
+    remote = _blank_ir(5)
+    rows = [{"index": 0, "transport": "ir", "code_hex": "aa", "title": "Netflix"},
+            {"index": 1, "transport": "ir", "code_hex": "bb"}]
+    draft = {"kind": "ir", "pages": [{"index": 0, "buttons": []}, {"index": 4, "buttons": rows}]}
+    _, pages = physical.compile_pages(remote, draft, slot=1)
+    page4 = next(packet for packet in pages if packet[88] == 4)
+    body = page4[7:]
+    fields = [body[83 + 36 * i + 4:83 + 36 * (i + 1)].rstrip(b"\0") for i in range(body[82])]
+    assert fields == [b"Netflix", b"D2"]                    # caption, else the row's place
+    assert physical.ir_key_name(4, rows[1]) == "D2" and physical.ir_key_name(0, {"index": 6}) == "6"
+    for bad, message in ((["Same", "Same"], "Two keys"), (["x" * 32, "ok"], "1–31 bytes"),
+                         (["a/b", "ok"], "1–31 bytes")):
+        draft["pages"][1]["buttons"] = [
+            {"index": i, "transport": "ir", "code_hex": "aa", "title": title} for i, title in enumerate(bad)]
+        with pytest.raises(ValueError, match=message):
+            physical.validate(remote, draft)

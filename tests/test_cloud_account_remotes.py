@@ -55,3 +55,32 @@ def test_every_key_of_an_account_remote_is_offered_as_a_code():
     diy = cloud_ir.account_ir_codes({"type": 9, "code": "no_data", "keyMap": "",
                                      "keyDetail": item["keyDetail"]}, "Hub lamp")
     assert [code["key"] for code in diy] == ["Night"]
+
+
+def test_an_installed_account_remote_is_listed_in_the_account_as_the_app_does():
+    import asyncio
+    cloud = load(INTEGRATION / "cloud.py")
+    client = cloud.SwitchBotCloudClient(None, {"group_id": "G1", "urc_device_id": "B0E9FE531145"}, None)
+    posts = []
+
+    async def post(path, body):
+        posts.append((path, body))
+        return {}
+
+    client.post = post
+    asyncio.run(client.link_account_ir(remote_id="01-202611190101-22222222", remote_index=6,
+                                       name="Hub fan", remote_type=6))
+    assert [path for path, _ in posts] == ["/wonder/deviceInfo/v1/WoRWS/createIrRemote",
+                                           "/wonder/deviceInfo/v1/WoRWS/updateBindDevices"]
+    create, bind = posts[0][1], posts[1][1]
+    assert create["groupID"] == "G1" and create["deviceID"] == "B0E9FE531145"
+    assert create["items"] == [{"remoteID": "01-202611190101-22222222", "remoteIndex": 6,
+                                "parentRemoteID": "01-202611190101-22222222", "waitModify": False}]
+    assert bind["items"] == [{"remoteID": "01-202611190101-22222222", "remoteName": "Hub fan",
+                              "type": 6, "remoteIndex": 6, "createFrom": "hub", "waitModify": False}]
+    # a remote already bound to the Universal Remote only gets its slot updated
+    posts.clear()
+    asyncio.run(client.link_account_ir(remote_id="01-202611190101-11111111", remote_index=2,
+                                       name="TV", remote_type=2, created_from="device", register=False))
+    assert [path for path, _ in posts] == ["/wonder/deviceInfo/v1/WoRWS/updateBindDevices"]
+    assert posts[0][1]["items"][0]["createFrom"] == "device"

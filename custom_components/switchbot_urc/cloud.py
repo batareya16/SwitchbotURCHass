@@ -164,9 +164,32 @@ class SwitchBotCloudClient:
         if user_id:
             self.settings["user_id"] = str(user_id)
         await self._save_tokens(str(access), str(refresh))
-        if bot_region:
+        if not bot_region:
+            # The login answer does not always carry the account's region (seen on North American
+            # accounts); the account service tells it, and an empty one is the US partition, which
+            # is what pySwitchbot does too.
+            bot_region = await self._user_region() or "us"
+            self.settings["bot_region"] = bot_region
+            if bot_region.upper() in REGION_URLS:
+                self.settings["region"] = bot_region.upper()
+        try:
             await self.resolve_endpoints(bot_region)
+        except CloudError:
+            if bot_region.upper() not in REGION_URLS:
+                raise
+            _LOGGER.warning("SwitchBot endpoint discovery failed; using the %s partition", bot_region)
         return result
+
+    async def _user_region(self) -> str:
+        """The account's region from the account service, or "" when it does not say."""
+        try:
+            payload = await self._account_request("/account/api/v1/user/userinfo", {},
+                                                  authenticated=True)
+            result = unwrap_response(payload)
+        except (CloudError, ValueError, TypeError) as err:
+            _LOGGER.debug("SwitchBot user info unavailable: %s", err)
+            return ""
+        return str(result.get("botRegion", "")).strip() if isinstance(result, dict) else ""
 
     async def resolve_endpoints(self, bot_region: str) -> list[dict[str, Any]]:
         """Resolve the account partition exactly as the app does after login."""
@@ -297,7 +320,33 @@ class SwitchBotCloudClient:
         return value if isinstance(value, dict) else {"bindDevices": value or []}
 
     async def get_homes(self) -> list[dict[str, Any]]:
-        """Return the account's homes using the app's v3 home-list endpoint."""
+        """Return the account's homes; look in the other partition before giving up.
+
+        An account lives in one partition (EU or US). If the region was not known and the wrong
+        one was used, its home list is simply empty, so the other partition is tried, and kept
+        when it has the homes.
+        """
+        homes = await self._get_homes_here()
+        if homes:
+            return homes
+        current = self.base_url
+        for region, url in REGION_URLS.items():
+            if url == current:
+                continue
+            self.settings["api_base_url"] = url
+            try:
+                homes = await self._get_homes_here()
+            except CloudError as err:
+                _LOGGER.debug("SwitchBot %s partition did not answer: %s", region, err)
+                continue
+            if homes:
+                self.settings["region"] = region
+                _LOGGER.info("SwitchBot account homes found in the %s partition", region)
+                return homes
+        self.settings["api_base_url"] = current
+        return []
+
+    async def _get_homes_here(self) -> list[dict[str, Any]]:
         response_shapes: list[str] = []
         for path in ("/homepage/v1/group/getall", "/homepage/v1/group/getinfo"):
             value = await self.post(path, None)
@@ -385,6 +434,49 @@ class SwitchBotCloudClient:
         return await self.post(
             "/wonder/deviceInfo/v1/WoRWS/createIrRemote",
             {"deviceID": self.settings["urc_device_id"], "items": [item]},
+        )
+
+    async def create_ir_remotes(self, items: list[dict[str, Any]]) -> Any:
+        """Register IR remotes for this Universal Remote (createIrRemote, as the app does)."""
+        return await self.post("/wonder/deviceInfo/v1/WoRWS/createIrRemote",
+                               self._device_body() | {"items": items})
+
+    async def update_bind_devices(self, items: list[dict[str, Any]]) -> Any:
+        """Set the remotes and scenes listed as bound to this Universal Remote."""
+        return await self.post("/wonder/deviceInfo/v1/WoRWS/updateBindDevices",
+                               self._device_body() | {"items": items})
+
+    async def delete_bind_devices(self, ids: list[str]) -> Any:
+        """Remove entries from that list by their ids (deleteBindDevices, as the app does)."""
+        return await self.post("/wonder/deviceInfo/v1/WoRWS/deleteBindDevices",
+                               self._device_body() | {"items": ids})
+
+    async def link_account_ir(
+        self, *, remote_id: str, remote_index: int, name: str, remote_type: int,
+        created_from: str = "hub", register: bool = True,
+    ) -> None:
+        """Add an account IR remote to this Universal Remote the way the app does.
+
+        The app registers a copy for the Universal Remote that points at the account remote
+        (createIrRemote with parentRemoteID = the same id), then lists it among the remotes bound to
+        the Universal Remote at its slot (updateBindDevices, createFrom "hub"). A remote already
+        bound only needs its slot updated. waitModify is false: the codes are already on the remote,
+        and true would make the app write the remote again over Studio's layout.
+        """
+        if register:
+            await self.post(
+                "/wonder/deviceInfo/v1/WoRWS/createIrRemote",
+                self._device_body() | {"items": [{
+                    "remoteID": remote_id, "remoteIndex": remote_index,
+                    "parentRemoteID": remote_id, "waitModify": False,
+                }]},
+            )
+        await self.post(
+            "/wonder/deviceInfo/v1/WoRWS/updateBindDevices",
+            self._device_body() | {"items": [{
+                "remoteID": remote_id, "remoteName": name, "type": remote_type,
+                "remoteIndex": remote_index, "createFrom": created_from, "waitModify": False,
+            }]},
         )
 
     async def bind_ir(
