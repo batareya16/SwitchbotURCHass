@@ -167,6 +167,12 @@ async def _sync_inputs(hass, entry):
     return cloud, table, scenes, bound, known, payload
 
 
+def _account_ir_remotes(payload) -> list[dict]:
+    """Every IR remote the account holds: those bound to this Universal Remote and the rest."""
+    return [item for key in ("bindDevices", "remotes") for item in (payload or {}).get(key, [])
+            if isinstance(item, dict) and item.get("remoteID")]
+
+
 @websocket_api.require_admin
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/studio/cloud/sync_status",
@@ -179,8 +185,12 @@ async def ws_cloud_sync_status(hass, connection, msg):
         entry = _entry(hass, msg)
         if not entry.data.get("cloud"):
             raise ValueError("Connect the SwitchBot account first")
-        _cloud, table, scenes, bound, _known, _payload = await _sync_inputs(hass, entry)
-        connection.send_result(msg["id"], {"differences": cloud_sync.differences(bound, table, scenes)})
+        _cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
+        steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes)
+        connection.send_result(msg["id"], {
+            "differences": cloud_sync.differences(bound, table, scenes),
+            "plan": cloud_sync.preview(steps, _account_ir_remotes(payload), table, bound),
+        })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio sync check failed")
         connection.send_error(msg["id"], "cloud_sync_check_failed", str(err))
@@ -198,8 +208,22 @@ async def ws_cloud_sync(hass, connection, msg):
         entry = _entry(hass, msg)
         if not entry.data.get("cloud"):
             raise ValueError("Connect the SwitchBot account first")
-        cloud, table, scenes, bound, known, _payload = await _sync_inputs(hass, entry)
+        cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
         steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes)
+        # A remote installed from the account under a new id gets a copy of every button of its
+        # source; the source itself is never changed or deleted (only no longer listed here).
+        copied = []
+        for index, create in enumerate(steps["create"]):
+            source = cloud_sync.account_source(create, _account_ir_remotes(payload), table)
+            if source is None:
+                continue
+            downloaded = find_cloud_items(await cloud.get_ir_remote(
+                str(source["remoteID"]), str(source.get("createFrom") or "hub")))
+            if not downloaded:
+                raise ValueError(f"Your account returned no buttons for {source.get('remoteName')}; "
+                                 "nothing was changed")
+            steps["create"][index] = cloud_sync.with_source_keys(create, {**source, **downloaded[0]})
+            copied.append(str(create["remoteName"]))
         if steps["create"]:
             await cloud.create_ir_remotes(steps["create"])
         if steps["remove"]:
@@ -212,7 +236,7 @@ async def ws_cloud_sync(hass, connection, msg):
         options["cloud_remotes"] = cloud_items(after)
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], {
-            "created": len(steps["create"]), "removed": len(steps["remove"]),
+            "created": len(steps["create"]), "removed": len(steps["remove"]), "copied": copied,
             "listed": len(steps["items"]), "skipped": steps["skipped"],
             "differences": cloud_sync.differences(bound_after, table, scenes),
         })

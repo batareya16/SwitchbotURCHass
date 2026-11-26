@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.53.30
+
+- Fix **Apply order** for scenes: when a scene was open in the editor, dragging scenes on the remote's picture changed their order on the screen but showed no **Apply order** button. The scene editor now shows it, the same as for remotes.
+- Unsaved changes to a scene (name, icon, background, actions) now stay with their scene when the scenes are put in a new order, and the editor stays on the scene you had open.
+- A menu row of an IR remote (or an IR row in a HID remote) shows either an icon with the icon's name or its own caption, never both, as the remote does. Studio now keeps them apart: typing a caption removes the row's icon, choosing an icon removes the caption, and a note above **Button icon** says so. The caption shows on the remote's picture as you type it.
+- **Sync with the SwitchBot app** keeps the account's remotes safe. A remote installed **From your account** before 0.53.29 is on the Universal Remote under an id of Studio's own, so the account did not know it; Sync now saves it to the account as a copy of the account remote it came from (the account remote of the same name and type that is not on the Universal Remote, when there is exactly one), with all that remote's buttons, instead of only the codes typed in Studio. If the account does not return those buttons, Sync stops before changing anything. Sync never deletes a remote from the account: one no longer on the Universal Remote only stops being listed under it, which the confirmation now says.
+- **Check** also lists what **Sync** would do: which remote is saved as a copy of which account remote, and which stops being listed under this Universal Remote.
+- **Apply order** no longer asks for confirmation; the button shows a spinner ("Applying…") and stays disabled until the remote has the new order, and tiles and scenes cannot be dragged meanwhile.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.29
 
 - Scenes can now be put in order. Drag a scene by its grip on the remote's picture, then **Apply order**. The remote always lists its scenes after its remotes and has no command to move one, so Studio writes the scene list again in the new order, reads it back, and moves each scene's Home Assistant actions with it (a press reports the scene's number).

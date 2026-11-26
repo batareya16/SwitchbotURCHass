@@ -176,3 +176,73 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
     wanted = {entry_id(item) for item in items}
     remove = [entry_id(item) for item in bound if entry_id(item) and entry_id(item) not in wanted]
     return {"items": items, "create": create, "remove": remove, "skipped": skipped}
+
+
+def _same_name(left: Any, right: Any) -> bool:
+    return str(left or "").strip().casefold() == str(right or "").strip().casefold() != ""
+
+
+def account_source(create: dict[str, Any], account_remotes: list[dict[str, Any]],
+                   table: list[tuple[int, int, int, bytes]]) -> dict[str, Any] | None:
+    """The account remote an IR remote on the Universal Remote was installed from, if it is clear.
+
+    Before 0.53.29 Studio installed a remote from the account under a new id, so the account does
+    not know the remote's copy. Its source is an account IR remote of the same name and type that
+    is not on the Universal Remote itself; only a single such remote counts, else there is none.
+    """
+    on_remote = {row[3] for row in table}
+    found = [item for item in account_remotes
+             if item.get("remoteID") and not item.get("isDeleted")
+             and _same_name(item.get("remoteName"), create.get("remoteName"))
+             and str(item.get("type")) == str(create.get("type"))
+             and cloud_item_id(item) not in on_remote]
+    unique = {str(item["remoteID"]): item for item in found}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def with_source_keys(create: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """The account record for the copy: every code and key of its source, under the copy's id.
+
+    The source's code bank, key map and keys are kept as they are; codes typed in Studio for
+    keys the source does not name are added to its keys.
+    """
+    merged = {key: value for key, value in source.items()
+              if key not in ("remoteID", "remoteIndex", "remoteName", "type", "waitModify",
+                             "createTime", "parentRemoteID", "isDeleted", "deviceID", "createFrom",
+                             "studioUnbound")}
+    merged.update({key: create[key] for key in ("remoteID", "remoteIndex", "remoteName", "type",
+                                                "waitModify", "createTime")})
+    merged["code"] = source.get("code") or "no_data"
+    merged["keyMap"] = source.get("keyMap") or ""
+    details = source.get("keyDetail") or []
+    if isinstance(details, str):
+        import json
+        try:
+            details = json.loads(details) if details.strip() else []
+        except ValueError:
+            details = []
+    details = [item for item in details if isinstance(item, dict)] if isinstance(details, list) else []
+    named = {str(item.get("keyName")) for item in details}
+    merged["keyDetail"] = details + [key for key in create.get("keyDetail", [])
+                                     if str(key.get("keyName")) not in named]
+    return merged
+
+
+def preview(steps: dict[str, Any], account_remotes: list[dict[str, Any]],
+            table: list[tuple[int, int, int, bytes]], bound: list[dict[str, Any]]) -> list[str]:
+    """What Sync would do, in words, before anything is sent."""
+    lines = []
+    for create in steps["create"]:
+        source = account_source(create, account_remotes, table)
+        lines.append(f"{create['remoteName']} (slot {create['remoteIndex']}): saved to the account as a copy of "
+                     f"your account's {source.get('remoteName')}, with all its buttons" if source else
+                     f"{create['remoteName']} (slot {create['remoteIndex']}): saved to the account with the "
+                     "codes typed in Studio")
+    names = {entry_id(item): str(item.get("remoteName") or item.get("deviceName")
+                                 or item.get("thirdPartyDeviceName") or item.get("sceneName") or entry_id(item))
+             for item in bound}
+    for removed in steps["remove"]:
+        lines.append(f"{names.get(removed, removed)}: no longer listed under this Universal Remote "
+                     "(it stays in your account)")
+    return lines
+

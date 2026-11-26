@@ -55,6 +55,15 @@ const MENU_SHORTCUT_ICONS = new Set([1, 2, 3, 4, 20, 39, 59, 70, 80, 94, 100, 11
 // The picture is drawn empty in Studio, so what it shows is what the key is: no icon.
 const NO_ICON_CODES = new Set([115, 2003]);
 const LIST_ROW_ICON_HINT = "In a list every icon is only the picture: the row always sends its command.";
+// A menu row with an IR code shows either an icon (and the icon's name) or its own caption.
+const ROW_ICON_OR_CAPTION_HINT = "A row shows either an icon with the icon's name, or your caption: never both. "
+  + "Typing a caption removes the icon; choosing an icon removes the caption.";
+
+// Whether the remote writes a row's own caption: only while the row carries no icon of its own.
+function rowShowsCaption(key) {
+  const fn = key?.glyph ?? key?.function;
+  return fn == null || fn === 0 || NO_ICON_CODES.has(fn);
+}
 // What an icon does besides its picture (WoRWS V48, decoded): on Main A–D of IR and Native
 // remotes a menu icon makes the key open a list (or show "No list under this shortcut" with no
 // page) and 123 opens the number pad. Everywhere else, list rows included, every icon is only
@@ -1425,7 +1434,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const row = grip.closest(".scr-row");
     const list = row?.parentElement;
     const screen = row?.closest(".scr-scroll");
-    if (!row || !list || this._physicalBusy) return;
+    if (!row || !list || this._physicalBusy || this._orderBusy) return;
     event.preventDefault();
     const selector = kind === "scenes" ? ".scr-row[data-scene-index]" : ".scr-row[data-screen-slot]";
     row.classList.add("dragging");
@@ -1466,11 +1475,18 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   // Send the order set on the screen: read the remote's table, put the tiles into the places the
   // known ones take, and let the table's own safeguards (confirmation, exact-table check) run.
+  // The bar's button spins for the whole run (reading the table, writing, reading back).
   async _applyScreenOrder() {
-    if (!this._screenOrderChanged() || this._physicalBusy) return;
-    if (this._tileOrderChanged()) await this._applyTileOrder();
-    if (this._sceneOrderChanged() && !this._tileOrderChanged()) await this._applySceneOrder();
+    if (!this._screenOrderChanged() || this._physicalBusy || this._orderBusy) return;
+    this._orderBusy = true;
     this._render();
+    try {
+      if (this._tileOrderChanged()) await this._applyTileOrder();
+      if (this._sceneOrderChanged() && !this._tileOrderChanged()) await this._applySceneOrder();
+    } finally {
+      this._orderBusy = false;
+      this._render();
+    }
   }
 
   // The scene list is written again in the new order (the remote has no command to move a scene);
@@ -1485,15 +1501,32 @@ class SwitchBotUrcPanel extends HTMLElement {
         type: `${DOMAIN}/studio/scenes/reorder`, entry_id: this._entryId, order,
         expected: scenes.map((item) => ({ index: item.scene_index, name: item.name, icon: item.icon, color: item.color })),
       });
+      const moved = result?.moved || {};
       const selected = /^scene:(\d+)$/.exec(this._remoteId || "");
-      if (selected && result?.moved?.[selected[1]] != null) this._remoteId = `scene:${result.moved[selected[1]]}`;
+      if (selected && moved[selected[1]] != null) this._remoteId = `scene:${moved[selected[1]]}`;
+      this._moveSceneDrafts(moved);
       this._sceneOrder = null;
       this._notify("Scene order saved on the remote.");
       await this._load();
+      // The scene editor keeps its unsaved edits by scene number: open it again on the moved scene.
+      const open = /^scene:(\d+)$/.exec(this._remoteId || "");
+      if (this._scenePanel && open) this._openScenes(false, Number(open[1]));
     } catch (error) {
       this._notify(error?.message || String(error), "warning");
     } finally {
       this._physicalBusy = false;
+    }
+  }
+
+  // Unsaved scene edits are kept by scene number; after a reorder they follow their scene.
+  _moveSceneDrafts(moved) {
+    const to = (index) => (moved[index] != null ? Number(moved[index]) : index);
+    for (const panel of this._scenePanels?.values() || []) {
+      if (panel.entryId !== this._entryId) continue;
+      panel.rows = (panel.rows || []).map((row) => ({ ...row, index: to(row.index) }));
+      panel.drafts = new Map(Array.from(panel.drafts || [], ([key, draft]) => (key === "new"
+        ? [key, draft] : [to(key), { ...draft, index: to(draft.index) }])));
+      if (panel.draft && panel.draft.index != null) panel.draft = { ...panel.draft, index: to(panel.draft.index) };
     }
   }
 
@@ -1512,9 +1545,10 @@ class SwitchBotUrcPanel extends HTMLElement {
   // The new-order bar sits above the remote's picture, so it never takes room from the tile list.
   _renderScreenOrderBar() {
     if (!this._screenOrderChanged()) return "";
-    const off = this._physicalBusy ? "disabled" : "";
+    const off = this._physicalBusy || this._orderBusy ? "disabled" : "";
     return `<div class="order-bar" role="status"><span>New order</span>
-      <button class="primary compact" type="button" id="applyScreenOrder" ${off}>Apply order</button>
+      <button class="primary compact" type="button" id="applyScreenOrder" ${off}>${
+        this._orderBusy ? busyLabel("Applying…") : "Apply order"}</button>
       <button class="secondary compact" type="button" id="resetScreenOrder" ${off}>Reset</button></div>`;
   }
 
@@ -2193,6 +2227,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     return `<div class="sync-box">
       <div class="action-title"><b>The SwitchBot app</b><span>its list of this remote's remotes and scenes</span></div>
       ${status}
+      ${(sync.plan || []).length ? `<p class="small"><b>Sync would:</b></p><ul class="sync-list">${
+        sync.plan.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
       ${sync.note ? `<p class="small">${escapeHtml(sync.note)}</p>` : ""}
       ${(sync.skipped || []).length ? `<p class="small">Not listed: ${escapeHtml(sync.skipped.join("; "))}</p>` : ""}
       ${sync.error ? `<p class="small warning">${escapeHtml(sync.error)}</p>` : ""}
@@ -2201,8 +2237,10 @@ class SwitchBotUrcPanel extends HTMLElement {
         <button class="primary compact" id="cloudSync" ${sync.busy ? "disabled" : ""}>Sync with the SwitchBot app</button>
       </div>
       <p class="small">Sync lists exactly what is on the remote, at its slots, as this Universal
-        Remote's remotes and scenes in your account, and removes what is no longer on it. An IR
-        remote made in Studio is saved to the account with its codes.</p>
+        Remote's remotes and scenes in your account, and stops listing there what is no longer on
+        it; no remote is deleted from your account. An IR remote made in Studio is saved to the
+        account with its codes, and one installed from your account under a new id as a copy of it
+        with all its buttons. Check shows what Sync would do.</p>
     </div>`;
   }
 
@@ -2237,9 +2275,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       try {
         const result = await this._hass.callWS({ type, entry_id: this._entryId });
         this._cloud = { ...this._cloud, sync: {
-          differences: result.differences || [], skipped: result.skipped || [],
+          differences: result.differences || [], skipped: result.skipped || [], plan: result.plan || [],
           note: result.listed != null
-            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${result.removed ? `, removed ${result.removed} no longer on the remote` : ""}.`
+            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${(result.copied || []).length ? ` (${result.copied.join(", ")} with all the buttons of the account's remote)` : ""}${result.removed ? `, stopped listing ${result.removed} no longer on the remote` : ""}.`
             : "",
         } };
         if (result.listed != null) { this._sources = null; this._accountCodesFor = null; }
@@ -2252,7 +2290,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       syncRun(`${DOMAIN}/studio/cloud/sync_status`, "Comparing the remote with your account…"));
     root.getElementById("cloudSync")?.addEventListener("click", () => {
       if (!confirm("List what is on the remote as this Universal Remote's remotes and scenes in your "
-        + "SwitchBot account? Entries for remotes no longer on it are removed from the account's list.")) return;
+        + "SwitchBot account? Remotes no longer on it stop being listed under it; none is deleted "
+        + "from your account.")) return;
       syncRun(`${DOMAIN}/studio/cloud/sync`, "Updating your SwitchBot account…");
     });
 
@@ -2445,8 +2484,6 @@ class SwitchBotUrcPanel extends HTMLElement {
   async _applyTableOrder() {
     const table = this._deviceTable;
     if (!this._orderChanged(table) || this._physicalBusy) return false;
-    if (!confirm("Change the order of the tiles in the Universal Remote's list? The remote applies it "
-      + "as a whole; the tiles themselves are not touched.")) return false;
     let applied = false;
     this._physicalBusy = true;
     this._render();
@@ -2695,7 +2732,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       <div id="visualActionEditor"></div><div id="selectOptionWarning" class="small" role="status"></div>
       <details><summary>Advanced JSON fallback</summary><textarea id="actionsJson" spellcheck="false">${escapeHtml(this._actionJsonDraft ?? JSON.stringify(this._draftActions, null, 2))}</textarea></details></div>` : "";
     return `<div class="workspace scene-workspace">
-      <section class="remote-stage"><div class="device-wrap">${sceneFace}</div></section>
+      <section class="remote-stage">${this._renderScreenOrderBar()}<div class="device-wrap">${sceneFace}</div></section>
       <aside class="editor">
         ${busy === "read" ? loadingNote("Reading scenes from the remote…") : ""}
         ${draft ? `<nav class="mode-tabs"><button data-scene-tab="actions" class="${!this._scenePanel.appearance ? "selected" : ""}">Custom actions</button>
@@ -3627,9 +3664,24 @@ class SwitchBotUrcPanel extends HTMLElement {
     });
     const captionField = root.querySelector('[data-key-field="title"]');
     captionField?.addEventListener("input", (event) => {
-      // Typed straight into the draft; the picture is redrawn when the field is left, so typing
-      // keeps its focus.
+      // Typed straight into the draft; the row on the picture follows as you type (only its text,
+      // so the field keeps its focus) and everything is redrawn when the field is left.
       key.title = event.target.value;
+      if (key.title && !rowShowsCaption(key)) {
+        // A caption only shows on a row without an icon, so typing one removes the icon. The
+        // editor is drawn again (the icon picker changes) and the caret goes back to the field.
+        if (key.function == null || key.function === 0 || NO_ICON_CODES.has(key.function)) delete key.glyph;
+        else key.glyph = 115;
+        const caret = event.target.selectionStart;
+        this._render();
+        const field = this.shadowRoot.querySelector('[data-key-field="title"]');
+        field?.focus();
+        field?.setSelectionRange(caret, caret);
+        return;
+      }
+      const shownRow = root.querySelector(`.scr-row[data-button="p${page.index}_k${key.index}"] .nm,`
+        + ` .scr-row[data-button="draft:${page.index}:${key.index}"] .nm`);
+      if (shownRow) shownRow.textContent = irRowCaption(page.index, key);
       const note = root.querySelector("[data-caption-note]");
       const bytes = new TextEncoder().encode(event.target.value).length;
       if (note && /bytes/.test(note.textContent)) {
@@ -3753,6 +3805,9 @@ class SwitchBotUrcPanel extends HTMLElement {
       }
       if (glyphCode === "") delete owner[glyphField];
       else owner[glyphField] = Number(glyphCode);
+      // A menu row shows an icon or its caption, never both: an icon chosen drops the caption.
+      if (glyphField === "glyph" && owner.transport === "ir" && owner.title && this._page()?.index
+          && !this._page()?.number_pad && !rowShowsCaption(owner)) delete owner.title;
       this._physicalStatus = "";
       const scrollTop = button.closest(".glyph-grid")?.scrollTop || 0;
       this._render();
@@ -3840,8 +3895,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   // The caption a menu row shows on the remote: the name its code is uploaded under.
   _renderCaptionField(page, key) {
-    const fn = key.glyph ?? key.function;
-    const shown = fn == null || fn === 0 || NO_ICON_CODES.has(fn);
+    const shown = rowShowsCaption(key);
     const bytes = new TextEncoder().encode(String(key.title || "")).length;
     return `<label>Caption on the remote<input type="text" data-key-field="title" spellcheck="false"
         value="${escapeHtml(key.title || "")}" placeholder="${escapeHtml(irKeyName(page.index, { index: key.index }))}"></label>
@@ -4027,6 +4081,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         the remote would show "No list under this shortcut" and send nothing. Choose another icon
         below before saving.</p>` : ""}
       ${key.transport === "ir" ? `
+        ${page.index && !page.number_pad ? `<p class="small" data-row-either>${ROW_ICON_OR_CAPTION_HINT}</p>` : ""}
         ${this._fixedSoftkeys() && !page.index && key.index < 4 ? FIXED_SOFTKEY_NOTE
           : page.number_pad && key.index < NUMBER_PAD_FUNCTIONS.length ? ""
           : (kind === "hid" || kind === "ir") && (page.index || key.index < 4)

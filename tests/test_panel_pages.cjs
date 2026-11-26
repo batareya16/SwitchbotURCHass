@@ -1008,12 +1008,14 @@ test('tiles dragged on the remote screen are sent as one order, with unknown row
   instance._load = async () => {};
   instance._notify = () => {};
   instance._readDeviceTable = async () => { instance._deviceTable = {rows, order: rows.map((row) => row.slot), open: true}; };
-  context.confirm = () => false;
+  context.confirm = () => { throw new Error('Apply order asks no confirmation'); };
+  // while it runs, the button spins and is disabled
+  let during;
+  const read = instance._readDeviceTable;
+  instance._readDeviceTable = async () => { during = instance._renderScreenOrderBar(); await read(); };
   await instance._applyScreenOrder();
-  assert.equal(sent.length, 0);           // not confirmed: nothing is sent, the pending order stays
-  assert.deepEqual(instance._screenOrder, [3, 0, 1]);
-  context.confirm = () => true;
-  await instance._applyScreenOrder();
+  assert.match(during, /id="applyScreenOrder" disabled><span class="spinner inline"[^>]*><\/span>Applying…/);
+  assert.equal(instance._orderBusy, false);
   const request = sent.find((msg) => msg.type.endsWith('/physical/reorder'));
   // The screen lists rows from the highest slot down, so the dragged order is reversed for the table;
   // the unknown row (slot 2) stays where it was.
@@ -1515,6 +1517,37 @@ test('the home list is two zones, remotes then scenes, and scenes move only amon
   assert.equal(instance._sceneOrderChanged(), false);
 });
 
+test('the scene editor shows Apply order, and unsaved scene edits follow their scene', async () => {
+  const instance = panel();
+  instance._pages = () => [];
+  instance._nativeProfiles = [];
+  const remotes = [
+    { remote_id: 'scene:0', name: 'Sleep', kind: 'scene', scene_index: 0, icon: 1, color: 1, actions: [] },
+    { remote_id: 'scene:1', name: 'Movie', kind: 'scene', scene_index: 1, icon: 2, color: 2, actions: [] },
+  ];
+  instance._entryId = 'entry';
+  instance._entry = () => ({ entry_id: 'entry', remotes });
+  const draft = { index: 0, name: 'Sleep tight', icon: 1, color: 1, actions: [] };
+  const panelState = { entryId: 'entry', rows: remotes.map((item) => ({ index: item.scene_index, name: item.name,
+    icon: item.icon, color: item.color, actions: [] })), drafts: new Map([[0, { ...draft }]]), draft, limit: 10, loaded: true };
+  instance._scenePanels = new Map([['entry', panelState]]);
+  instance._scenePanel = panelState;
+  instance._remoteId = 'scene:0';
+  assert.doesNotMatch(instance._renderScenes(), /id="applyScreenOrder"/);
+  instance._sceneOrder = [1, 0];
+  assert.match(instance._renderScenes(), /id="applyScreenOrder"/);
+  let opened;
+  instance._openScenes = (addNew, index) => { opened = index; };
+  instance._hass = { states: {}, async callWS() { return { moved: { 0: 1, 1: 0 } }; } };
+  await instance._applySceneOrder();
+  assert.equal(instance._remoteId, 'scene:1');
+  assert.equal(opened, 1);
+  assert.equal(panelState.draft.index, 1);
+  assert.equal(panelState.drafts.get(1).name, 'Sleep tight');
+  assert.equal(panelState.drafts.has(0), false);
+  assert.deepEqual(panelState.rows.map((row) => [row.index, row.name]), [[1, 'Sleep'], [0, 'Movie']]);
+});
+
 test('a menu row shows the caption the remote writes, and its editor has a caption field', () => {
   assert.equal(context.irRowCaption(4, { index: 1, transport: 'ir', function: 115 }), 'D2');
   assert.equal(context.irRowCaption(1, { index: 0, transport: 'ir', function: 115, title: 'Netflix' }), 'Netflix');
@@ -1528,6 +1561,49 @@ test('a menu row shows the caption the remote writes, and its editor has a capti
     /writes the icon's name on this row/);
 });
 
+test('a menu row takes an icon or a caption: each clears the other, and the editor says so', () => {
+  assert.equal(context.rowShowsCaption({ function: 115 }), true);
+  assert.equal(context.rowShowsCaption({ function: 115, glyph: 12 }), false);
+  assert.equal(context.rowShowsCaption({ glyph: 2003 }), true);
+  const instance = panel();
+  instance._catalog = { available: false };
+  const key = { index: 4, transport: 'ir', code_hex: 'aabb', function: 115, glyph: 12 };
+  const page = { index: 4, buttons: [key] };
+  instance._physical = { kind: 'ir', pages: [{ index: 0, buttons: [] }, page] };
+  const button = { button_id: 'p4_k4', button_page: 4, button_index: 4 };
+  const editor = instance._renderKeyEditor(button);
+  assert.ok(editor.indexOf('data-row-either') >= 0 && editor.indexOf('data-row-either') < editor.indexOf('data-glyph-field="glyph"'));
+  // typing a caption removes the icon (the default, 115, shows the caption)
+  const listeners = {};
+  const field = { value: '', selectionStart: 0, focus() {}, setSelectionRange() {},
+    addEventListener(type, handler) { listeners[type] = handler; } };
+  const root = { querySelector: (selector) => (selector === '[data-key-field="title"]' ? field : null),
+    querySelectorAll: () => [], getElementById: () => null };
+  instance._button = () => button;
+  instance._draftKey = () => ({ key, page });
+  instance._render = () => {};
+  Object.defineProperty(instance, 'shadowRoot', { value: root, configurable: true });
+  instance._wireKeyEditor(root);
+  field.value = 'Night';
+  field.selectionStart = 5;
+  listeners.input({ target: field });
+  assert.equal(key.title, 'Night');
+  assert.equal('glyph' in key, false);
+  // choosing an icon removes the caption
+  const clicks = [];
+  const pick = { dataset: { glyphField: 'glyph', glyphCode: '26' }, closest: () => null,
+    addEventListener(type, handler) { clicks.push(handler); } };
+  instance._page = () => ({ index: 4, buttons: [] });
+  instance._draftKey = () => ({ key, page });
+  const pickRoot = { querySelector: () => null, getElementById: () => null,
+    querySelectorAll: (selector) => (selector === '[data-glyph-field]' ? [pick] : []) };
+  Object.defineProperty(instance, 'shadowRoot', { value: pickRoot, configurable: true });
+  instance._wirePhysical();
+  clicks.forEach((handler) => handler());
+  assert.equal(key.glyph, 26);
+  assert.equal('title' in key, false);
+});
+
 test('the account section says what the SwitchBot app sees and offers to sync', () => {
   const instance = panel();
   instance._cloud = { connected: true, cached_remotes: 2, sync: { differences: [
@@ -1535,6 +1611,10 @@ test('the account section says what the SwitchBot app sees and offers to sync', 
   let html = instance._renderCloud();
   assert.match(html, /The SwitchBot app sees 2 differences[\s\S]*Slot 5: on the remote, not in the account/);
   assert.match(html, /id="cloudSync"[^>]*>Sync with the SwitchBot app/);
+  instance._cloud.sync = { differences: ['TV: in the account, not on the remote'],
+    plan: ["TV (slot 0): saved to the account as a copy of your account's TV, with all its buttons"] };
+  assert.match(instance._renderCloud(), /Sync would:[\s\S]*copy of your account.{1,6}s TV, with all its buttons/);
+  assert.match(instance._renderCloud(), /no remote is deleted from your account/);
   instance._cloud.sync = { differences: [], note: 'Listed 8 in the account.' };
   html = instance._renderCloud();
   assert.match(html, /sees the remote as it is/);

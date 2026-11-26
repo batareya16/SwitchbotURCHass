@@ -67,3 +67,36 @@ def test_the_plan_lists_every_row_at_its_slot_creates_studio_remotes_and_removes
     assert steps["remove"] == ["01-202601010101-11111111"]
     # once the account holds these entries, the app sees no difference
     assert sync.differences(items, TABLE, SCENES) == []
+
+
+def test_a_remote_installed_from_the_account_under_a_new_id_is_saved_as_a_copy_of_its_source():
+    # The account's TV is not on the remote; the remote's TV (slot 0) has a Studio id
+    table = [(0, 0x02, 1, bytes.fromhex("01141a0b13013a153a6331"))]
+    tv_on_remote = sync.remote_id_from_bytes(table[0][3])
+    account_tv = {"remoteID": "01-202611010101-12345678", "remoteName": "TV", "type": 2,
+                  "remoteIndex": 0, "createFrom": "hub"}
+    remotes = [{"name": "TV", "device_type": "IR_2", "device_id": table[0][3].hex(),
+                "physical_layout": {"kind": "ir", "pages": [{"index": 1, "buttons": [
+                    {"index": 0, "transport": "ir", "code_hex": "aabb", "title": "Night"}]}]}}]
+    steps = sync.plan(table, remotes, [account_tv], {account_tv["remoteID"]}, [])
+    (create,) = steps["create"]
+    assert create["remoteID"] == tv_on_remote
+    assert steps["remove"] == [account_tv["remoteID"]]
+    source = sync.account_source(create, [account_tv, {**account_tv}], table)
+    assert source is account_tv or source == account_tv
+    # a second account remote of that name and type makes the source unclear: none is used
+    other = {**account_tv, "remoteID": "01-202611010101-87654321"}
+    assert sync.account_source(create, [account_tv, other], table) is None
+    # nor one that is on the remote itself, nor one of another type
+    assert sync.account_source(create, [{**account_tv, "remoteID": tv_on_remote}], table) is None
+    assert sync.account_source(create, [{**account_tv, "type": 8}], table) is None
+    downloaded = {**account_tv, "code": "QUJD", "keyMap": "1:0:4", "brandEn": "LG", "hxdIndex": "123",
+                  "keyDetail": '[{"keyName": "Blue", "code": "AAA="}, {"keyName": "Night", "code": "BBB="}]'}
+    copy = sync.with_source_keys(create, downloaded)
+    assert copy["remoteID"] == tv_on_remote and copy["remoteIndex"] == 0 and copy["waitModify"] is False
+    assert copy["code"] == "QUJD" and copy["keyMap"] == "1:0:4" and copy["brandEn"] == "LG"
+    assert [key["keyName"] for key in copy["keyDetail"]] == ["Blue", "Night"]   # the source's Night wins
+    assert "createFrom" not in copy
+    words = sync.preview(steps, [account_tv], table, [account_tv])
+    assert words == ["TV (slot 0): saved to the account as a copy of your account's TV, with all its buttons",
+                     "TV: no longer listed under this Universal Remote (it stays in your account)"]
