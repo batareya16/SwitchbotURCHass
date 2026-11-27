@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.54.0
+
+Everything since 0.53.0, in short.
+
+### Remote Studio
+- Icons for every remote type (Native, text, HID, IR), also when adding a remote; two new firmware icons, Roller blind and Garage.
+- Reorder remotes and scenes by dragging them on the remote's picture, then **Apply order**.
+- **Repair list order** (Diagnostics) fixes a tile that opens the remote above it.
+- Delete any row from the remote's list, including ones Studio did not make.
+- Live captions on the text remote from Home Assistant templates.
+- Native type picker: one card for types Studio sets up identically (34 → 25 cards); existing remotes keep their type.
+- **Remote settings**: firmware version and **Check for updates**.
+- One loading panel style for everything that waits on the remote or the account.
+
+### IR remotes
+- Every IR type is laid out the way the SwitchBot app does it (Main keys, A–D pages, Power); fixes dead buttons and wrong types from the catalog.
+- **Empty remote**, including the new **Other (DIY)** type.
+- Install account remotes made on a Hub or from learned keys.
+- Number pad behind the 123 key; digit pages open as the pad.
+- Per-key icons, icon-only A–D keys and **No icon**; the picker only offers icons that work in that place.
+- Menu rows show either an icon or your caption (the remote cannot show both).
+- Paste codes as Pronto, µs timings or `Z6V…` base64.
+- **Copy from a button** lists every key in your SwitchBot account.
+- Stock A–D icons are kept on save.
+
+### SwitchBot account and app
+- New **Check** and **Sync with the SwitchBot app**: the account lists the remote's remotes and scenes the way the app expects, so it stops asking to clean the remote.
+  - Account remotes are copied with all their buttons.
+  - Bridge remotes are listed as Matter devices.
+  - Scenes get empty tap-to-run scenes in the account.
+  - Only what Studio made is ever deleted; your own remotes and scenes are never changed.
+- The remote's firmware version is read and sent to the account. This fixes IR remotes marked "Key error, delete and add again".
+- Remotes installed from the account are registered under the Universal Remote, as the app does.
+- **Re-read my remotes** also finds remotes made on a Hub.
+- Sign-in finds the account's region (North American accounts, issue #2).
+
+### Fixes
+- Scenes: the order on the remote now matches Studio, and deleting a scene no longer leaves an empty tile.
+- No page without keys is ever written; the remote would put it over another tile.
+- Saved slots follow the remote's own list after installs, reorders and restarts.
+- IR installs no longer end in "sync error".
+
+### Bridge add-on
+- Latest is 0.53.6. Update it if yours is older than 0.53.5: IR installs need its answer to the remote's connection requests.
+
 ## 0.53.33
 
 - Fix deleting a scene: the scenes after it kept their numbers, so the remote, which draws its scenes by number, showed an empty tile without a name in place of the deleted one and no longer showed the last scene. As the SwitchBot app does, Studio now numbers the scenes again without a gap whenever it writes the list (0, 1, 2…), and each scene's Home Assistant actions, unsaved edits and selection move with it. A remote left with a gap by an earlier delete is fixed by saving any of its scenes once. Run **Sync with the SwitchBot app** afterwards so the account lists the scenes at their new numbers.

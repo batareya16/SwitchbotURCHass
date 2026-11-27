@@ -487,16 +487,45 @@ def native_type_options() -> list[dict]:
     return options
 
 
-def native_type_picker_options() -> list[dict]:
-    """List distinct types that fit the V48 local page write."""
-    options = []
+def native_type_twins() -> dict[str, str]:
+    """Types that differ only in their device-type byte, each mapped to the first of its kind.
+
+    They share the profile (so the layout), the screen mode, the illustration and the icon, and
+    the firmware gives their device-type bytes the same default artwork (DEVICE_ARTWORK): in
+    Studio they are set up identically, so the type picker shows one card for them. A tile that already carries one of
+    them keeps its own device-type byte (see physical_layout.native_appearance).
+    """
+    first: dict[tuple, str] = {}
+    twins: dict[str, str] = {}
     for item in native_type_options():
         name = item["value"]
         if name in NATIVE_TYPE_EQUIVALENTS or not native_device_type_supported(item["device_type"]):
             continue
+        key = (item["profile"], item["control_mode"], item["artwork_id"], item["icon_code"],
+               DEVICE_ARTWORK.get(NATIVE_DEVTYPE[item["device_type"]]))
+        if key in first:
+            twins[name] = first[key]
+        else:
+            first[key] = name
+    return twins
+
+
+def native_type_picker_options() -> list[dict]:
+    """List distinct types that fit the V48 local page write."""
+    twins = native_type_twins()
+    options = []
+    for item in native_type_options():
+        name = item["value"]
+        if (name in NATIVE_TYPE_EQUIVALENTS or name in twins
+                or not native_device_type_supported(item["device_type"])):
+            continue
+        merged = [alias for alias, canonical in twins.items() if canonical == name]
         options.append(item | {
+            # One card for several devices: named after what they have in common.
+            "title": NATIVE_PROFILE_TITLES.get(item["profile"], item["title"]) if merged else item["title"],
             "equivalent_types": [alias for alias, canonical in NATIVE_TYPE_EQUIVALENTS.items()
-                                 if canonical == name],
+                                 if canonical == name] + merged,
+            "twin_types": merged,
         })
     return options
 

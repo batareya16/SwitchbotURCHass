@@ -3919,6 +3919,10 @@ class SwitchBotUrcPanel extends HTMLElement {
     }));
     root.querySelectorAll("[data-native-profile]").forEach((button) => button.addEventListener("click", () => {
       const selected = this._nativeProfiles.find((item) => item.value === button.dataset.nativeProfile);
+      // A card can stand for several devices set up alike (Outlet and Japan outlet): the remote's
+      // own type is kept when its card is clicked again, so its device-type byte never changes.
+      const current = this._physical.native_type || this._physical.template;
+      if (selected && (selected.value === current || selected.equivalent_types?.includes(current))) return;
       this._physical.native_type = button.dataset.nativeProfile;
       this._physical.template = selected?.profile || button.dataset.nativeProfile;
       this._physical.control_mode = selected?.control_mode ?? 0;

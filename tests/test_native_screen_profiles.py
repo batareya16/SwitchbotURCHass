@@ -581,3 +581,22 @@ def test_firmware_execution_report_matches_shared_artwork_resolver():
             continue
         assert c.native_artwork_id(int(row["device_type"], 16),
                                    int(row["icon"], 16), int(row["mode"], 16)) == int(row["profile"], 16)
+
+
+def test_types_set_up_alike_share_one_card_and_a_tile_keeps_its_own_type():
+    twins = c.native_type_twins()
+    assert twins["PLUG_JP"] == "PLUG" and twins["LOCK_PRO"] == "LOCK" and twins["CURTAIN_3"] == "CURTAIN"
+    options = {item["value"]: item for item in c.native_type_picker_options()}
+    assert "PLUG_JP" not in options and "LOCK_LITE" not in options
+    assert options["AIR_PURIFIER_US"]["title"] == "Air purifier"
+    assert set(options["AIR_PURIFIER_US"]["twin_types"]) == {"AIR_PURIFIER_JP", "AIR_PURIFIER_US_PRO",
+                                                            "AIR_PURIFIER_JP_PRO"}
+    assert "PLUG_JP" in options["PLUG"]["equivalent_types"]
+    # every card of a group is the same in Studio: layout, screen mode, picture and icon
+    for alias, canonical in twins.items():
+        one, other = c.native_type_metadata(alias), c.native_type_metadata(canonical)
+        assert (one["profile"], one["control_mode"], one["artwork_id"], one["icon_code"]) == \
+               (other["profile"], other["control_mode"], other["artwork_id"], other["icon_code"])
+    # a Japan outlet on the remote stays a Japan outlet (its own device-type byte)
+    remote = {"device_type": "PLUG_JP", "remote_id": "1", "device_id": "AA:BB:CC:DD:EE:FF"}
+    assert physical.native_appearance(remote)["native_type"] == "PLUG_JP"
