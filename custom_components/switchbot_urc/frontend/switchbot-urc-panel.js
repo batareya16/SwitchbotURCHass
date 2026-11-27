@@ -1394,9 +1394,15 @@ class SwitchBotUrcPanel extends HTMLElement {
     return remotes.map((item) => (this._isListTile(item) ? queue.shift() : item));
   }
 
-  // The scenes as drawn: the pending scene order, if any, else by number.
+  // The scenes as the remote draws them: the highest number at the top (the SwitchBot app numbers
+  // its list from the bottom up, too), or the pending order, top to bottom.
+  _sceneList() {
+    return (this._entry()?.remotes || []).filter((item) => item.kind === "scene")
+      .sort((left, right) => right.scene_index - left.scene_index);
+  }
+
   _screenScenes() {
-    const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
+    const scenes = this._sceneList();
     const order = this._sceneOrder;
     if (!this._sceneOrderValid(scenes)) return scenes;
     return order.map((index) => scenes.find((item) => item.scene_index === index));
@@ -1409,7 +1415,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   }
 
   _sceneOrderChanged() {
-    const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
+    const scenes = this._sceneList();
     return this._sceneOrderValid(scenes)
       && scenes.some((item, index) => this._sceneOrder[index] !== item.scene_index);
   }
@@ -1493,7 +1499,9 @@ class SwitchBotUrcPanel extends HTMLElement {
   // their Home Assistant actions move with them, and the selection follows the scene it was on.
   async _applySceneOrder() {
     const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
-    const order = this._sceneOrder;
+    // The screen lists the scenes from the top down, the highest number first; the new numbers
+    // count from the bottom up, so the bottom scene becomes number 0.
+    const order = [...this._sceneOrder].reverse();
     this._physicalBusy = true;
     this._render();
     try {
@@ -2222,7 +2230,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         ? '<p class="small">Check whether the SwitchBot app sees the remote as Studio left it.</p>'
         : list.length
           ? `<p class="small"><b>The SwitchBot app sees ${list.length} difference${list.length === 1 ? "" : "s"}</b>
-              and would offer to clean the remote:</p><ul class="sync-list">${list.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+              and shows the remote as not synchronized:</p><ul class="sync-list">${list.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
           : '<p class="small"><b>The SwitchBot app sees the remote as it is.</b></p>';
     return `<div class="sync-box">
       <div class="action-title"><b>The SwitchBot app</b><span>its list of this remote's remotes and scenes</span></div>
@@ -2289,9 +2297,9 @@ class SwitchBotUrcPanel extends HTMLElement {
     root.getElementById("cloudSyncCheck")?.addEventListener("click", () =>
       syncRun(`${DOMAIN}/studio/cloud/sync_status`, "Comparing the remote with your account…"));
     root.getElementById("cloudSync")?.addEventListener("click", () => {
-      if (!confirm("List what is on the remote as this Universal Remote's remotes and scenes in your "
-        + "SwitchBot account? Remotes no longer on it stop being listed under it; none is deleted "
-        + "from your account.")) return;
+      if (!confirm("Update the SwitchBot app's list of this Universal Remote to match what is on it?\n\n"
+        + "Remotes and scenes on the remote are added to the list. Remotes that are no longer on it are "
+        + "taken off the list, but stay in your account. Nothing is deleted.")) return;
       syncRun(`${DOMAIN}/studio/cloud/sync`, "Updating your SwitchBot account…");
     });
 

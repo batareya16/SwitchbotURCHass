@@ -191,11 +191,13 @@ class UrcConfigFlow(ConfigFlow, domain=DOMAIN):
                 candidate["access_token"] = access
                 candidate["refresh_token"] = refresh
 
+            signed_in = False
             try:
                 cloud = SwitchBotCloudClient(
                     async_get_clientsession(self.hass), candidate, _capture_tokens
                 )
                 await cloud.login(candidate["username"], user_input["password"])
+                signed_in = True
                 homes = await cloud.get_homes()
                 self._pending_cloud = candidate
                 self._cloud_homes = {
@@ -215,8 +217,13 @@ class UrcConfigFlow(ConfigFlow, domain=DOMAIN):
                     return await self.async_step_cloud_home()
                 errors["base"] = "cloud_no_homes"
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("SwitchBot cloud login failed: %s", err)
-                errors["base"] = "cloud_auth_failed"
+                if signed_in:
+                    # The password was right: what failed is reading the homes afterwards.
+                    _LOGGER.warning("SwitchBot sign-in succeeded, but the homes failed: %s", err)
+                    errors["base"] = "cloud_homes_failed"
+                else:
+                    _LOGGER.warning("SwitchBot cloud login failed: %s", err)
+                    errors["base"] = "cloud_auth_failed"
 
         return self.async_show_form(
             step_id="cloud_connect",
@@ -1437,6 +1444,7 @@ class UrcOptionsFlow(OptionsFlow):
                 "access_token": "",
                 "refresh_token": "",
             }
+            signed_in = False
             try:
                 async def _capture_tokens(access: str, refresh: str) -> None:
                     candidate["access_token"] = access
@@ -1446,6 +1454,7 @@ class UrcOptionsFlow(OptionsFlow):
                     async_get_clientsession(self.hass), candidate, _capture_tokens
                 )
                 await cloud.login(candidate["username"], user_input["password"])
+                signed_in = True
                 homes = await cloud.get_homes()
                 self._pending_cloud = candidate
                 self._cloud_homes = {
@@ -1465,8 +1474,13 @@ class UrcOptionsFlow(OptionsFlow):
                     return await self.async_step_cloud_account_home()
                 errors["base"] = "cloud_no_homes"
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("SwitchBot cloud login failed: %s", err)
-                errors["base"] = "cloud_auth_failed"
+                if signed_in:
+                    # The password was right: what failed is reading the homes afterwards.
+                    _LOGGER.warning("SwitchBot sign-in succeeded, but the homes failed: %s", err)
+                    errors["base"] = "cloud_homes_failed"
+                else:
+                    _LOGGER.warning("SwitchBot cloud login failed: %s", err)
+                    errors["base"] = "cloud_auth_failed"
 
         return self.async_show_form(
             step_id="cloud_account",

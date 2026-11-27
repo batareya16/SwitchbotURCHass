@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.53.31
+
+- Fix the order of scenes: Studio's picture listed the scenes from number 0 down, while the remote (like the SwitchBot app) lists them with the highest number at the top, so an order applied in Studio came out reversed on the remote. The picture now lists the scenes as the remote does, and **Apply order** numbers them the way the remote draws them, so the remote shows the order you set.
+- The SwitchBot app kept showing "Appliance settings are not synchronized" after **Sync with the SwitchBot app**, while **Check** found nothing. Besides comparing the two lists, the app looks every listed Bluetooth device up among the account's SwitchBot devices and every listed scene among the account's scenes, and a Bridge remote is not a device any account knows. **Check** now makes those two checks too, so it shows what the app shows, and **Sync** lists a Bridge remote (any Bluetooth tile whose address is not one of your account's SwitchBot devices) as a Matter device, which the app does not look up: the banner and the warning on its devices go away. In the app such a tile shows as a Matter device and cannot be controlled from there. **Check** says which tiles Sync lists this way.
+- Fix signing in to a SwitchBot account that setup then rejected with "Sign-in failed… status 2005: refreshToken is wrong" (issue #2, after 0.53.29). The sign-in itself succeeded; the server asked for the homes refused the new token, and Studio then tried to renew the token and stopped. Looking for the homes no longer renews the token: Studio asks the server of the account's region (any region, built as pySwitchbot does), then the EU and US ones, and asks each one again with only the authorization header, as pySwitchbot sends it, before moving on. The server that answers is remembered. When none does, setup now says the sign-in worked but no server returned the homes, instead of blaming the password, and the log lists what each server answered. A renewal refused with "refreshToken is wrong" now also tries the Cognito renewal, as one refused with status 2006 already did.
+- The confirmation before **Sync** is written plainly: what is added, what is taken off the list, and that nothing is deleted.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.30
 
 - Fix **Apply order** for scenes: when a scene was open in the editor, dragging scenes on the remote's picture changed their order on the screen but showed no **Apply order** button. The scene editor now shows it, the same as for remotes.

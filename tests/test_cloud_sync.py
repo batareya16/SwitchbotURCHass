@@ -58,6 +58,11 @@ def test_the_plan_lists_every_row_at_its_slot_creates_studio_remotes_and_removes
     assert items[2] == {"deviceID": "4D5400000000", "deviceName": "Remote 3", "deviceType": "WoMatter",
                         "remoteIndex": 2, "roomName": ""}
     assert items[4]["deviceID"] == "DA7116E01F92" and items[4]["deviceName"] == "Floor lamp"
+    # Bridge tiles: no account device has their address, so they are listed as Matter devices
+    assert items[3]["deviceType"] == items[4]["deviceType"] == "WoMatter"
+    assert steps["as_matter"] == ["Remote 4 (slot 3)", "Floor lamp (slot 4)"]   # slot 3 has no name here
+    real = sync.plan(TABLE, REMOTES, BOUND, known, SCENES, {"DA7116E01F92"})["items"]
+    assert real[4]["deviceType"] == "WoStrip"                      # a real SwitchBot device keeps its type
     assert items[6]["thirdPartyDeviceID"] == "021793376454" and items[6]["thirdPartyType"] == "UniversalBLE"
     assert items[7]["sceneName"] == "Sleep" and items[7]["sceneIndex"] == 0
     # Birds light is not in the account: created first, with its typed codes as learned keys
@@ -100,3 +105,27 @@ def test_a_remote_installed_from_the_account_under_a_new_id_is_saved_as_a_copy_o
     words = sync.preview(steps, [account_tv], table, [account_tv])
     assert words == ["TV (slot 0): saved to the account as a copy of your account's TV, with all its buttons",
                      "TV: no longer listed under this Universal Remote (it stays in your account)"]
+
+
+def test_check_also_reports_what_lights_the_apps_banner_and_warnings():
+    payload = {
+        "bindDevices": [
+            {"deviceID": "DA7116E01F92", "deviceName": "Floor lamp", "deviceType": "WoStrip", "remoteIndex": 4},
+            {"deviceID": "4D5400000000", "deviceName": "Text", "deviceType": "WoMatter", "remoteIndex": 2},
+            {"thirdPartyDeviceID": "021793376454", "thirdPartyType": "UniversalBLE", "remoteIndex": 7},
+            {"deviceID": "AABBCCDDEEFF", "deviceName": "Bulb", "deviceType": "WoBulb", "remoteIndex": 5},
+            {"sceneID": "studio-scene-0", "sceneName": "QWERT", "sceneIndex": 0},
+            {"sceneID": "S1", "sceneName": "Flow vibe", "sceneIndex": 1, "sceneIcon": "a", "sceneColor": 2},
+        ],
+        "devices": [{"deviceID": "AABBCCDDEEFF", "deviceName": "Bulb", "status": {}}],
+        "scenes": [{"sceneID": "S1", "name": "Flow vibe", "icon": {"css": "a", "color": 2}}],
+    }
+    assert sync.app_warnings(payload) == [
+        "Floor lamp: no SwitchBot device DA7116E01F92 in the account",
+        "Scene QWERT: not a scene of your SwitchBot account",
+    ]
+    payload["devices"][0]["deviceName"] = "Bulb 2"
+    payload["scenes"][0]["icon"]["color"] = 3
+    found = sync.app_warnings(payload)
+    assert "Bulb: its name or settings differ from the device in the account" in found
+    assert "Scene Flow vibe: its name or look differ from the scene in the account" in found

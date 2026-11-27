@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import logging
 import time
 import uuid
@@ -24,6 +25,16 @@ REGION_URLS = {
 }
 
 _LOGGER = logging.getLogger(__name__)
+_REGION_NAME = re.compile(r"^[a-z0-9-]{2,20}$")
+
+
+def region_url(region: str) -> str | None:
+    """The Wonderlabs host of an account region, as pySwitchbot builds it (wonderlabs.<region>)."""
+    name = str(region or "").strip()
+    if name.upper() in REGION_URLS:
+        return REGION_URLS[name.upper()]
+    name = name.lower()
+    return f"https://wonderlabs.{name}.api.switchbot.net" if _REGION_NAME.match(name) else None
 
 
 def parse_communication_credentials(payload: Any) -> tuple[bytes, int] | None:
@@ -104,6 +115,12 @@ class SwitchBotCloudClient:
         return custom or REGION_URLS.get(self.settings.get("region", "EU"), REGION_URLS["EU"])
 
     def _headers(self, *, authenticated: bool = True) -> dict[str, str]:
+        if self.settings.get("plain_headers"):
+            # Only what pySwitchbot sends: some partitions refuse the app's extra headers.
+            plain = {"Content-Type": "application/json"}
+            if authenticated:
+                plain["authorization"] = str(self.settings.get("access_token", ""))
+            return plain
         headers = {
             "Content-Type": "application/json",
             "appVersion": "10.5",
@@ -174,10 +191,12 @@ class SwitchBotCloudClient:
                 self.settings["region"] = bot_region.upper()
         try:
             await self.resolve_endpoints(bot_region)
-        except CloudError:
-            if bot_region.upper() not in REGION_URLS:
+        except CloudError as err:
+            fallback = region_url(bot_region)
+            if fallback is None:
                 raise
-            _LOGGER.warning("SwitchBot endpoint discovery failed; using the %s partition", bot_region)
+            self.settings["api_base_url"] = fallback
+            _LOGGER.warning("SwitchBot endpoint discovery failed (%s); using %s", err, fallback)
         return result
 
     async def _user_region(self) -> str:
@@ -187,9 +206,11 @@ class SwitchBotCloudClient:
                                                   authenticated=True)
             result = unwrap_response(payload)
         except (CloudError, ValueError, TypeError) as err:
-            _LOGGER.debug("SwitchBot user info unavailable: %s", err)
+            _LOGGER.warning("SwitchBot user info unavailable, so the account region is unknown: %s", err)
             return ""
-        return str(result.get("botRegion", "")).strip() if isinstance(result, dict) else ""
+        region = str(result.get("botRegion", "")).strip() if isinstance(result, dict) else ""
+        _LOGGER.info("SwitchBot account region from user info: %s", region or "(none)")
+        return region
 
     async def resolve_endpoints(self, bot_region: str) -> list[dict[str, Any]]:
         """Resolve the account partition exactly as the app does after login."""
@@ -230,7 +251,10 @@ class SwitchBotCloudClient:
             "userId": self.settings.get("user_id", ""),
         }
         payload = await self._account_request("/account/api/v1/user/token/refresh", body)
-        if isinstance(payload, dict) and payload.get("statusCode") in (2006, "2006"):
+        # 2006 says the account uses Cognito refresh; 2005 ("refreshToken is wrong") was seen right
+        # after a password sign-in on such an account too, so it tries the Cognito refresh as well.
+        status = payload.get("statusCode") if isinstance(payload, dict) else None
+        if status in (2006, "2006") or (status in (2005, "2005") and self.settings.get("username")):
             username = str(self.settings.get("username", ""))
             if not username:
                 raise CloudError(
@@ -279,9 +303,15 @@ class SwitchBotCloudClient:
                 raise CloudError(f"SwitchBot account request failed with HTTP {response.status}")
             return payload
 
-    async def post(self, path: str, body: dict[str, Any] | None) -> Any:
-        """POST JSON, refreshing once before/after an expired authorization response."""
-        if not self.settings.get("access_token") or jwt_expired(str(self.settings["access_token"])):
+    async def post(self, path: str, body: dict[str, Any] | None, *, renew: bool = True) -> Any:
+        """POST JSON, refreshing once before/after an expired authorization response.
+
+        With ``renew`` false an authorization refusal is raised as it is, without a token refresh
+        (looking for the account's partition: a partition that does not know the account refuses
+        a perfectly fresh token).
+        """
+        if renew and (not self.settings.get("access_token")
+                      or jwt_expired(str(self.settings["access_token"]))):
             await self.refresh()
         for attempt in range(2):
             request_args: dict[str, Any] = {
@@ -303,6 +333,10 @@ class SwitchBotCloudClient:
                     if response.status >= 400:
                         raise CloudError(f"SwitchBot cloud returned HTTP {response.status}")
                     return unwrap_response(payload)
+                if not renew:
+                    status = payload.get("statusCode") if isinstance(payload, dict) else response.status
+                    message = payload.get("message", "") if isinstance(payload, dict) else ""
+                    raise CloudError(f"SwitchBot cloud refused the sign-in token (status {status}: {message})")
             if attempt == 0:
                 await self.refresh()
         raise CloudError("SwitchBot cloud authorization failed after token refresh")
@@ -326,30 +360,45 @@ class SwitchBotCloudClient:
         one was used, its home list is simply empty, so the other partition is tried, and kept
         when it has the homes.
         """
-        homes = await self._get_homes_here()
-        if homes:
-            return homes
-        current = self.base_url
-        for region, url in REGION_URLS.items():
-            if url == current:
-                continue
+        if not self.settings.get("access_token") or jwt_expired(str(self.settings["access_token"])):
+            await self.refresh()
+        current, current_plain = self.base_url, bool(self.settings.get("plain_headers"))
+        candidates = [current, region_url(str(self.settings.get("bot_region", ""))), *REGION_URLS.values()]
+        attempts = [(url, plain) for url in dict.fromkeys(item for item in candidates if item)
+                    for plain in dict.fromkeys((current_plain, True))]
+        answered, refusals, replied = False, [], set()
+        for url, plain in attempts:
+            if url in replied:
+                continue                     # this server answered already, only without homes
             self.settings["api_base_url"] = url
+            self.settings["plain_headers"] = plain
+            label = f"{url}{' (plain headers)' if plain else ''}"
             try:
-                homes = await self._get_homes_here()
+                homes = await self._get_homes_here(renew=False)
             except CloudError as err:
-                _LOGGER.debug("SwitchBot %s partition did not answer: %s", region, err)
+                _LOGGER.warning("SwitchBot homes from %s: %s", label, err)
+                refusals.append(f"{label}: {err}")
                 continue
+            answered = True
+            replied.add(url)
             if homes:
-                self.settings["region"] = region
-                _LOGGER.info("SwitchBot account homes found in the %s partition", region)
+                region = next((name for name, known in REGION_URLS.items() if known == url), None)
+                if region:
+                    self.settings["region"] = region
+                if url != current or plain != current_plain:
+                    _LOGGER.info("SwitchBot account homes found at %s", label)
                 return homes
+            _LOGGER.info("SwitchBot homes from %s: none", label)
         self.settings["api_base_url"] = current
+        self.settings["plain_headers"] = current_plain
+        if not answered and refusals:
+            raise CloudError("No SwitchBot server returned the homes: " + "; ".join(refusals))
         return []
 
-    async def _get_homes_here(self) -> list[dict[str, Any]]:
+    async def _get_homes_here(self, *, renew: bool = True) -> list[dict[str, Any]]:
         response_shapes: list[str] = []
         for path in ("/homepage/v1/group/getall", "/homepage/v1/group/getinfo"):
-            value = await self.post(path, None)
+            value = await self.post(path, None, renew=renew)
             if isinstance(value, str):
                 try:
                     value = json.loads(value)

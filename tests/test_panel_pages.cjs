@@ -1503,17 +1503,18 @@ test('the home list is two zones, remotes then scenes, and scenes move only amon
   const tiles = html.split('data-zone="scenes"')[0];
   assert.match(tiles, /data-zone="tiles"[\s\S]*TV[\s\S]*Soundbar/);
   assert.doesNotMatch(tiles, /Sleep|Movie/);
-  assert.match(html, /scr-zone-label[^>]*>Scenes<\/div>[\s\S]*data-zone="scenes"[\s\S]*Sleep[\s\S]*Movie/);
-  assert.match(html, /data-scene-grip="0"[\s\S]*data-scene-grip="3"/);
+  // the remote (and the app) list the scenes with the highest number at the top
+  assert.match(html, /scr-zone-label[^>]*>Scenes<\/div>[\s\S]*data-zone="scenes"[\s\S]*Movie[\s\S]*Sleep/);
+  assert.match(html, /data-scene-grip="3"[\s\S]*data-scene-grip="0"/);
   assert.match(html, /data-hint="Scenes stay below the remotes"/);
   // a pending scene order is drawn and counts as a change; the remotes are untouched
-  instance._sceneOrder = [3, 0];
+  instance._sceneOrder = [0, 3];
   assert.equal(instance._sceneOrderChanged(), true);
   assert.equal(instance._tileOrderChanged(), false);
   assert.equal(instance._screenOrderChanged(), true);
   html = instance._renderScreen({ index: 0 });
-  assert.match(html.split('data-zone="scenes"')[1], /Movie[\s\S]*Sleep/);
-  instance._sceneOrder = [0, 3];
+  assert.match(html.split('data-zone="scenes"')[1], /Sleep[\s\S]*Movie/);
+  instance._sceneOrder = [3, 0];
   assert.equal(instance._sceneOrderChanged(), false);
 });
 
@@ -1534,12 +1535,15 @@ test('the scene editor shows Apply order, and unsaved scene edits follow their s
   instance._scenePanel = panelState;
   instance._remoteId = 'scene:0';
   assert.doesNotMatch(instance._renderScenes(), /id="applyScreenOrder"/);
-  instance._sceneOrder = [1, 0];
+  instance._sceneOrder = [0, 1];       // Sleep (0) dragged to the top, above Movie (1)
   assert.match(instance._renderScenes(), /id="applyScreenOrder"/);
   let opened;
+  let sent;
   instance._openScenes = (addNew, index) => { opened = index; };
-  instance._hass = { states: {}, async callWS() { return { moved: { 0: 1, 1: 0 } }; } };
+  instance._hass = { states: {}, async callWS(message) { sent = message; return { moved: { 0: 1, 1: 0 } }; } };
   await instance._applySceneOrder();
+  // the top scene takes the highest number: Movie becomes 0, Sleep 1
+  assert.equal(JSON.stringify(sent.order), "[1,0]");
   assert.equal(instance._remoteId, 'scene:1');
   assert.equal(opened, 1);
   assert.equal(panelState.draft.index, 1);

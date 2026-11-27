@@ -41,6 +41,7 @@
       "key_id_range": "Key ID must fit in one byte (00-FF).",
       "cloud_auth_failed": "Sign-in failed. Check the email and password. Accounts that use Google, Apple, or Amazon sign-in are not supported by password login yet.",
       "cloud_no_homes": "Sign-in succeeded, but no SwitchBot homes were returned.",
+      "cloud_homes_failed": "Sign-in succeeded, but no SwitchBot server returned your homes. The Home Assistant log lists what each server answered; please include it in a bug report.",
       "cloud_home_failed": "The selected home could not be validated."
     },
     "abort": {
@@ -438,6 +439,7 @@
       "recreate_not_supported": "Recreation is not supported for this remote type.",
       "cloud_auth_failed": "Sign-in failed. Check the email and password. Accounts that use Google, Apple, or Amazon sign-in are not supported by password login yet.",
       "cloud_no_homes": "Sign-in succeeded, but no SwitchBot homes were returned.",
+      "cloud_homes_failed": "Sign-in succeeded, but no SwitchBot server returned your homes. The Home Assistant log lists what each server answered; please include it in a bug report.",
       "cloud_home_failed": "The selected home could not be validated.",
       "cloud_update_failed": "The local change succeeded, but the SwitchBot cloud update failed. Refresh the list before retrying.",
       "cloud_refresh_token_required": "Enter a refresh token.",

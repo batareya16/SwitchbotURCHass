@@ -167,6 +167,12 @@ async def _sync_inputs(hass, entry):
     return cloud, table, scenes, bound, known, payload
 
 
+def _account_devices(payload) -> set[str]:
+    """The addresses of the account's own SwitchBot devices."""
+    return {str(item["deviceID"]) for item in (payload or {}).get("devices", [])
+            if isinstance(item, dict) and item.get("deviceID")}
+
+
 def _account_ir_remotes(payload) -> list[dict]:
     """Every IR remote the account holds: those bound to this Universal Remote and the rest."""
     return [item for key in ("bindDevices", "remotes") for item in (payload or {}).get(key, [])
@@ -186,9 +192,10 @@ async def ws_cloud_sync_status(hass, connection, msg):
         if not entry.data.get("cloud"):
             raise ValueError("Connect the SwitchBot account first")
         _cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
-        steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes)
+        steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes,
+                                _account_devices(payload))
         connection.send_result(msg["id"], {
-            "differences": cloud_sync.differences(bound, table, scenes),
+            "differences": cloud_sync.differences(bound, table, scenes) + cloud_sync.app_warnings(payload),
             "plan": cloud_sync.preview(steps, _account_ir_remotes(payload), table, bound),
         })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
@@ -209,7 +216,8 @@ async def ws_cloud_sync(hass, connection, msg):
         if not entry.data.get("cloud"):
             raise ValueError("Connect the SwitchBot account first")
         cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
-        steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes)
+        steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes,
+                                _account_devices(payload))
         # A remote installed from the account under a new id gets a copy of every button of its
         # source; the source itself is never changed or deleted (only no longer listed here).
         copied = []
@@ -238,7 +246,7 @@ async def ws_cloud_sync(hass, connection, msg):
         connection.send_result(msg["id"], {
             "created": len(steps["create"]), "removed": len(steps["remove"]), "copied": copied,
             "listed": len(steps["items"]), "skipped": steps["skipped"],
-            "differences": cloud_sync.differences(bound_after, table, scenes),
+            "differences": cloud_sync.differences(bound_after, table, scenes) + cloud_sync.app_warnings(after),
         })
     except Exception as err:  # noqa: BLE001 - the panel shows the message as-is
         _LOGGER.exception("Remote Studio account sync failed")

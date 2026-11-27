@@ -122,13 +122,20 @@ def _learned_keys(remote: dict[str, Any]) -> list[dict[str, Any]]:
 
 def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]],
          bound: list[dict[str, Any]], known_remote_ids: set[str],
-         scenes: list[dict[str, Any]]) -> dict[str, Any]:
+         scenes: list[dict[str, Any]], account_devices: set[str] | None = None) -> dict[str, Any]:
     """The account entries that match the remote, what to create first, and what to remove.
 
     `known_remote_ids` are the IR ids the account already has a record for (bound or not); an IR
     remote made in Studio that the account does not know is created first, with its typed codes as
     learned keys, which also keeps a copy of them in the account.
+
+    A Bluetooth tile whose address is not one of the account's SwitchBot devices
+    (`account_devices`: a Bridge remote, which no account knows) is listed as a Matter device: the
+    app looks every other listed device up among the account's devices and, not finding it, shows
+    the remote as not synchronized.
     """
+    real = account_devices or set()
+    as_matter: list[str] = []
     by_id = {raw: item for item in bound if not item.get("sceneID")
              if (raw := _remote_id_bytes(item)) is not None}
     items: list[dict[str, Any]] = []
@@ -162,8 +169,12 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
                           "deviceType": existing.get("deviceType") or MATTER_TYPE,
                           "remoteIndex": slot, "roomName": ""})
         else:                                                # a Bluetooth (native or Bridge) tile
-            items.append({"deviceID": existing.get("deviceID") or _address(raw), "deviceName": name,
-                          "deviceType": existing.get("deviceType") or NATIVE_TYPES.get(device_type, "WoStrip"),
+            address = existing.get("deviceID") or _address(raw)
+            kind = (existing.get("deviceType") or NATIVE_TYPES.get(device_type, "WoStrip")
+                    if address in real else MATTER_TYPE)
+            if kind == MATTER_TYPE:
+                as_matter.append(f"{name} (slot {slot})")
+            items.append({"deviceID": address, "deviceName": name, "deviceType": kind,
                           "remoteIndex": slot, "roomName": ""})
     cloud_scenes = {(item.get("sceneName"), int(item.get("sceneIndex", -1))): item
                     for item in bound if item.get("sceneID")}
@@ -175,7 +186,7 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
                       "sceneColor": existing.get("sceneColor", scene.get("color"))})
     wanted = {entry_id(item) for item in items}
     remove = [entry_id(item) for item in bound if entry_id(item) and entry_id(item) not in wanted]
-    return {"items": items, "create": create, "remove": remove, "skipped": skipped}
+    return {"items": items, "create": create, "remove": remove, "skipped": skipped, "as_matter": as_matter}
 
 
 def _same_name(left: Any, right: Any) -> bool:
@@ -241,8 +252,57 @@ def preview(steps: dict[str, Any], account_remotes: list[dict[str, Any]],
     names = {entry_id(item): str(item.get("remoteName") or item.get("deviceName")
                                  or item.get("thirdPartyDeviceName") or item.get("sceneName") or entry_id(item))
              for item in bound}
+    for tile in steps.get("as_matter", []):
+        lines.append(f"{tile}: listed as a Matter device, since your account has no SwitchBot device "
+                     "with its address (the app would otherwise show the remote as not synchronized)")
     for removed in steps["remove"]:
         lines.append(f"{names.get(removed, removed)}: no longer listed under this Universal Remote "
                      "(it stays in your account)")
     return lines
+
+
+def _blank(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def app_warnings(payload: dict[str, Any]) -> list[str]:
+    """What else makes the app mark the remote as not in sync, besides the two lists differing.
+
+    The app also looks up every listed Bluetooth device (an entry with a deviceID that is not a
+    Matter one) among the account's SwitchBot devices, and every listed scene among the account's
+    scenes (`getStatusChangedPhysicDevices` / `getStatusChangeScenes` in its bundle). A device it
+    cannot find, or whose name, mode, group or icon differ, lights the "not synchronized" banner
+    and the warning on its devices; a scene it cannot find, or whose name or look differ, the
+    warning on its scenes.
+    """
+    bound = [item for item in (payload or {}).get("bindDevices", []) if isinstance(item, dict)]
+    devices = [item for item in (payload or {}).get("devices", []) if isinstance(item, dict)]
+    scenes = [item for item in (payload or {}).get("scenes", []) if isinstance(item, dict)]
+    found: list[str] = []
+    for item in bound:
+        if _blank(item.get("deviceID")) or item.get("deviceType") == MATTER_TYPE:
+            continue
+        name = str(item.get("deviceName") or item.get("deviceID"))
+        device = next((row for row in devices if row.get("deviceID") == item.get("deviceID")), None)
+        status = (device or {}).get("status") or {}
+        if device is None:
+            found.append(f"{name}: no SwitchBot device {item.get('deviceID')} in the account")
+        elif item.get("isDeleted") is True or item.get("inRWSGroup") is False:
+            found.append(f"{name}: removed from the account")
+        elif (status.get("isGroup") != item.get("isGroup") or status.get("deviceMode") != item.get("deviceMode")
+              or device.get("deviceName") != item.get("deviceName")
+              or not ((_blank(status.get("icon")) and _blank(item.get("icon"))) or status.get("icon") == item.get("icon"))):
+            found.append(f"{name}: its name or settings differ from the device in the account")
+    for item in bound:
+        if _blank(item.get("sceneID")):
+            continue
+        name = str(item.get("sceneName") or item.get("sceneID"))
+        scene = next((row for row in scenes if row.get("sceneID") == item.get("sceneID")), None)
+        icon = (scene or {}).get("icon") or {}
+        if scene is None:
+            found.append(f"Scene {name}: not a scene of your SwitchBot account")
+        elif scene.get("name") != item.get("sceneName") or icon.get("css") != item.get("sceneIcon") \
+                or icon.get("color") != item.get("sceneColor"):
+            found.append(f"Scene {name}: its name or look differ from the scene in the account")
+    return found
 
