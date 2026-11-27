@@ -21,7 +21,7 @@ PAGE_LAYOUTS = {
 }
 # Air conditioners carry no per-key code references: the remote builds frames from the code
 # bank, keyMapFastBin and fastConfigBin.
-AIR_CONDITIONER_TYPES = (1, 15)
+AIR_CONDITIONER_TYPES = ir_pages_ac.ARC_REMOTE_TYPES
 
 
 def decode_code_blob(value: str | bytes) -> bytes:

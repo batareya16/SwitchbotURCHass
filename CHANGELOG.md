@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.53.32
+
+- **Sync with the SwitchBot app** now makes the remote's scenes real scenes of your SwitchBot account, so the app no longer marks them as invalid. The app looks every scene of the Universal Remote up among the account's own scenes, and Studio's scenes had none. Sync lists each scene with the account scene already listed for it, or one of the same name, and otherwise makes a new tap-to-run scene in your home with the scene's name, icon and background and nothing to run (if SwitchBot refuses a scene with nothing to run, it gets a one-second pause, which does nothing). A scene renamed or recoloured in Studio is changed in the account at the next Sync, keeping whatever that scene runs. The scenes then also show in the app's list of scenes. **Check** lists which scenes Sync would make or change.
+- Fix IR remotes that the SwitchBot app marked "Key error. The device must be deleted and added again" after **Sync** or after installing a remote from the account. The app writes the remote's firmware version (48) on every remote it lists and marks a remote without it as needing to be added again; Studio now writes it too, on everything it lists or creates in the account. **Sync** once to fix the remotes already listed. **Check** now reports a remote listed without it.
+- Studio now reads the remote's firmware version from the remote (the same status record the SwitchBot app reads it from) and keeps it. It is read in the background, without holding up the page, when Studio opens and does not know it yet and on every **Refresh** (an asleep remote is asked again a little later), and also before every **Sync** and whenever the remote's settings are read. That version is what the account is told; 48 is used until it has been read. **Diagnostics** and **Remote settings** show it once it is known.
+- **Remote settings** show the remote's firmware version and a **Check for updates** button. It reads the version from the remote and asks the SwitchBot account, the way the app does, for the newest firmware and for a required update of this remote, then says whether one is available. Updating itself is done in the SwitchBot app.
+- Scenes are listed in the account with the icon and colour names the app uses, so it sees them as unchanged.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.31
 
 - Fix the order of scenes: Studio's picture listed the scenes from number 0 down, while the remote (like the SwitchBot app) lists them with the highest number at the top, so an order applied in Studio came out reversed on the remote. The picture now lists the scenes as the remote does, and **Apply order** numbers them the way the remote draws them, so the remote shows the order you set.

@@ -34,7 +34,7 @@ from .matter_text import (
     normalize_interval,
 )
 from .studio_physical import read_device_table
-from .studio_remotes import new_remote_id, remote_management_lock
+from .studio_remotes import _client, new_remote_id, remote_management_lock
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,13 +53,6 @@ def captions_of(remote: dict[str, Any]) -> tuple[str, ...]:
         return normalize_captions(remote.get("matter_captions"))
     except ValueError:
         return tuple(LETTERS)
-
-
-def _client(hass, entry):
-    client = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("client")
-    if client is None:
-        raise ValueError("WoRWS is not connected")
-    return client
 
 
 async def _send(client, packet: bytes) -> None:

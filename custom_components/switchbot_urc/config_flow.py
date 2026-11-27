@@ -493,6 +493,8 @@ class UrcOptionsFlow(OptionsFlow):
                         return self.async_create_entry(title="", data=dict(self._entry.options))
                     self._device_settings = await device_settings.read_settings(client)
                     values = self._device_settings
+                    device_settings.remember_firmware(
+                        self.hass, self._entry, values.get("firmware_version"))
             except device_settings.SettingsVerificationError:
                 _LOGGER.warning("Could not verify Universal Remote settings", exc_info=True)
                 errors["base"] = "device_settings_unverified"
@@ -1197,7 +1199,7 @@ class UrcOptionsFlow(OptionsFlow):
                     )): str,
                     vol.Required("device_id", default=(user_input or {}).get(
                         "device_id", target.get(
-                            "device_id", item["device_id_bytes"][:6][::-1].hex()
+                            "device_id", commands.id_from_bytes(item["device_id_bytes"])
                         )
                     )): str,
                     vol.Required("device_type", default=(user_input or {}).get(
@@ -1222,7 +1224,7 @@ class UrcOptionsFlow(OptionsFlow):
                     )): vol.In(DEVICE_TYPES),
                     vol.Required("device_id", default=(user_input or {}).get(
                         "device_id", managed.get(
-                            "device_id", item["device_id_bytes"][:6][::-1].hex()
+                            "device_id", commands.id_from_bytes(item["device_id_bytes"])
                         )
                     )): str,
                     vol.Required("buttons", default=[
@@ -1321,7 +1323,7 @@ class UrcOptionsFlow(OptionsFlow):
                             )
                             stored_id = (
                                 item["device_key"] if device_type == "IR_TV"
-                                else item["device_id_bytes"][:6][::-1].hex()
+                                else commands.id_from_bytes(item["device_id_bytes"])
                             )
                             self.options["remotes"].append(
                                 {

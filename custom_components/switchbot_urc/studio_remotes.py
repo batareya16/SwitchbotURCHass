@@ -194,7 +194,7 @@ def remote_management_lock(hass):
 
 
 def _native_table_addresses(table) -> list[str]:
-    return [row[3][:6][::-1].hex() for row in table if row[2] == c.CTRL_NATIVE]
+    return [c.id_from_bytes(row[3]) for row in table if row[2] == c.CTRL_NATIVE]
 
 
 def _used_addresses(entry) -> list[str]:
@@ -563,7 +563,6 @@ async def _install_ir_remote(hass, connection, msg):
         source = msg["source"]
         name = msg["name"]
         cloud = None
-        cloud_item = None
 
         if source == "blank":
             # No codes and no account record: an empty remote the user fills in key by key.

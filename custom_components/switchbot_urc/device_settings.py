@@ -1,6 +1,12 @@
 """Physical WoRWS settings, verified against the V48 ARM settings handler."""
 from __future__ import annotations
 
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+# Where the remote's firmware version is kept in the entry's data once read.
+FIRMWARE_KEY = "firmware_version"
+
 STATUS_COMMAND = b"\x02"
 # Offsets in the 03 command payload, after the opcode. FF leaves a field unchanged.
 SETTING_OFFSETS = {
@@ -44,6 +50,8 @@ def parse_settings(response: bytes) -> dict:
         "language": response[9],
         "touch_wheel": response[12],
         "japan_model": bool(response[8] & 0x80),
+        # The app's readBaseInfo reads this byte as the firmware version (versionCode).
+        "firmware_version": response[1],
     }
     for field in BOOLEAN_SETTINGS:
         if values[field] not in (0, 1):
@@ -74,6 +82,32 @@ def build_settings(changes: dict) -> bytes:
 
 async def read_settings(client) -> dict:
     return parse_settings(await client.send_command(STATUS_COMMAND))
+
+
+def remember_firmware(hass, entry, version) -> None:
+    """Keep the firmware version read from the remote with the integration's data."""
+    data = getattr(entry, "data", None)
+    if type(version) is not int or not 0 < version < 256 or not isinstance(data, dict):
+        return
+    updated = {**data, FIRMWARE_KEY: version}
+    cloud = data.get("cloud")
+    if isinstance(cloud, dict) and cloud:
+        # Every SwitchBot account client is built from these settings; it tells the account this
+        # version (urcVersion) on everything it lists or creates.
+        updated["cloud"] = {**cloud, "urc_version": version}
+    if updated != data:
+        hass.config_entries.async_update_entry(entry, data=updated)
+
+
+async def read_firmware(hass, entry, client) -> int | None:
+    """Read the remote's firmware version and keep it; the kept one if the remote does not say."""
+    try:
+        version = (await read_settings(client))["firmware_version"]
+    except Exception as err:  # noqa: BLE001 - a missing version only falls back to the kept one
+        _LOGGER.debug("Could not read the remote's firmware version: %s", err)
+        return entry.data.get(FIRMWARE_KEY)
+    remember_firmware(hass, entry, version)
+    return version
 
 
 async def apply_settings(client, changes: dict) -> dict:

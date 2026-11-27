@@ -1608,6 +1608,56 @@ test('a menu row takes an icon or a caption: each clears the other, and the edit
   assert.equal('title' in key, false);
 });
 
+test('remote settings show the firmware version and check for updates', () => {
+  const instance = panel();
+  instance._entryId = 'entry';
+  instance._entry = () => ({ entry_id: 'entry', firmware_version: 48 });
+  let html = instance._renderFirmware(48);
+  assert.match(html, /Firmware <b>V48<\/b>[\s\S]*id="checkFirmware"[^>]*>Check for updates/);
+  instance._firmwareCheck = { entryId: 'entry', busy: true };
+  assert.match(instance._renderFirmware(48), /id="checkFirmware" disabled>[\s\S]*Checking…/);
+  instance._firmwareCheck = { entryId: 'entry', current: 48, latest: 50, required: null };
+  assert.match(instance._renderFirmware(48), /V50 is available[\s\S]*SwitchBot app/);
+  instance._firmwareCheck = { entryId: 'entry', current: 48, latest: 50, required: 49 };
+  assert.match(instance._renderFirmware(48), /Update required:<\/b> V49/);
+  instance._firmwareCheck = { entryId: 'entry', current: 50, latest: 50, required: null };
+  assert.match(instance._renderFirmware(50), /Up to date/);
+  instance._firmwareCheck = { entryId: 'entry', current: 48, error: 'Connect the SwitchBot account to check for updates.' };
+  assert.match(instance._renderFirmware(48), /Connect the SwitchBot account/);
+});
+
+test('an unknown firmware version is read in the background and shown once read', async () => {
+  const instance = panel();
+  const entry = { entry_id: 'entry', remotes: [] };
+  instance._data = { entries: [entry] };
+  instance._entryId = 'entry';
+  instance._entry = () => entry;
+  instance._render = () => {};
+  instance._cloud = null;
+  assert.doesNotMatch(instance._renderDiagnostics(), /Firmware/);         // nothing said while unknown
+  const calls = [];
+  instance._hass = { async callWS(message) { calls.push(message.type); return { firmware_version: 48 }; } };
+  await instance._ensureFirmware();
+  assert.deepEqual([...calls], ['switchbot_urc/studio/firmware_read']);
+  assert.equal(entry.firmware_version, 48);
+  assert.match(instance._renderDiagnostics(), /Firmware: V48/);
+  await instance._ensureFirmware();                                        // known: not asked again
+  assert.equal(calls.length, 1);
+  // an asleep remote is asked again later, quietly
+  const asleep = { entry_id: 'entry', remotes: [] };
+  instance._data = { entries: [asleep] };
+  instance._entry = () => asleep;
+  const timers = [];
+  const realSetTimeout = context.setTimeout;
+  context.setTimeout = (callback, delay) => { timers.push(delay); return 1; };
+  instance._hass = { async callWS() { throw new Error('no answer'); } };
+  try {
+    await instance._ensureFirmware();
+  } finally { context.setTimeout = realSetTimeout; }
+  assert.deepEqual([...timers], [60000]);
+  assert.equal(asleep.firmware_version, undefined);
+});
+
 test('the account section says what the SwitchBot app sees and offers to sync', () => {
   const instance = panel();
   instance._cloud = { connected: true, cached_remotes: 2, sync: { differences: [

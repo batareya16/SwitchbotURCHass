@@ -44,6 +44,11 @@ def pad(data: bytes, size: int) -> bytes:
     return (bytes(data) + bytes(size))[:size]
 
 
+def id_from_bytes(raw: bytes) -> str:
+    """The 12-hex-digit address of an 11-byte id field: its first six bytes reversed (id_to_bytes undone)."""
+    return bytes(raw[:6])[::-1].hex()
+
+
 def id_to_bytes(device_id: str, reverse: bool = True) -> bytes:
     """11-byte id field. App uses macToBytes(id, true) = 6 hex bytes REVERSED, padded to 11.
 
@@ -571,7 +576,8 @@ CUSTOM_ACTION_FUNCTIONS = {
     **{f"COLOR_{index}": 330 + index for index in range(1, 16)},
 }
 
-CUSTOM_PAGE_LINK_FUNCTIONS = {1: 119, 2: 123, 3: 124, 4: 125}
+# A custom page is linked with the same functions as a stock Native page.
+CUSTOM_PAGE_LINK_FUNCTIONS = NATIVE_MENU_FUNCTIONS
 
 CUSTOM_ACTION_CATEGORIES = {
     **{name: "Power" for name in ("ON", "OFF", "PRESS", "PAUSE")},

@@ -25,6 +25,11 @@ REGION_URLS = {
 }
 
 _LOGGER = logging.getLogger(__name__)
+# The remote's firmware version, which the app writes on every remote it lists (urcBleVersion);
+# without it, or below 23, the app marks an IR remote "key error, delete and add it again".
+# Only a fallback: the version read from the remote is used (settings["urc_version"], kept by
+# device_settings.remember_firmware). This one stands in until the remote has been read.
+URC_VERSION = 48
 _REGION_NAME = re.compile(r"^[a-z0-9-]{2,20}$")
 
 
@@ -55,6 +60,38 @@ def parse_communication_credentials(payload: Any) -> tuple[bytes, int] | None:
     if len(key) != 16 or not 0 <= key_id <= 0xFF:
         return None
     return key, key_id
+
+
+def firmware_package_version(value: Any) -> int | None:
+    """The version of the remote's firmware package in a firmware answer, if it has one.
+
+    The app looks for a package whose packType contains "WoRWS_ble_freq" and reads its version; an
+    answer that carries the version as targetBleVersion is read too.
+    """
+    versions: list[int] = []
+
+    def number(raw: Any) -> int | None:
+        try:
+            return int(float(str(raw)))
+        except (TypeError, ValueError):
+            return None
+
+    def walk(item: Any) -> None:
+        if isinstance(item, list):
+            for child in item:
+                walk(child)
+        elif isinstance(item, dict):
+            if "WoRWS_ble" in str(item.get("packType", "")) and number(item.get("version")) is not None:
+                versions.append(number(item["version"]))
+            for key in ("targetBleVersion", "bleTargetVersion"):
+                if number(item.get(key)) is not None:
+                    versions.append(number(item[key]))
+            for child in item.values():
+                walk(child)
+
+    walk(value)
+    versions = [version for version in versions if version and version > 0]
+    return max(versions) if versions else None
 
 
 class CloudError(RuntimeError):
@@ -108,6 +145,12 @@ class SwitchBotCloudClient:
         self._session = session
         self.settings = settings
         self._save_tokens = save_tokens
+
+    @property
+    def urc_version(self) -> int:
+        """The remote's firmware version as last read from it, else the supported one."""
+        value = self.settings.get("urc_version")
+        return value if isinstance(value, int) and value > 0 else URC_VERSION
 
     @property
     def base_url(self) -> str:
@@ -461,6 +504,61 @@ class SwitchBotCloudClient:
         }
         return await self.post("/wonder/deviceInfo/v1/WoRWS/queryIrRemote", body)
 
+    async def firmware_versions(self, current: int) -> dict[str, Any]:
+        """The newest and the required firmware for this remote, as the app asks for them.
+
+        Both requests take the remote's id, type and current version (the app's
+        getDeviceOtaInfo -> /firmware/v1/version/query, and getForceOTAVersion ->
+        /firmware/v1/version/queryForcedUpgrade). The app takes the version of the "WoRWS_ble_freq"
+        package of the remote from the answer.
+        """
+        body = {"deviceList": [{"deviceID": str(self.settings["urc_device_id"]).replace(":", "").upper(),
+                                "deviceType": "WoRWS", "bleVersion": current}], "langCode": "en"}
+        found: dict[str, Any] = {"current": current, "latest": None, "required": None, "errors": []}
+        for key, path in (("latest", "/firmware/v1/version/query"),
+                          ("required", "/firmware/v1/version/queryForcedUpgrade")):
+            try:
+                value = await self.post(path, body)
+            except CloudError as err:
+                _LOGGER.warning("SwitchBot firmware check %s failed: %s", path, err)
+                found["errors"].append(str(err))
+                continue
+            _LOGGER.debug("SwitchBot firmware check %s answered: %s", path, value)
+            found[key] = firmware_package_version(value)
+        return found
+
+    async def create_scene(self, *, name: str, icon: str, color: str) -> str:
+        """Make a tap-to-run scene in the account's home and return its id.
+
+        The app's scene editor sends this body (Scene bundle, /scene/v1/scene/create). It does
+        not let a scene be saved without an action; if the server refuses an empty one too, the
+        scene gets a single one-second pause, which does nothing.
+        """
+        body = {"icon": {"css": icon, "color": color}, "groupID": self.settings["group_id"],
+                "name": name, "enable": True, "notifyEnable": False, "sceneType": "scene"}
+        try:
+            result = await self.post("/scene/v1/scene/create", body | {"actions": []})
+        except CloudError as err:
+            _LOGGER.info("SwitchBot refused an empty scene (%s); adding a one-second pause", err)
+            result = await self.post("/scene/v1/scene/create", body | {"actions": [
+                {"id": str(uuid.uuid4()), "optID": "delay_act_delay", "data": {"delaySecond": 1}}]})
+        scene_id = result.get("sceneID") if isinstance(result, dict) else None
+        if not scene_id:
+            raise CloudError("SwitchBot did not return the new scene's id")
+        return str(scene_id)
+
+    async def update_scene_look(self, *, scene_id: str, name: str, icon: str, color: str) -> None:
+        """Change a scene's name, icon and colour, keeping its actions and notification setting."""
+        detail = await self.post("/scene/v1/scene/getDetail", {"sceneID": scene_id})
+        detail = detail if isinstance(detail, dict) else {}
+        await self.post("/scene/v1/scene/update", {
+            "sceneID": scene_id, "isOldData": bool(detail.get("isOldData", False)),
+            "icon": {"css": icon, "color": color}, "groupID": self.settings["group_id"],
+            "name": name, "enable": detail.get("enable", True),
+            "notifyEnable": bool(detail.get("notifyEnable", False)), "sceneType": "scene",
+            "actions": detail.get("actions") or [],
+        })
+
     async def get_ir_remote(self, remote_id: str, remote_type: str = "hub") -> Any:
         """Compatibility wrapper for one saved IR record."""
         return await self.get_ir_remotes([remote_id], remote_type)
@@ -482,7 +580,7 @@ class SwitchBotCloudClient:
         """Save a newly installed catalog IR remote to the SwitchBot account."""
         return await self.post(
             "/wonder/deviceInfo/v1/WoRWS/createIrRemote",
-            {"deviceID": self.settings["urc_device_id"], "items": [item]},
+            {"deviceID": self.settings["urc_device_id"], "items": [item | {"urcVersion": self.urc_version}]},
         )
 
     async def create_ir_remotes(self, items: list[dict[str, Any]]) -> Any:
@@ -517,7 +615,7 @@ class SwitchBotCloudClient:
                 "/wonder/deviceInfo/v1/WoRWS/createIrRemote",
                 self._device_body() | {"items": [{
                     "remoteID": remote_id, "remoteIndex": remote_index,
-                    "parentRemoteID": remote_id, "waitModify": False,
+                    "parentRemoteID": remote_id, "waitModify": False, "urcVersion": self.urc_version,
                 }]},
             )
         await self.post(
@@ -525,6 +623,7 @@ class SwitchBotCloudClient:
             self._device_body() | {"items": [{
                 "remoteID": remote_id, "remoteName": name, "type": remote_type,
                 "remoteIndex": remote_index, "createFrom": created_from, "waitModify": False,
+                "urcVersion": self.urc_version,
             }]},
         )
 
@@ -544,6 +643,7 @@ class SwitchBotCloudClient:
                         "remoteName": name,
                         "type": remote_type,
                         "waitModify": True,
+                        "urcVersion": self.urc_version,
                     }
                 ]
             },
@@ -551,7 +651,8 @@ class SwitchBotCloudClient:
 
     async def rename_ir(self, remote_id: str, name: str, wait_modify: bool) -> Any:
         body = self._device_body() | {
-            "items": [{"remoteID": remote_id, "waitModify": wait_modify, "remoteName": name}]
+            "items": [{"remoteID": remote_id, "waitModify": wait_modify, "remoteName": name,
+                       "urcVersion": self.urc_version}]
         }
         return await self.post("/wonder/deviceInfo/v1/WoRWS/updateIrRemote", body)
 

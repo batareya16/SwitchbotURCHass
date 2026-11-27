@@ -30,32 +30,12 @@ from .const import DOMAIN
 from .inventory import merge_inventory, stable_id_for_local
 from . import addressing
 from . import studio_remotes
+from .studio_remotes import _client, _save_remotes
 from . import targets
-from .studio_catalog import cloud_client
-from .studio_physical import read_device_table, resolve, store_device_table, sync_saved_slots
+from .studio_catalog import _entry, cloud_client
+from .studio_physical import read_device_table, resolve, store_device_table
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _entry(hass, msg):
-    entry = hass.config_entries.async_get_entry(msg["entry_id"])
-    if entry is None or entry.domain != DOMAIN:
-        raise ValueError("Integration not found")
-    return entry
-
-
-def _client(hass, entry):
-    client = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("client")
-    if client is None:
-        raise ValueError("WoRWS is not connected")
-    return client
-
-
-def _save_remotes(hass, entry, remotes: list[dict[str, Any]]) -> None:
-    options = deepcopy(dict(entry.options))
-    options["remotes"] = remotes
-    hass.config_entries.async_update_entry(entry, options=options)
-    sync_saved_slots(hass, entry)
 
 
 async def _inventory(hass, entry, client) -> list[dict[str, Any]]:
@@ -225,7 +205,7 @@ async def ws_remote_rename(hass, connection, msg):
                 "device_type": device_type,
                 "icon": "tv" if device_type == "IR_TV" else "light",
                 "device_id": (item["device_key"] if device_type == "IR_TV"
-                              else item["device_id_bytes"][:6][::-1].hex()),
+                              else c.id_from_bytes(item["device_id_bytes"])),
                 "buttons": [],
                 "name_override": True,
             })
@@ -401,7 +381,7 @@ async def _recreate_remote(hass, connection, msg):
             wanted = str(msg.get("target_address") or "").strip()
             moving = bool(wanted or msg.get("auto_address"))
             if moving and not wanted:
-                occupied = [bytes.fromhex(row["device_key"])[:6][::-1].hex()
+                occupied = [c.id_from_bytes(bytes.fromhex(row["device_key"]))
                             for row in inventory if row["physical"] and row["control_type"] == c.CTRL_NATIVE]
                 wanted = studio_remotes.next_move_address(hass, entry, [device_id, *occupied])
                 if not wanted:

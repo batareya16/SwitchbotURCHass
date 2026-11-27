@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from . import commands as c
+from .cloud import URC_VERSION
 from .inventory import cloud_item_id, stable_id_for_local
 from .physical_layout import ir_key_name
 
@@ -27,6 +28,20 @@ HID_TYPES = {0xF0: "AppleTV", 0xF1: "FireTV", 0xF2: "UniversalBLE", 0xF3: "Googl
 NATIVE_TYPES = {0x72: "WoStrip", 0x75: "WoBulb", 0x66: "WoFan", 0x7E: "WoFan", 0x63: "WoCurtain",
                 0x6E: "WoCeiling"}
 MATTER_TYPE = "WoMatter"
+# A scene's icon and background as the account keeps them: the remote's icon 0–24 and background
+# 0–7 are these, in this order (getSceneIconType / getSceneIconBg in the app's bundle).
+SCENE_ICON_CSS = tuple(f"icon_32pt_scenarios_{name}" for name in (
+    "default", "morning", "night", "turnonthelight", "turnoffthelights", "gethome", "goout", "dance",
+    "treadmill", "muscle", "music", "shield", "aircraft", "game", "dumbbell", "leaf", "cultivation",
+    "leisuretime", "film", "book", "house", "sleep", "sofa", "walkadog", "takeashower"))
+SCENE_COLOR_HEX = ("#FF2D55", "#FF9300", "#FFC700", "#16D429", "#1DE1D5", "#00B2FF", "#5856D6", "#9CA1A4")
+
+
+def scene_look(scene: dict[str, Any]) -> tuple[str, str]:
+    """The account's icon and colour for a scene on the remote."""
+    icon, color = scene.get("icon"), scene.get("color")
+    return (SCENE_ICON_CSS[icon] if isinstance(icon, int) and 0 <= icon < len(SCENE_ICON_CSS) else SCENE_ICON_CSS[0],
+            SCENE_COLOR_HEX[color] if isinstance(color, int) and 0 <= color < len(SCENE_COLOR_HEX) else SCENE_COLOR_HEX[5])
 
 
 def remote_id_from_bytes(raw: bytes) -> str | None:
@@ -39,7 +54,7 @@ def remote_id_from_bytes(raw: bytes) -> str | None:
 
 def _address(raw: bytes) -> str:
     """A device address as the app keeps it: the table's six bytes reversed, in hex."""
-    return raw[:6][::-1].hex().upper()
+    return c.id_from_bytes(raw).upper()
 
 
 def _remote_id_bytes(item: dict[str, Any]) -> bytes | None:
@@ -52,6 +67,10 @@ def entry_id(item: dict[str, Any]) -> str:
                or item.get("sceneID") or "")
 
 
+def _is_scene(item: dict[str, Any]) -> bool:
+    return bool(item.get("sceneID")) or "sceneIndex" in item
+
+
 def _scene_name_bytes(name: str) -> bytes:
     raw = bytearray(str(name).encode("utf-8")[:64].ljust(64, b"\0"))
     raw[63] = 0
@@ -62,7 +81,7 @@ def differences(bound: list[dict[str, Any]], table: list[tuple[int, int, int, by
                 scenes: list[dict[str, Any]] | None = None) -> list[str]:
     """What the app would call a difference between the account and the remote, in words."""
     found: list[str] = []
-    devices = [item for item in bound if not item.get("sceneID")]
+    devices = [item for item in bound if not _is_scene(item)]
     rows = {row[3]: row[0] for row in table}
     seen = set()
     for item in devices:
@@ -80,7 +99,7 @@ def differences(bound: list[dict[str, Any]], table: list[tuple[int, int, int, by
             found.append(f"Slot {slot}: on the remote, not in the account")
     if scenes is not None:
         cloud_scenes = {(_scene_name_bytes(item.get("sceneName", "")), int(item.get("sceneIndex", -1)))
-                        for item in bound if item.get("sceneID")}
+                        for item in bound if _is_scene(item)}
         device_scenes = {(_scene_name_bytes(scene["name"]), int(scene["index"])) for scene in scenes}
         for name, index in sorted(device_scenes - cloud_scenes, key=lambda pair: pair[1]):
             found.append(f"Scene {index} ({name.rstrip(bytes(1)).decode('utf-8', 'replace')}): "
@@ -122,7 +141,9 @@ def _learned_keys(remote: dict[str, Any]) -> list[dict[str, Any]]:
 
 def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]],
          bound: list[dict[str, Any]], known_remote_ids: set[str],
-         scenes: list[dict[str, Any]], account_devices: set[str] | None = None) -> dict[str, Any]:
+         scenes: list[dict[str, Any]], account_devices: set[str] | None = None,
+         account_scenes: list[dict[str, Any]] | None = None,
+         urc_version: int = URC_VERSION) -> dict[str, Any]:
     """The account entries that match the remote, what to create first, and what to remove.
 
     `known_remote_ids` are the IR ids the account already has a record for (bound or not); an IR
@@ -133,10 +154,15 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
     (`account_devices`: a Bridge remote, which no account knows) is listed as a Matter device: the
     app looks every other listed device up among the account's devices and, not finding it, shows
     the remote as not synchronized.
+
+    Every scene is listed with a scene of the account (`account_scenes`), as the app expects: the
+    one already listed for it, or one of the account's scenes of the same name; otherwise a new
+    tap-to-run scene is made (`scene_create`, its item's sceneID is filled in once it exists). A
+    scene whose name or look in the account differs is brought in line (`scene_update`).
     """
     real = account_devices or set()
     as_matter: list[str] = []
-    by_id = {raw: item for item in bound if not item.get("sceneID")
+    by_id = {raw: item for item in bound if not _is_scene(item)
              if (raw := _remote_id_bytes(item)) is not None}
     items: list[dict[str, Any]] = []
     create: list[dict[str, Any]] = []
@@ -153,21 +179,22 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
                 continue
             items.append({"remoteID": remote_id, "remoteName": name, "type": device_type,
                           "remoteIndex": slot, "createFrom": existing.get("createFrom") or "device",
-                          "waitModify": False})
+                          "waitModify": False, "urcVersion": urc_version})
             if remote_id not in known_remote_ids:
                 create.append({"remoteID": remote_id, "remoteIndex": slot, "remoteName": name,
                                "type": device_type, "code": "no_data", "keyMap": "",
                                "keyDetail": _learned_keys(managed), "dbVersion": 30,
                                "createTime": int(datetime.now().timestamp() * 1000),
-                               "waitModify": False})
+                               "waitModify": False, "urcVersion": urc_version})
         elif control == c.CTRL_HID:
             items.append({"thirdPartyDeviceID": existing.get("thirdPartyDeviceID") or _address(raw),
                           "thirdPartyType": existing.get("thirdPartyType") or HID_TYPES.get(device_type, "UniversalBLE"),
-                          "thirdPartyDeviceName": name, "remoteIndex": slot, "roomName": ""})
+                          "thirdPartyDeviceName": name, "remoteIndex": slot, "roomName": "",
+                          "urcVersion": urc_version})
         elif control == 3:                                   # the text remote (Matter)
             items.append({"deviceID": existing.get("deviceID") or _address(raw), "deviceName": name,
                           "deviceType": existing.get("deviceType") or MATTER_TYPE,
-                          "remoteIndex": slot, "roomName": ""})
+                          "remoteIndex": slot, "roomName": "", "urcVersion": urc_version})
         else:                                                # a Bluetooth (native or Bridge) tile
             address = existing.get("deviceID") or _address(raw)
             kind = (existing.get("deviceType") or NATIVE_TYPES.get(device_type, "WoStrip")
@@ -175,18 +202,36 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
             if kind == MATTER_TYPE:
                 as_matter.append(f"{name} (slot {slot})")
             items.append({"deviceID": address, "deviceName": name, "deviceType": kind,
-                          "remoteIndex": slot, "roomName": ""})
-    cloud_scenes = {(item.get("sceneName"), int(item.get("sceneIndex", -1))): item
-                    for item in bound if item.get("sceneID")}
+                          "remoteIndex": slot, "roomName": "", "urcVersion": urc_version})
+    real_scenes = {str(item["sceneID"]): item for item in account_scenes or []
+                   if isinstance(item, dict) and item.get("sceneID")}
+    listed = [item for item in bound if str(item.get("sceneID") or "") in real_scenes]
+    used: set[str] = set()
+    scene_create: list[dict[str, Any]] = []
+    scene_update: list[dict[str, Any]] = []
     for scene in sorted(scenes, key=lambda item: item["index"]):
-        existing = cloud_scenes.get((scene["name"], int(scene["index"]))) or {}
-        items.append({"sceneID": existing.get("sceneID") or f"studio-scene-{scene['index']}",
-                      "sceneName": scene["name"], "sceneIndex": int(scene["index"]), "roomName": "",
-                      "sceneIcon": existing.get("sceneIcon", scene.get("icon")),
-                      "sceneColor": existing.get("sceneColor", scene.get("color"))})
-    wanted = {entry_id(item) for item in items}
+        css, color = scene_look(scene)
+        name, index = str(scene["name"]), int(scene["index"])
+        choices = ([str(item["sceneID"]) for item in listed if item.get("sceneName") == name]
+                   + [str(item["sceneID"]) for item in listed if int(item.get("sceneIndex", -1)) == index]
+                   + [scene_id for scene_id, item in real_scenes.items() if item.get("name") == name])
+        scene_id = next((choice for choice in choices if choice not in used), None)
+        item = {"sceneID": scene_id, "sceneName": name, "sceneIndex": index, "roomName": "",
+                "sceneIcon": css, "sceneColor": color}
+        items.append(item)
+        if scene_id is None:
+            scene_create.append({"position": len(items) - 1, "name": name, "icon": css, "color": color})
+            continue
+        used.add(scene_id)
+        account = real_scenes[scene_id]
+        look = account.get("icon") or {}
+        if account.get("name") != name or look.get("css") != css or look.get("color") != color:
+            scene_update.append({"sceneID": scene_id, "name": name, "icon": css, "color": color,
+                                 "was": str(account.get("name") or "")})
+    wanted = {entry_id(item) for item in items if entry_id(item)}
     remove = [entry_id(item) for item in bound if entry_id(item) and entry_id(item) not in wanted]
-    return {"items": items, "create": create, "remove": remove, "skipped": skipped, "as_matter": as_matter}
+    return {"items": items, "create": create, "remove": remove, "skipped": skipped, "as_matter": as_matter,
+            "scene_create": scene_create, "scene_update": scene_update}
 
 
 def _same_name(left: Any, right: Any) -> bool:
@@ -222,7 +267,7 @@ def with_source_keys(create: dict[str, Any], source: dict[str, Any]) -> dict[str
                              "createTime", "parentRemoteID", "isDeleted", "deviceID", "createFrom",
                              "studioUnbound")}
     merged.update({key: create[key] for key in ("remoteID", "remoteIndex", "remoteName", "type",
-                                                "waitModify", "createTime")})
+                                                "waitModify", "createTime", "urcVersion")})
     merged["code"] = source.get("code") or "no_data"
     merged["keyMap"] = source.get("keyMap") or ""
     details = source.get("keyDetail") or []
@@ -252,6 +297,12 @@ def preview(steps: dict[str, Any], account_remotes: list[dict[str, Any]],
     names = {entry_id(item): str(item.get("remoteName") or item.get("deviceName")
                                  or item.get("thirdPartyDeviceName") or item.get("sceneName") or entry_id(item))
              for item in bound}
+    for scene in steps.get("scene_create", []):
+        lines.append(f"Scene {scene['name']}: made in your SwitchBot account as a tap-to-run scene with "
+                     "nothing to run, so the app knows it")
+    for scene in steps.get("scene_update", []):
+        lines.append(f"Scene {scene['name']}: its name, icon and colour in your account set as on the remote"
+                     + (f" (was {scene['was']})" if scene["was"] and scene["was"] != scene["name"] else ""))
     for tile in steps.get("as_matter", []):
         lines.append(f"{tile}: listed as a Matter device, since your account has no SwitchBot device "
                      "with its address (the app would otherwise show the remote as not synchronized)")
@@ -293,6 +344,14 @@ def app_warnings(payload: dict[str, Any]) -> list[str]:
               or device.get("deviceName") != item.get("deviceName")
               or not ((_blank(status.get("icon")) and _blank(item.get("icon"))) or status.get("icon") == item.get("icon"))):
             found.append(f"{name}: its name or settings differ from the device in the account")
+    for item in bound:
+        third_party = item.get("thirdPartyType") or item.get("deviceType") == MATTER_TYPE
+        if _is_scene(item) or third_party or (item.get("urcVersion") or 0) >= 23:
+            continue
+        name = str(item.get("remoteName") or item.get("deviceName") or entry_id(item))
+        found.append(f"{name}: listed without the remote's firmware version, so the app shows "
+                     + ("\"key error, delete and add it again\"" if item.get("remoteID")
+                        else "\"changed, needs to be synchronized\""))
     for item in bound:
         if _blank(item.get("sceneID")):
             continue

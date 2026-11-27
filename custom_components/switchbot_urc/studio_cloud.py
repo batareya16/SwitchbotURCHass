@@ -21,16 +21,9 @@ from .cloud import parse_communication_credentials
 from .const import CONF_KEY, CONF_KEY_ID, DOMAIN
 from .cloud_ir import account_ir_codes, find_cloud_items
 from .inventory import cloud_items
-from .studio_catalog import cloud_client
+from .studio_catalog import _entry, cloud_client
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _entry(hass, msg):
-    entry = hass.config_entries.async_get_entry(msg["entry_id"])
-    if entry is None or entry.domain != DOMAIN:
-        raise ValueError("Integration not found")
-    return entry
 
 
 @websocket_api.require_admin
@@ -152,13 +145,15 @@ async def ws_cloud_ir_codes(hass, connection, msg):
 
 async def _sync_inputs(hass, entry):
     """The remote's table and scenes, and the account's bound list, read together."""
-    from . import studio_physical, studio_scenes
+    from . import device_settings, studio_physical, studio_scenes
     from .studio_remotes import _client, remote_management_lock
 
     client = _client(hass, entry)
     async with remote_management_lock(hass):
         table = await studio_physical.read_device_table(hass, entry, client)
         scenes = [asdict(scene) for scene in (await studio_scenes._read(client)).values()]
+        # The account is told the remote's firmware version: read it fresh for every sync.
+        await device_settings.read_firmware(hass, entry, client)
     cloud = cloud_client(hass, entry)
     payload = await cloud.get_bindable_devices()
     bound = [item for item in (payload or {}).get("bindDevices", []) if isinstance(item, dict)]
@@ -171,6 +166,11 @@ def _account_devices(payload) -> set[str]:
     """The addresses of the account's own SwitchBot devices."""
     return {str(item["deviceID"]) for item in (payload or {}).get("devices", [])
             if isinstance(item, dict) and item.get("deviceID")}
+
+
+def _account_scenes(payload) -> list[dict]:
+    """The account's own scenes (tap-to-run scenes of its home)."""
+    return [item for item in (payload or {}).get("scenes", []) if isinstance(item, dict)]
 
 
 def _account_ir_remotes(payload) -> list[dict]:
@@ -191,9 +191,10 @@ async def ws_cloud_sync_status(hass, connection, msg):
         entry = _entry(hass, msg)
         if not entry.data.get("cloud"):
             raise ValueError("Connect the SwitchBot account first")
-        _cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
+        cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
         steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes,
-                                _account_devices(payload))
+                                _account_devices(payload), _account_scenes(payload),
+                                urc_version=cloud.urc_version)
         connection.send_result(msg["id"], {
             "differences": cloud_sync.differences(bound, table, scenes) + cloud_sync.app_warnings(payload),
             "plan": cloud_sync.preview(steps, _account_ir_remotes(payload), table, bound),
@@ -217,7 +218,8 @@ async def ws_cloud_sync(hass, connection, msg):
             raise ValueError("Connect the SwitchBot account first")
         cloud, table, scenes, bound, known, payload = await _sync_inputs(hass, entry)
         steps = cloud_sync.plan(table, entry.options.get("remotes", []), bound, known, scenes,
-                                _account_devices(payload))
+                                _account_devices(payload), _account_scenes(payload),
+                                urc_version=cloud.urc_version)
         # A remote installed from the account under a new id gets a copy of every button of its
         # source; the source itself is never changed or deleted (only no longer listed here).
         copied = []
@@ -234,6 +236,13 @@ async def ws_cloud_sync(hass, connection, msg):
             copied.append(str(create["remoteName"]))
         if steps["create"]:
             await cloud.create_ir_remotes(steps["create"])
+        # Every scene on the remote becomes a scene of the account, as the app expects of them.
+        for scene in steps["scene_create"]:
+            steps["items"][scene["position"]]["sceneID"] = await cloud.create_scene(
+                name=scene["name"], icon=scene["icon"], color=scene["color"])
+        for scene in steps["scene_update"]:
+            await cloud.update_scene_look(scene_id=scene["sceneID"], name=scene["name"],
+                                          icon=scene["icon"], color=scene["color"])
         if steps["remove"]:
             await cloud.delete_bind_devices(steps["remove"])
         if steps["items"]:
@@ -245,6 +254,7 @@ async def ws_cloud_sync(hass, connection, msg):
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], {
             "created": len(steps["create"]), "removed": len(steps["remove"]), "copied": copied,
+            "scenes_created": len(steps["scene_create"]), "scenes_updated": len(steps["scene_update"]),
             "listed": len(steps["items"]), "skipped": steps["skipped"],
             "differences": cloud_sync.differences(bound_after, table, scenes) + cloud_sync.app_warnings(after),
         })

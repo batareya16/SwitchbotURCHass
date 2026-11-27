@@ -102,6 +102,11 @@ function loadingNote(text, compact = false) {
     + `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(text)}</span></div>`;
 }
 
+// The scene remotes among an integration entry's remotes.
+function sceneRemotes(entry) {
+  return (entry?.remotes || []).filter((item) => item.kind === "scene");
+}
+
 function busyLabel(text) {
   return `<span class="spinner inline" aria-hidden="true"></span>${escapeHtml(text)}`;
 }
@@ -537,6 +542,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (this._unsubscribe) this._unsubscribe();
     this._unsubscribe = null;
     clearTimeout(this._activeTimer);
+    clearTimeout(this._firmwareRetry);
   }
 
   async _refresh() {
@@ -586,6 +592,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     try {
       this._data = await this._hass.callWS({ type: `${DOMAIN}/studio/get`, ...(refresh ? {refresh: true} : {}) });
       this._normalizeSelection();
+      void this._ensureFirmware(refresh);
     } catch (error) {
       this._error = error?.message || String(error);
     } finally {
@@ -593,6 +600,37 @@ class SwitchBotUrcPanel extends HTMLElement {
       this._render();
       this._subscribe();
     }
+  }
+
+  // The remote's firmware version is read in the background, without holding up the page: on
+  // first open while it is unknown, and on every Refresh. A remote that is asleep is asked again
+  // a little later (a few times), and the version simply shows once it has been read.
+  async _ensureFirmware(force = false, attempt = 0) {
+    const entry = this._entry();
+    if (!entry || (entry.firmware_version && !force) || this._firmwareReading === entry.entry_id) return;
+    this._firmwareReading = entry.entry_id;
+    clearTimeout(this._firmwareRetry);
+    let version = null;
+    try {
+      ({ firmware_version: version } = await this._hass.callWS({
+        type: `${DOMAIN}/studio/firmware_read`, entry_id: entry.entry_id }));
+    } catch (error) { version = null; }
+    finally { this._firmwareReading = null; }
+    const current = this._entries().find((item) => item.entry_id === entry.entry_id);
+    if (version && current) {
+      if (current.firmware_version !== version) {
+        current.firmware_version = version;
+        this._render();
+      }
+    } else if (attempt < 3) {
+      this._firmwareRetry = setTimeout(() => this._ensureFirmware(force, attempt + 1), 60000);
+    }
+  }
+
+  // A version read along the way (settings, update check) is shown everywhere at once.
+  _noteFirmware(entryId, version) {
+    const entry = this._entries().find((item) => item.entry_id === entryId);
+    if (entry && Number.isInteger(version) && version > 0) entry.firmware_version = version;
   }
 
   async _subscribe() {
@@ -811,7 +849,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (this._remote()?.kind === "scene") return [];
     if (this._physical) {
       const remotePages = this._remote()?.pages || [];
-      const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
+      const nativeProfile = this._layoutProfile();
       const positions = ["A", "B", "C", "D", "ON", "OFF", "LEFT", "RIGHT", "UP",
         "DOWN", "OK", "BACK", "HOME", "KATA", "SOUNDOFF", "VOLADD", "VOLDEL", "CHUP", "CHDOWN"];
       return this._physical.pages.map((page) => {
@@ -1101,7 +1139,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (!page?.index || this._physical?.kind !== "native") return "";
     const owner = this._physical.pages.find((item) => item.index === page.index);
     if (!owner) return "";
-    const profile = this._nativeProfile(this._physical.native_type || this._physical.template);
+    const profile = this._layoutProfile();
     const defaultFunction = profile?.main_keys?.find((key) =>
       key.index === page.index - 1 && !key.actionable)?.function
       ?? profile?.subpages?.find((item) => item.index === page.index)?.link_function;
@@ -1176,6 +1214,11 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (artworkId == null) return "";
     // Catalog previews use the normal illustration. Variant state is a separate DSP runtime byte.
     return `/switchbot_urc_static/artwork/profile-${artworkId.toString(16).padStart(2, "0")}.png`;
+  }
+
+  // The Native profile of the remote whose layout is open.
+  _layoutProfile() {
+    return this._nativeProfile(this._physical.native_type || this._physical.template);
   }
 
   _nativeProfile(type) {
@@ -1397,7 +1440,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   // The scenes as the remote draws them: the highest number at the top (the SwitchBot app numbers
   // its list from the bottom up, too), or the pending order, top to bottom.
   _sceneList() {
-    return (this._entry()?.remotes || []).filter((item) => item.kind === "scene")
+    return sceneRemotes(this._entry())
       .sort((left, right) => right.scene_index - left.scene_index);
   }
 
@@ -1408,7 +1451,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     return order.map((index) => scenes.find((item) => item.scene_index === index));
   }
 
-  _sceneOrderValid(scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene")) {
+  _sceneOrderValid(scenes = sceneRemotes(this._entry())) {
     const order = this._sceneOrder;
     return Boolean(order && order.length === scenes.length
       && scenes.every((item) => order.includes(item.scene_index)));
@@ -1498,7 +1541,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   // The scene list is written again in the new order (the remote has no command to move a scene);
   // their Home Assistant actions move with them, and the selection follows the scene it was on.
   async _applySceneOrder() {
-    const scenes = (this._entry()?.remotes || []).filter((item) => item.kind === "scene");
+    const scenes = sceneRemotes(this._entry());
     // The screen lists the scenes from the top down, the highest number first; the new numbers
     // count from the bottom up, so the bottom scene becomes number 0.
     const order = [...this._sceneOrder].reverse();
@@ -1665,7 +1708,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const isHid = remote.device_type in HID_PROFILE_ARTWORK;
     const isIr = String(remote.device_type).startsWith("IR_");
     const profile = native
-      ? this._nativeProfile(this._physical.native_type || this._physical.template) : null;
+      ? this._layoutProfile() : null;
     const editing = this._iconPickerFor === remote.remote_id;
     const draft = this._appearanceDraftsByRemote.get(this._draftScope());
     const pickedIcon = draft?.icon ?? remote.icon;
@@ -2043,6 +2086,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/device_settings`, entry_id: state.entryId });
       state.values = result.settings;
       state.draft = structuredClone(result.settings);
+      this._noteFirmware(state.entryId, result.settings?.firmware_version);
     } catch (error) { state.error = error?.message || String(error); }
     finally {
       state.busy = "";
@@ -2054,7 +2098,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const state = this._deviceSettings;
     if (!state?.values || !state.draft) return {};
     return Object.fromEntries(Object.entries(state.draft).filter(
-      ([field, value]) => field !== "japan_model" && value !== state.values[field]));
+      ([field, value]) => field !== "japan_model" && field !== "firmware_version" && value !== state.values[field]));
   }
 
   _renderDeviceSettings() {
@@ -2087,7 +2131,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         ${values.japan_model ? "" : select("temperature_unit", "Temperature unit", [["0", "°C"], ["1", "°F"]])}
         ${select("language", "Screen language", [["0", "简体中文"], ["1", "English"], ["2", "日本語"]])}
         </div><p class="small">Changing the language may restart the remote.</p>
-        </fieldset>${this._feedback(state.error || state.status, state.error ? "error" : "success", "Remote settings")}
+        </fieldset>
+        ${this._renderFirmware(values.firmware_version)}${this._feedback(state.error || state.status, state.error ? "error" : "success", "Remote settings")}
         <footer class="studio-save"><span></span>
           <button type="submit" class="primary compact" id="saveDeviceSettings" ${state.busy || !Object.keys(this._deviceSettingsChanges()).length ? "disabled" : ""}>${state.busy === "save" ? busyLabel("Saving…") : "Save"}</button></footer></form>` : ""}
       ${!values ? this._feedback(state.error, "error", "Remote settings") : ""}
@@ -2095,8 +2140,41 @@ class SwitchBotUrcPanel extends HTMLElement {
     </dialog>`;
   }
 
+  // The firmware row of the remote's settings: the version read from the remote, and a check
+  // against the SwitchBot account. Updating is left to the SwitchBot app.
+  _renderFirmware(readVersion) {
+    const check = this._firmwareCheck?.entryId === this._entryId ? this._firmwareCheck : null;
+    const current = check?.current || readVersion || this._entry()?.firmware_version;
+    const newer = (version) => Number.isInteger(version) && Number.isInteger(current) && version > current;
+    let note = "";
+    if (check?.busy) note = loadingNote("Checking for updates…", true);
+    else if (check?.error) note = this._feedback(check.error, "warning", "Firmware");
+    else if (check && newer(check.required)) note = `<p class="small warning"><b>Update required:</b> V${check.required} is available. Update the firmware in the SwitchBot app.</p>`;
+    else if (check && newer(check.latest)) note = `<p class="small"><b>V${check.latest} is available.</b> Update the firmware in the SwitchBot app.</p>`;
+    else if (check && (Number.isInteger(check.latest) || Number.isInteger(check.required))) note = '<p class="small"><b>Up to date.</b></p>';
+    else if (check) note = '<p class="small">SwitchBot did not report a newer version.</p>';
+    return `<div class="firmware-row"><span>Firmware${current ? ` <b>V${escapeHtml(String(current))}</b>` : ""}</span>
+      <button type="button" class="secondary compact" id="checkFirmware" ${check?.busy ? "disabled" : ""}>${
+        check?.busy ? busyLabel("Checking…") : "Check for updates"}</button></div>${note}`;
+  }
+
+  async _checkFirmware() {
+    const state = { entryId: this._entryId, busy: true };
+    this._firmwareCheck = state;
+    this._render();
+    try {
+      Object.assign(state, await this._hass.callWS({ type: `${DOMAIN}/studio/firmware_check`, entry_id: state.entryId }));
+      this._noteFirmware(state.entryId, state.current);
+    } catch (error) { state.error = error?.message || String(error); }
+    finally {
+      state.busy = false;
+      if (this._firmwareCheck === state) this._render();
+    }
+  }
+
   _wireDeviceSettings() {
     const root = this.shadowRoot;
+    root.getElementById("checkFirmware")?.addEventListener("click", () => this._checkFirmware());
     root.getElementById("remoteSettings")?.addEventListener("click", () => this._openDeviceSettings());
     const dialog = root.getElementById("deviceSettingsDialog");
     if (!dialog) return;
@@ -2150,6 +2228,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/device_settings`, entry_id: state.entryId, changes });
       state.values = result.settings;
       state.draft = structuredClone(result.settings);
+      this._noteFirmware(state.entryId, result.settings?.firmware_version);
       state.status = "Settings saved and verified.";
     } catch (error) { state.error = error?.message || String(error); }
     finally {
@@ -2248,7 +2327,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         Remote's remotes and scenes in your account, and stops listing there what is no longer on
         it; no remote is deleted from your account. An IR remote made in Studio is saved to the
         account with its codes, and one installed from your account under a new id as a copy of it
-        with all its buttons. Check shows what Sync would do.</p>
+        with all its buttons. A scene the account does not have is made there as a tap-to-run
+        scene with nothing to run. Check shows what Sync would do.</p>
     </div>`;
   }
 
@@ -2285,7 +2365,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._cloud = { ...this._cloud, sync: {
           differences: result.differences || [], skipped: result.skipped || [], plan: result.plan || [],
           note: result.listed != null
-            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${(result.copied || []).length ? ` (${result.copied.join(", ")} with all the buttons of the account's remote)` : ""}${result.removed ? `, stopped listing ${result.removed} no longer on the remote` : ""}.`
+            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${(result.copied || []).length ? ` (${result.copied.join(", ")} with all the buttons of the account's remote)` : ""}${result.scenes_created ? `, made ${result.scenes_created} scene${result.scenes_created === 1 ? "" : "s"} in the account` : ""}${result.scenes_updated ? `, updated ${result.scenes_updated} scene${result.scenes_updated === 1 ? "" : "s"} there` : ""}${result.removed ? `, stopped listing ${result.removed} no longer on the remote` : ""}.`
             : "",
         } };
         if (result.listed != null) { this._sources = null; this._accountCodesFor = null; }
@@ -2298,7 +2378,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       syncRun(`${DOMAIN}/studio/cloud/sync_status`, "Comparing the remote with your account…"));
     root.getElementById("cloudSync")?.addEventListener("click", () => {
       if (!confirm("Update the SwitchBot app's list of this Universal Remote to match what is on it?\n\n"
-        + "Remotes and scenes on the remote are added to the list. Remotes that are no longer on it are "
+        + "Remotes and scenes on the remote are added to the list. A scene your account does not have "
+        + "is made there, as a scene with nothing to run. Remotes that are no longer on it are "
         + "taken off the list, but stay in your account. Nothing is deleted.")) return;
       syncRun(`${DOMAIN}/studio/cloud/sync`, "Updating your SwitchBot account…");
     });
@@ -2335,6 +2416,8 @@ class SwitchBotUrcPanel extends HTMLElement {
     const diag = this._diagnostics;
     return `<details class="device-table diagnostics">
       <summary>Diagnostics</summary>
+      ${this._entry()?.firmware_version ? `<p class="small">Firmware: V${escapeHtml(String(this._entry().firmware_version))}
+        (read from the remote; the SwitchBot account is told this version)</p>` : ""}
       <div class="key-actions">
         <button class="secondary compact" data-diagnostic="queries" title="Read every 0F63 query the remote answers; changes nothing">Read the remote's state</button>
         <button class="secondary compact" data-diagnostic="bridge" title="Look for each bridge address on the air">Check the bridges</button>
@@ -2429,7 +2512,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const entry = this._entry();
     const sceneTotal = entry?.scene_limit ?? 10;
     const sceneAvailable = entry && !entry.scene_error
-      ? Math.max(0, sceneTotal - entry.remotes.filter(remote => remote.kind === "scene").length) : "—";
+      ? Math.max(0, sceneTotal - sceneRemotes(entry).length) : "—";
     // The firmware draws one Matter text remote per Universal Remote.
     const textTotal = 1;
     const textUsed = entry?.remotes?.some(remote => remote.matter) || sources?.matter?.installed;
@@ -2452,7 +2535,7 @@ class SwitchBotUrcPanel extends HTMLElement {
   _installCapacityError(add, sources = this._sources) {
     if (add.kind === "scene") {
       const entry = this._entry();
-      const used = (entry?.remotes || []).filter((item) => item.kind === "scene").length;
+      const used = sceneRemotes(entry).length;
       return used >= (entry?.scene_limit || 10) ? "The remote already has ten scenes." : "";
     }
     const ir = IR_KINDS.includes(add.kind);
@@ -2626,7 +2709,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     const entry = this._entry();
     if (!entry || this._scenePanel?.busy) return;
     if (addNew && entry.scene_error) { this._notify(entry.scene_error, "error"); return; }
-    if (addNew && entry.remotes.filter(item => item.kind === "scene").length >= (entry.scene_limit || 10)) {
+    if (addNew && sceneRemotes(entry).length >= (entry.scene_limit || 10)) {
       this._notify("The remote already has ten scenes.", "warning");
       return;
     }
@@ -2639,7 +2722,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       entryId: this._entryId, busy: "", rows: [], drafts: new Map(), draft: null,
       limit: entry.scene_limit || 10, loaded: true, error: "", status: "",
     };
-    const rows = (entry.remotes || []).filter(item => item.kind === "scene").map(
+    const rows = sceneRemotes(entry).map(
       ({scene_index, name, icon, color, actions}) => ({index: scene_index, name, icon, color, actions: actions || []}));
     if (panel.draft) panel.drafts.set(panel.draft.index ?? "new", structuredClone(panel.draft));
     const savedContent = row => row && [row.name, row.icon, row.color, row.actions || []];
@@ -3248,7 +3331,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   async _installScene(add, name) {
     const entry = this._entry();
-    const rows = (entry.remotes || []).filter((item) => item.kind === "scene").map(
+    const rows = sceneRemotes(entry).map(
       ({ scene_index, name, icon, color }) => ({ index: scene_index, name, icon, color }));
     const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/save`,
       entry_id: this._entryId, expected: rows, name, icon: add.scene?.icon ?? 0,
@@ -3516,7 +3599,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
   _renderNativeProfileWarnings() {
     if (this._physical?.kind !== "native") return "";
-    const profile = this._nativeProfile(this._physical.native_type || this._physical.template);
+    const profile = this._layoutProfile();
     if (!profile) return "";
     const conflicts = this._nativeProfileConflicts(profile);
     const mainKeys = profile.main_keys || [];
@@ -3559,7 +3642,7 @@ class SwitchBotUrcPanel extends HTMLElement {
 
     const openSubpage = (numberPad) => {
       const index = button.button_index + 1;
-      const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
+      const nativeProfile = this._layoutProfile();
       if (this._physical.kind === "native" && !nativeProfile?.pages?.includes(index)) return;
       const home = this._physical.pages.find((item) => item.index === 0);
       if (!home || this._physical.pages.some((item) => item.index === index)) return;
@@ -3875,7 +3958,7 @@ class SwitchBotUrcPanel extends HTMLElement {
     if (button.button_page !== 0 || index > 3) return "";
     const letter = "ABCD"[index];
     const target = index + 1;
-    const nativeProfile = this._nativeProfile(this._physical.native_type || this._physical.template);
+    const nativeProfile = this._layoutProfile();
     if (this._physical.kind === "native" && !nativeProfile?.subpages?.some(
       (item) => item.index === target && item.link_index != null)) {
       return "";
@@ -4061,7 +4144,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       const glyphPicker = key.index < 4
         ? this._renderGlyphPicker(key, "glyph", "Button icon", key.function,
           Object.keys(NATIVE_GLYPH_LABELS).map(Number).filter((code) => !MENU_SHORTCUT_ICONS.has(code))) : "";
-      const stockKey = this._nativeProfile(this._physical.native_type || this._physical.template)
+      const stockKey = this._layoutProfile()
         ?.main_keys?.some((slot) => slot.index === key.index && slot.actionable);
       const canClear = !linkedPage && (key.index < 4 || !stockKey);
       return `${glyphPicker}${canClear || pageControl ? `<div class="key-editor">
@@ -4985,6 +5068,7 @@ class SwitchBotUrcPanel extends HTMLElement {
       .scr-scroll.dragging-tiles .scr-zone[data-zone="scenes"]>*,.scr-scroll.dragging-scenes .scr-zone[data-zone="tiles"]>*{opacity:.25}
       .scr-scroll.dragging-tiles .scr-zone[data-zone="scenes"]::after,.scr-scroll.dragging-scenes .scr-zone[data-zone="tiles"]::after{content:attr(data-hint);position:absolute;inset:0;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;background:#0009;border-radius:7px;text-align:center;padding:4px}
       .scr-zone.drop-denied{outline-color:#ff7b86;cursor:not-allowed}
+      .firmware-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 4px}
       .scr-zone.drop-denied::after{background:#5a1a20cc;color:#ffd5d9}
       .order-bar{display:flex;align-items:center;flex-wrap:nowrap;gap:6px;justify-content:center;margin-bottom:8px;font-size:12px;font-weight:700;white-space:nowrap}
       .order-bar>button.primary,.order-bar>button.secondary{height:26px;min-height:0;padding:0 10px;font-size:12px;line-height:1;border-radius:8px;flex:0 0 auto}

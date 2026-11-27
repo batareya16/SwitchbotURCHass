@@ -122,3 +122,24 @@ def test_a_wrong_refresh_token_answer_tries_the_cognito_refresh():
     settings.update(refresh_token="r", username="user@example.com")
     asyncio.run(client.refresh())
     assert calls[-1] == "/account/api/v1/user/cognito/token/refresh" and settings["access_token"] == "b"
+
+
+def test_the_firmware_check_asks_as_the_app_and_reads_the_remotes_package():
+    sent = []
+
+    async def post(path, body, renew=True):
+        sent.append((path, body))
+        if path.endswith("/query"):
+            return [{"deviceID": "B0E9FE531145", "packInfo": [
+                {"packType": "WoRWS_ble_freq", "version": "50"}, {"packType": "WoRWS_wifi", "version": "90"}]}]
+        raise cloud.CloudError("SwitchBot cloud returned status 190: none")
+
+    client = cloud.SwitchBotCloudClient(None, {"urc_device_id": "b0:e9:fe:53:11:45"}, None)
+    client.post = post
+    found = asyncio.run(client.firmware_versions(48))
+    assert found["current"] == 48 and found["latest"] == 50 and found["required"] is None
+    assert [path for path, _ in sent] == ["/firmware/v1/version/query", "/firmware/v1/version/queryForcedUpgrade"]
+    assert sent[0][1] == {"deviceList": [{"deviceID": "B0E9FE531145", "deviceType": "WoRWS", "bleVersion": 48}],
+                          "langCode": "en"}
+    assert cloud.firmware_package_version({"targetBleVersion": 49}) == 49
+    assert cloud.firmware_package_version([]) is None

@@ -17,12 +17,12 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.script import async_validate_actions_config
 
 from . import commands
+from . import device_settings
 from .catalog import ICONS
 from .bindings import (
     LIGHT_MAPPING_DEFAULTS,
     light_mapping_from_rows,
     native_button_label,
-    resolve_binding_action,
     resolve_binding_match,
 )
 from .const import CONF_ADDRESS, DOMAIN, EVENT_BUTTON
@@ -50,7 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "switchbot-urc"
 STATIC_URL = "/switchbot_urc_static"
-FRONTEND_VERSION = "0.53.31"
+FRONTEND_VERSION = "0.53.32"
 
 
 def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
@@ -520,6 +520,7 @@ def _serialize_entry(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
     return {
         "entry_id": entry.entry_id,
+        "firmware_version": entry.data.get(device_settings.FIRMWARE_KEY),
         "title": entry.title,
         "address": entry.data[CONF_ADDRESS],
         "battery": battery_state.state if battery_state else None,

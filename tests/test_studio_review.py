@@ -87,11 +87,12 @@ class TestMoveDestination:
     def test_full_controller_can_move_to_an_already_advertised_free_address(self):
         spare = "DA:71:16:E0:1F:92"
         controller = bridge(sets=2, serving=[DONGLE, spare])
-        assert a.next_move_address([controller], [DONGLE]) == spare
+        free = lambda used: next((address for address, _ in a.free_advertised_addresses([controller], used)), "")
+        assert free([DONGLE]) == spare
         assert a.bridge_for_move([controller], spare) is controller
         with pytest.raises(ValueError, match="no spare advertising sets"):
             a.bridge_for_move([controller], "C0:88:1B:E0:1F:92")
-        assert a.next_move_address([controller], [DONGLE, spare]) == ""
+        assert free([DONGLE, spare]) == ""
 
     def test_the_destination_is_detectably_occupied(self):
         used = [DONGLE, "C0:88:1B:E0:1F:92"]

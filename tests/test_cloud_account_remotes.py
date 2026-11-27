@@ -75,9 +75,11 @@ def test_an_installed_account_remote_is_listed_in_the_account_as_the_app_does():
     create, bind = posts[0][1], posts[1][1]
     assert create["groupID"] == "G1" and create["deviceID"] == "B0E9FE531145"
     assert create["items"] == [{"remoteID": "01-202611190101-22222222", "remoteIndex": 6,
-                                "parentRemoteID": "01-202611190101-22222222", "waitModify": False}]
+                                "parentRemoteID": "01-202611190101-22222222", "waitModify": False,
+                                "urcVersion": 48}]
     assert bind["items"] == [{"remoteID": "01-202611190101-22222222", "remoteName": "Hub fan",
-                              "type": 6, "remoteIndex": 6, "createFrom": "hub", "waitModify": False}]
+                              "type": 6, "remoteIndex": 6, "createFrom": "hub", "waitModify": False,
+                              "urcVersion": 48}]
     # a remote already bound to the Universal Remote only gets its slot updated
     posts.clear()
     asyncio.run(client.link_account_ir(remote_id="01-202611190101-11111111", remote_index=2,

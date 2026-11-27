@@ -20,6 +20,7 @@ def test_status_settings_offsets():
         "key_sounds": True, "auto_brightness": False, "lift_to_wake": True,
         "screen_brightness": 50, "key_brightness": 50, "screen_timeout": 15,
         "temperature_unit": 0, "language": 1, "touch_wheel": False, "japan_model": False,
+        "firmware_version": 48,
     }
     japan = bytearray(STATUS)
     japan[8] = 0x80
@@ -193,3 +194,30 @@ def test_options_write_failure_keeps_the_form_open(flow):
         assert result["data_schema"]({})["touch_wheel"] is True
 
     asyncio.run(run())
+
+
+def test_the_firmware_version_is_read_and_kept_with_the_integration():
+    class Entry:
+        data = {"address": "x", "cloud": {"access_token": "a"}}
+
+    class Entries:
+        def async_update_entry(self, entry, *, data):
+            entry.data = data
+
+    hass = types.SimpleNamespace(config_entries=Entries())
+    entry = Entry()
+
+    class Client:
+        async def send_command(self, command):
+            assert command == b"\x02"
+            return STATUS
+
+    assert asyncio.run(settings.read_firmware(hass, entry, Client())) == 48
+    assert entry.data == {"address": "x", "firmware_version": 48,
+                          "cloud": {"access_token": "a", "urc_version": 48}}
+
+    class Silent:
+        async def send_command(self, command):
+            raise TimeoutError
+
+    assert asyncio.run(settings.read_firmware(hass, entry, Silent())) == 48      # the kept one

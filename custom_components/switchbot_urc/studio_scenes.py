@@ -11,8 +11,8 @@ from homeassistant.core import callback
 from homeassistant.helpers.script import Script, async_validate_actions_config
 
 from .const import CONF_ADDRESS, DOMAIN
+from .matter_text import COMPANY_ID
 from .scenes import (
-    COMPANY_ID,
     SCENE_LIMIT,
     SCENE_LIST_QUERY,
     Scene,

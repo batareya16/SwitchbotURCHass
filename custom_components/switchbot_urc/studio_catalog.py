@@ -21,6 +21,7 @@ from .cloud import SwitchBotCloudClient
 from .cloud_ir import find_cloud_items, generate_remote_id, profile_from_cloud
 from .commands import custom_action_name
 from .const import DOMAIN
+from .device_settings import FIRMWARE_KEY
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,7 +51,10 @@ def cloud_client(hass, entry) -> SwitchBotCloudClient:
         data["cloud"] = cloud
         hass.config_entries.async_update_entry(entry, data=data)
 
-    return SwitchBotCloudClient(async_get_clientsession(hass), dict(settings), _save_tokens)
+    settings = dict(settings)
+    if isinstance(entry.data.get(FIRMWARE_KEY), int):
+        settings["urc_version"] = entry.data[FIRMWARE_KEY]   # read from the remote
+    return SwitchBotCloudClient(async_get_clientsession(hass), settings, _save_tokens)
 
 
 def _button_label(key_fun: int) -> str:

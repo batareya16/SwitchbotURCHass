@@ -7,7 +7,6 @@ from .commands import crc16_modbus
 
 SCENE_LIST_QUERY = 0x04
 SCENE_LIMIT = 10
-COMPANY_ID = 0x0969
 RECORD_SIZE = 67
 
 

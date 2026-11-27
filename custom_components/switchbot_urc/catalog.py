@@ -10,12 +10,7 @@ Each entry maps a WORWSTAG button name -> (keyFun, [hid_value_type, hid_value]) 
 """
 from __future__ import annotations
 
-# WORWSTAG id for every button name.
-TAG = {
-    "A": 0, "B": 1, "C": 2, "D": 3, "ON": 4, "OFF": 5, "LEFT": 6, "RIGHT": 7, "UP": 8,
-    "DOWN": 9, "OK": 10, "BACK": 11, "HOME": 12, "KATA": 13, "SOUNDOFF": 14, "VOLADD": 15,
-    "VOLDEL": 16, "CHUP": 17, "CHDOWN": 18,
-}
+# WORWSTAG id for every button name (the same table commands.py uses).
 
 # UniversalBLE HID usage per button: name -> [value_type, value] (from getHIT_fun_key_name).
 UNIVERSAL_BLE_HID = {
@@ -31,7 +26,7 @@ HID_DEVICE_TYPES = ["UNIVERSAL_BLE", "GOOGLE_TV", "FIRE_TV", "APPLE_TV"]
 
 # Native SwitchBot-device remote types (controlType 0; no HID-pair; presses connect OUT to the
 # target MAC — point them at the fake-device add-on to catch presses in HASS).
-from .commands import NATIVE_DEVICE_TYPES
+from .commands import NATIVE_DEVICE_TYPES, TAG
 
 # The basic HID editor stays HID-only. Native layouts use the dedicated Add/Recreate flow.
 DEVICE_TYPES = HID_DEVICE_TYPES
