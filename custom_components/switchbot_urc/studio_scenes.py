@@ -167,6 +167,13 @@ async def ws_save_scene(hass, connection, msg):
                 bindings.pop(str(index), None)
                 if actions:
                     bindings[str(index)] = {"scene": asdict(scene), "actions": actions}
+            moved = {}
+            if sorted(target) != list(range(len(target))):
+                moved = {str(old): new for new, old in enumerate(sorted(target)) if old != new}
+                # The remote draws its scenes by number, so the numbers must run 0, 1, 2… without
+                # a gap (a gap shows as an empty tile, the scene after it is not drawn); as the app
+                # does after a delete, the scenes are numbered again and their actions move along.
+                target, bindings = reorder_scenes(target, bindings, sorted(target))
             if target != current:
                 await _write_scene_list(client, runtime, current, target)
             _store_bindings(hass, entry, bindings)
@@ -177,7 +184,7 @@ async def ws_save_scene(hass, connection, msg):
         _LOGGER.debug("Remote Studio scene save failed", exc_info=True)
         connection.send_error(msg["id"], "scene_save_failed", str(err))
         return
-    connection.send_result(msg["id"], _result(target, bindings))
+    connection.send_result(msg["id"], {**_result(target, bindings), "moved": moved})
 
 
 async def _write_scene_list(client, runtime, current, target):

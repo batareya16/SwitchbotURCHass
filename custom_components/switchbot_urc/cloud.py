@@ -547,6 +547,21 @@ class SwitchBotCloudClient:
             raise CloudError("SwitchBot did not return the new scene's id")
         return str(scene_id)
 
+    async def list_scenes(self) -> list[dict[str, Any]]:
+        """The tap-to-run scenes of the account's home, with what each one runs (scene getList)."""
+        value = await self.post("/scene/v1/scene/getList",
+                                {"groupID": self.settings["group_id"], "sceneType": "scene"})
+        scenes = value.get("scenes") if isinstance(value, dict) else value
+        return [item for item in scenes or [] if isinstance(item, dict)]
+
+    async def delete_scenes(self, scenes: list[dict[str, Any]]) -> None:
+        """Delete scenes from the account's home (the app's scene list does it the same way)."""
+        await self.post("/scene/v1/scene/delete", {
+            "scenes": [{"id": str(item["sceneID"]), "isOldData": bool(item.get("isOldData", False))}
+                       for item in scenes],
+            "groupID": self.settings["group_id"], "sceneType": "scene",
+        })
+
     async def update_scene_look(self, *, scene_id: str, name: str, icon: str, color: str) -> None:
         """Change a scene's name, icon and colour, keeping its actions and notification setting."""
         detail = await self.post("/scene/v1/scene/getDetail", {"sceneID": scene_id})

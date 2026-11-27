@@ -172,10 +172,13 @@ def test_scene_save_updates_ha_only_after_physical_readback(studio, verified):
         assert subcommand == 4
         return frame(existing)
 
+    # Sleep sat alone at number 4, a gap the remote draws as empty tiles: it is numbered 1 now.
+    sleep = {**existing, "index": 1}
+
     async def sequence(commands, *, readback_subcommand):
         assert readback_subcommand == 4
-        assert commands == [scenes.build_scene_list([scenes.Scene(**new), scenes.Scene(**existing)])]
-        return [b"\x01", frame(new, existing) if verified else frame(existing)]
+        assert commands == [scenes.build_scene_list([scenes.Scene(**new), scenes.Scene(**sleep)])]
+        return [b"\x01", frame(new, sleep) if verified else frame(existing)]
 
     runtime = {"client": types.SimpleNamespace(query=query, send_command_sequence=sequence)}
     hass = types.SimpleNamespace(
@@ -204,6 +207,47 @@ def test_scene_save_updates_ha_only_after_physical_readback(studio, verified):
         ]
     else:
         assert "scene_bindings" not in entry.options
+
+
+def test_deleting_a_scene_numbers_the_rest_again_and_moves_their_actions(studio):
+    scenes = studio.studio_scenes
+    qwert = {"index": 0, "name": "QWERT", "icon": 21, "color": 6}
+    flow = {"index": 1, "name": "Flow vibe", "icon": 10, "color": 0}
+    entry = types.SimpleNamespace(domain="switchbot_urc", options={"scene_bindings": {
+        "1": {"scene": flow, "actions": [{"action": "script.turn_on", "target": {"entity_id": "script.flow"}}]}}})
+
+    def frame(*rows):
+        packet = scenes.build_scene_list([scenes.Scene(**row) for row in rows])
+        return b"\x01\0\0\0" + packet[3:7] + packet[7:]
+
+    async def query(subcommand):
+        return frame(qwert, flow)
+
+    written = []
+
+    async def sequence(commands, *, readback_subcommand):
+        written.extend(commands)
+        return [b"\x01", frame({**flow, "index": 0})]
+
+    hass = types.SimpleNamespace(
+        data={"switchbot_urc": {"entry": {"client": types.SimpleNamespace(query=query, send_command_sequence=sequence)}}},
+        config_entries=types.SimpleNamespace(
+            async_get_entry=lambda _: entry,
+            async_update_entry=lambda item, *, options: setattr(item, "options", options)),
+        states={},
+    )
+    results, errors = [], []
+    connection = types.SimpleNamespace(send_result=lambda _, payload: results.append(payload),
+                                       send_error=lambda _, code, message: errors.append(message))
+    asyncio.run(scenes.ws_save_scene(hass, connection, {
+        "id": 1, "entry_id": "entry", "expected": [qwert, flow], "delete": True, "index": 0}))
+    assert not errors
+    # Flow vibe is scene 0 now: written so, never left alone at number 1 (an empty tile)
+    assert written == [scenes.build_scene_list([scenes.Scene(0, "Flow vibe", 10, 0)])]
+    assert results[0]["moved"] == {"1": 0}
+    assert [row["name"] for row in results[0]["scenes"]] == ["Flow vibe"]
+    assert set(entry.options["scene_bindings"]) == {"0"}
+    assert entry.options["scene_bindings"]["0"]["actions"][0]["target"]["entity_id"] == "script.flow"
 
 
 def test_scene_actions_update_without_rewriting_the_remote_and_execute(studio, monkeypatch):

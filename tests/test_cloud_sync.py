@@ -134,36 +134,66 @@ def test_check_also_reports_what_lights_the_apps_banner_and_warnings():
 
 
 def test_scenes_are_listed_with_scenes_of_the_account_made_or_brought_in_line():
-    import asyncio
     table = []
     scenes = [{"index": 0, "name": "QWERT", "icon": 21, "color": 6},
               {"index": 1, "name": "Flow vibe", "icon": 10, "color": 0},
-              {"index": 2, "name": "Movie", "icon": 18, "color": 5}]
-    account = [{"sceneID": "S-flow", "name": "Flow vibe", "icon": {"css": "icon_32pt_scenarios_music", "color": "#FF2D55"}},
-               {"sceneID": "S-old", "name": "Film", "icon": {"css": "icon_32pt_scenarios_film", "color": "#00B2FF"}}]
+              {"index": 2, "name": "Movie", "icon": 18, "color": 5},
+              {"index": 3, "name": "Sleep", "icon": 21, "color": 1}]
+    runs = [{"optID": "device_act", "data": {}}]
+    account = [
+        {"sceneID": "S-flow", "name": "Flow vibe", "icon": {"css": "icon_32pt_scenarios_music", "color": "#FF2D55"}, "actions": []},
+        {"sceneID": "S-old", "name": "Film", "icon": {"css": "icon_32pt_scenarios_film", "color": "#00B2FF"},
+         "actions": [{"optID": "delay_act_delay", "data": {"delaySecond": 1}}]},
+        {"sceneID": "S-user", "name": "Sleep", "icon": {"css": "icon_32pt_scenarios_sleep", "color": "#FF2D55"}, "actions": runs},
+        {"sceneID": "S-user2", "name": "QWERT", "icon": {"css": "icon_32pt_scenarios_sleep", "color": "#5856D6"}, "actions": runs},
+        {"sceneID": "S-gone", "name": "Gone", "icon": {}, "actions": []},
+        {"sceneID": "S-mine", "name": "Mine", "icon": {}, "actions": runs},
+    ]
     bound = [{"sceneID": "studio-scene-0", "sceneName": "QWERT", "sceneIndex": 0},      # made up earlier
-             {"sceneID": "S-old", "sceneName": "Film", "sceneIndex": 2}]                # renamed on the remote
+             {"sceneID": "S-old", "sceneName": "Film", "sceneIndex": 2},                # renamed on the remote
+             {"sceneID": "S-user", "sceneName": "Sleep", "sceneIndex": 3},              # the user's own
+             {"sceneID": "S-gone", "sceneName": "Gone", "sceneIndex": 4},               # deleted from the remote
+             {"sceneID": "S-mine", "sceneName": "Mine", "sceneIndex": 5}]               # the user's, deleted from it
     steps = sync.plan(table, [], bound, set(), scenes, set(), account)
     by_name = {item["sceneName"]: item for item in steps["items"]}
-    assert by_name["QWERT"]["sceneID"] is None                          # made in the account by Sync
+    # QWERT: the user's own "QWERT" (S-user2) is not taken for it; Studio makes one
+    assert by_name["QWERT"]["sceneID"] is None
     assert by_name["QWERT"]["sceneIcon"] == "icon_32pt_scenarios_sleep" and by_name["QWERT"]["sceneColor"] == "#5856D6"
-    assert by_name["Flow vibe"]["sceneID"] == "S-flow"                  # an account scene of that name
-    assert by_name["Movie"]["sceneID"] == "S-old"                       # the one listed at its number
+    assert by_name["Flow vibe"]["sceneID"] == "S-flow"                  # one Studio made, by name
+    assert by_name["Movie"]["sceneID"] == "S-old"                       # the one Studio made at its number
+    assert by_name["Sleep"]["sceneID"] == "S-user"                      # the user's own, listed by name
     assert [scene["name"] for scene in steps["scene_create"]] == ["QWERT"]
-    assert [(scene["sceneID"], scene["was"]) for scene in steps["scene_update"]] == [("S-old", "Film")]
-    assert steps["remove"] == ["studio-scene-0"]
+    assert [scene["sceneID"] for scene in steps["scene_update"]] == ["S-old"]   # Flow vibe already matches
+    assert steps["scene_differs"] == ["Sleep"]                          # the user's scene is never changed
+    assert steps["scene_delete"] == [{"sceneID": "S-gone", "name": "Gone"}]   # S-mine only stops being listed
+    assert sorted(steps["remove"]) == ["S-gone", "S-mine", "studio-scene-0"]
     words = sync.preview(steps, [], table, bound)
     assert "Scene QWERT: made in your SwitchBot account as a tap-to-run scene with nothing to run, so the app knows it" in words
     assert "Scene Movie: its name, icon and colour in your account set as on the remote (was Film)" in words
-    # once made, the app finds every scene: no warning on the scenes
-    for scene in steps["scene_create"]:
-        steps["items"][scene["position"]]["sceneID"] = "S-new"
-    made = account + [{"sceneID": "S-new", "name": "QWERT", "icon": {"css": "icon_32pt_scenarios_sleep", "color": "#5856D6"}}]
-    made[0]["icon"]["css"] = "icon_32pt_scenarios_music"
-    fixed = [dict(item) for item in made]
-    fixed[1] = {"sceneID": "S-old", "name": "Movie", "icon": {"css": "icon_32pt_scenarios_film", "color": "#00B2FF"}}
-    assert sync.app_warnings({"bindDevices": steps["items"], "devices": [], "scenes": fixed}) == []
-    assert sync.differences(steps["items"], table, scenes) == []
+    assert "Scene Gone: the empty scene Studio made for it is removed from your account, as the remote no longer has it" in words
+    assert any(line.startswith("Scene Sleep: its name or look differs from your own scene") for line in words)
+    assert sync.differences(steps["items"][:0] + [dict(item, sceneID=item["sceneID"] or "S-new") for item in steps["items"]],
+                            table, scenes) == []
+
+
+def test_a_second_sync_after_a_reorder_or_rename_makes_nothing_new():
+    scenes = [{"index": 0, "name": "Flow vibe", "icon": 10, "color": 0}, {"index": 1, "name": "Night", "icon": 2, "color": 6}]
+    made = lambda scene_id, name, css, color: {"sceneID": scene_id, "name": name, "actions": [],
+                                               "icon": {"css": css, "color": color}}
+    account = [made("A", "Flow vibe", "icon_32pt_scenarios_music", "#FF2D55"),
+               made("B", "Night", "icon_32pt_scenarios_night", "#5856D6")]
+    bound = [{"sceneID": "A", "sceneName": "Flow vibe", "sceneIndex": 1},
+             {"sceneID": "B", "sceneName": "Night", "sceneIndex": 0}]          # the remote's order was swapped
+    steps = sync.plan([], [], bound, set(), scenes, set(), account)
+    assert steps["scene_create"] == [] and steps["scene_delete"] == [] and steps["remove"] == []
+    assert [(item["sceneID"], item["sceneIndex"]) for item in steps["items"]] == [("A", 0), ("B", 1)]
+    # renamed and moved at once: Flow vibe keeps its scene by name, Evening gets a new one, and
+    # the old one (Night), which Studio made and this remote listed, is removed: nothing is left behind
+    renamed = [{"index": 0, "name": "Evening", "icon": 2, "color": 6}, {"index": 1, "name": "Flow vibe", "icon": 10, "color": 0}]
+    bound = [{"sceneID": "A", "sceneName": "Flow vibe", "sceneIndex": 0}, {"sceneID": "B", "sceneName": "Night", "sceneIndex": 1}]
+    steps = sync.plan([], [], bound, set(), renamed, set(), account)
+    assert [scene["name"] for scene in steps["scene_create"]] == ["Evening"]
+    assert steps["scene_delete"] == [{"sceneID": "B", "name": "Night"}]
 
 
 cloud = load(INTEGRATION / "cloud.py")

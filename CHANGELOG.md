@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.53.33
+
+- Fix deleting a scene: the scenes after it kept their numbers, so the remote, which draws its scenes by number, showed an empty tile without a name in place of the deleted one and no longer showed the last scene. As the SwitchBot app does, Studio now numbers the scenes again without a gap whenever it writes the list (0, 1, 2…), and each scene's Home Assistant actions, unsaved edits and selection move with it. A remote left with a gap by an earlier delete is fixed by saving any of its scenes once. Run **Sync with the SwitchBot app** afterwards so the account lists the scenes at their new numbers.
+- **Sync** no longer leaves scenes behind in the account, and never touches your own scenes. Studio tells the scenes it made from yours by what they run (the app cannot save a scene with nothing to run but pauses, so such a scene is Studio's). A scene on the remote keeps the account scene listed for it by name; otherwise it takes one Studio made, by name or at its number, and only then is a new one made. Names are matched first, so a renamed scene never takes another one's. Only Studio's scenes are renamed or recoloured; a difference from one of your own is shown by **Check** and left alone. A scene Studio made that this remote no longer lists (after deleting, or renaming and moving a scene) is deleted from the account; your own scenes only stop being listed. Sync can be run any number of times without making new scenes.
+- The Bridge add-on is unchanged in this release (0.53.6 is the latest).
+
 ## 0.53.32
 
 - **Sync with the SwitchBot app** now makes the remote's scenes real scenes of your SwitchBot account, so the app no longer marks them as invalid. The app looks every scene of the Universal Remote up among the account's own scenes, and Studio's scenes had none. Sync lists each scene with the account scene already listed for it, or one of the same name, and otherwise makes a new tap-to-run scene in your home with the scene's name, icon and background and nothing to run (if SwitchBot refuses a scene with nothing to run, it gets a one-second pause, which does nothing). A scene renamed or recoloured in Studio is changed in the account at the next Sync, keeping whatever that scene runs. The scenes then also show in the app's list of scenes. **Check** lists which scenes Sync would make or change.

@@ -156,6 +156,19 @@ async def _sync_inputs(hass, entry):
         await device_settings.read_firmware(hass, entry, client)
     cloud = cloud_client(hass, entry)
     payload = await cloud.get_bindable_devices()
+    try:
+        # What each scene runs tells the scenes Studio made from the user's own.
+        listed = {str(item.get("sceneID")): item for item in await cloud.list_scenes()}
+    except Exception as err:  # noqa: BLE001 - without it every scene is taken as the user's own
+        _LOGGER.warning("Could not read the account's scenes: %s", err)
+        listed = {}
+    if listed and isinstance(payload, dict):
+        payload = {**payload, "scenes": [
+            {**item, "actions": listed[str(item.get("sceneID"))].get("actions")}
+            if str(item.get("sceneID")) in listed else item
+            for item in payload.get("scenes", []) if isinstance(item, dict)]
+            + [item for scene_id, item in listed.items()
+               if scene_id not in {str(row.get("sceneID")) for row in payload.get("scenes", []) if isinstance(row, dict)}]}
     bound = [item for item in (payload or {}).get("bindDevices", []) if isinstance(item, dict)]
     known = {str(item["remoteID"]) for key in ("bindDevices", "remotes")
              for item in (payload or {}).get(key, []) if isinstance(item, dict) and item.get("remoteID")}
@@ -169,7 +182,8 @@ def _account_devices(payload) -> set[str]:
 
 
 def _account_scenes(payload) -> list[dict]:
-    """The account's own scenes (tap-to-run scenes of its home)."""
+    """The account's scenes as the Universal Remote's list gives them (with what they run, from
+    the account's scene list, when it could be read: see _sync_inputs)."""
     return [item for item in (payload or {}).get("scenes", []) if isinstance(item, dict)]
 
 
@@ -247,6 +261,9 @@ async def ws_cloud_sync(hass, connection, msg):
             await cloud.delete_bind_devices(steps["remove"])
         if steps["items"]:
             await cloud.update_bind_devices(steps["items"])
+        if steps["scene_delete"]:
+            known_scenes = {str(item.get("sceneID")): item for item in _account_scenes(payload)}
+            await cloud.delete_scenes([known_scenes.get(item["sceneID"], item) for item in steps["scene_delete"]])
         after = await cloud.get_bindable_devices()
         bound_after = [item for item in (after or {}).get("bindDevices", []) if isinstance(item, dict)]
         options = deepcopy(dict(entry.options))
@@ -255,6 +272,7 @@ async def ws_cloud_sync(hass, connection, msg):
         connection.send_result(msg["id"], {
             "created": len(steps["create"]), "removed": len(steps["remove"]), "copied": copied,
             "scenes_created": len(steps["scene_create"]), "scenes_updated": len(steps["scene_update"]),
+            "scenes_deleted": len(steps["scene_delete"]),
             "listed": len(steps["items"]), "skipped": steps["skipped"],
             "differences": cloud_sync.differences(bound_after, table, scenes) + cloud_sync.app_warnings(after),
         })

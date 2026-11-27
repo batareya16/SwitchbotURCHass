@@ -2328,7 +2328,8 @@ class SwitchBotUrcPanel extends HTMLElement {
         it; no remote is deleted from your account. An IR remote made in Studio is saved to the
         account with its codes, and one installed from your account under a new id as a copy of it
         with all its buttons. A scene the account does not have is made there as a tap-to-run
-        scene with nothing to run. Check shows what Sync would do.</p>
+        scene with nothing to run, and removed again once the remote no longer has it; your own
+        scenes are never changed. Check shows what Sync would do.</p>
     </div>`;
   }
 
@@ -2365,7 +2366,7 @@ class SwitchBotUrcPanel extends HTMLElement {
         this._cloud = { ...this._cloud, sync: {
           differences: result.differences || [], skipped: result.skipped || [], plan: result.plan || [],
           note: result.listed != null
-            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${(result.copied || []).length ? ` (${result.copied.join(", ")} with all the buttons of the account's remote)` : ""}${result.scenes_created ? `, made ${result.scenes_created} scene${result.scenes_created === 1 ? "" : "s"} in the account` : ""}${result.scenes_updated ? `, updated ${result.scenes_updated} scene${result.scenes_updated === 1 ? "" : "s"} there` : ""}${result.removed ? `, stopped listing ${result.removed} no longer on the remote` : ""}.`
+            ? `Listed ${result.listed} in the account${result.created ? `, saved ${result.created} Studio remote${result.created === 1 ? "" : "s"} with their codes` : ""}${(result.copied || []).length ? ` (${result.copied.join(", ")} with all the buttons of the account's remote)` : ""}${result.scenes_created ? `, made ${result.scenes_created} scene${result.scenes_created === 1 ? "" : "s"} in the account` : ""}${result.scenes_updated ? `, updated ${result.scenes_updated} scene${result.scenes_updated === 1 ? "" : "s"} there` : ""}${result.scenes_deleted ? `, removed ${result.scenes_deleted} empty scene${result.scenes_deleted === 1 ? "" : "s"} Studio had made` : ""}${result.removed ? `, stopped listing ${result.removed} no longer on the remote` : ""}.`
             : "",
         } };
         if (result.listed != null) { this._sources = null; this._accountCodesFor = null; }
@@ -2380,7 +2381,8 @@ class SwitchBotUrcPanel extends HTMLElement {
       if (!confirm("Update the SwitchBot app's list of this Universal Remote to match what is on it?\n\n"
         + "Remotes and scenes on the remote are added to the list. A scene your account does not have "
         + "is made there, as a scene with nothing to run. Remotes that are no longer on it are "
-        + "taken off the list, but stay in your account. Nothing is deleted.")) return;
+        + "taken off the list, but stay in your account. Of the scenes, only the empty ones Studio "
+        + "made for scenes no longer on the remote are deleted; your own scenes are never changed.")) return;
       syncRun(`${DOMAIN}/studio/cloud/sync`, "Updating your SwitchBot account…");
     });
 
@@ -2892,8 +2894,13 @@ class SwitchBotUrcPanel extends HTMLElement {
       const result = await this._hass.callWS({ type: `${DOMAIN}/studio/scenes/save`,
         entry_id: panel.entryId, expected, ...fields });
       panel.drafts?.delete(index ?? "new");
+      // Scenes are numbered without gaps; after a delete (or a gap left by one) the ones after it
+      // move down, and their unsaved edits and the open scene move with them.
+      const moved = result.moved || {};
+      if (Object.keys(moved).length) this._moveSceneDrafts(moved);
+      const now = index == null ? null : (moved[index] ?? index);
       const saved = result.scenes.find((row) => index == null
-        ? !installedIndices.has(row.index) : row.index === index);
+        ? !installedIndices.has(row.index) : row.index === now);
       Object.assign(panel, { rows: result.scenes, draft: remove ? null : structuredClone(saved),
         status: remove ? "Scene deleted from the remote." : "Scene saved to the remote." });
       const entry = this._entry();

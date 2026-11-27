@@ -37,6 +37,18 @@ SCENE_ICON_CSS = tuple(f"icon_32pt_scenarios_{name}" for name in (
 SCENE_COLOR_HEX = ("#FF2D55", "#FF9300", "#FFC700", "#16D429", "#1DE1D5", "#00B2FF", "#5856D6", "#9CA1A4")
 
 
+def studio_made(scene: dict[str, Any]) -> bool:
+    """Whether an account scene is one Studio made: it has nothing to run but pauses.
+
+    The app does not let a scene be saved without an action other than a pause (filterErrorData in
+    its scene editor), so such a scene can only have been made by Studio. A scene whose actions
+    are not known is taken as the user's own.
+    """
+    actions = scene.get("actions")
+    return isinstance(actions, list) and all(
+        isinstance(action, dict) and action.get("optID") == "delay_act_delay" for action in actions)
+
+
 def scene_look(scene: dict[str, Any]) -> tuple[str, str]:
     """The account's icon and colour for a scene on the remote."""
     icon, color = scene.get("icon"), scene.get("color")
@@ -206,32 +218,62 @@ def plan(table: list[tuple[int, int, int, bytes]], remotes: list[dict[str, Any]]
     real_scenes = {str(item["sceneID"]): item for item in account_scenes or []
                    if isinstance(item, dict) and item.get("sceneID")}
     listed = [item for item in bound if str(item.get("sceneID") or "") in real_scenes]
-    used: set[str] = set()
     scene_create: list[dict[str, Any]] = []
     scene_update: list[dict[str, Any]] = []
-    for scene in sorted(scenes, key=lambda item: item["index"]):
+    scene_differs: list[str] = []
+    # Each scene keeps the account scene already listed for it by name (the user's own scene too),
+    # else takes one Studio made: listed at its number (renamed on the remote), or one of the
+    # account's with its name. Names are matched first for every scene, so a renamed scene never
+    # takes the account scene of another one. A scene of the user's own is never taken for another
+    # name, nor changed.
+    mine = lambda scene_id: studio_made(real_scenes[scene_id])
+    ordered = sorted(scenes, key=lambda item: item["index"])
+    chosen: dict[int, str] = {}
+    used: set[str] = set()
+    passes = (
+        lambda name, index: [str(item["sceneID"]) for item in listed if item.get("sceneName") == name],
+        lambda name, index: [scene_id for scene_id, item in real_scenes.items()
+                             if item.get("name") == name and mine(scene_id)],
+        lambda name, index: [str(item["sceneID"]) for item in listed
+                             if int(item.get("sceneIndex", -1)) == index and mine(str(item["sceneID"]))],
+    )
+    for candidates in passes:
+        for scene in ordered:
+            index = int(scene["index"])
+            if index in chosen:
+                continue
+            scene_id = next((choice for choice in candidates(str(scene["name"]), index) if choice not in used), None)
+            if scene_id:
+                chosen[index] = scene_id
+                used.add(scene_id)
+    for scene in ordered:
         css, color = scene_look(scene)
         name, index = str(scene["name"]), int(scene["index"])
-        choices = ([str(item["sceneID"]) for item in listed if item.get("sceneName") == name]
-                   + [str(item["sceneID"]) for item in listed if int(item.get("sceneIndex", -1)) == index]
-                   + [scene_id for scene_id, item in real_scenes.items() if item.get("name") == name])
-        scene_id = next((choice for choice in choices if choice not in used), None)
+        scene_id = chosen.get(index)
         item = {"sceneID": scene_id, "sceneName": name, "sceneIndex": index, "roomName": "",
                 "sceneIcon": css, "sceneColor": color}
         items.append(item)
         if scene_id is None:
             scene_create.append({"position": len(items) - 1, "name": name, "icon": css, "color": color})
             continue
-        used.add(scene_id)
         account = real_scenes[scene_id]
         look = account.get("icon") or {}
         if account.get("name") != name or look.get("css") != css or look.get("color") != color:
-            scene_update.append({"sceneID": scene_id, "name": name, "icon": css, "color": color,
-                                 "was": str(account.get("name") or "")})
+            if studio_made(account):
+                scene_update.append({"sceneID": scene_id, "name": name, "icon": css, "color": color,
+                                     "was": str(account.get("name") or "")})
+            else:
+                scene_differs.append(name)
     wanted = {entry_id(item) for item in items if entry_id(item)}
     remove = [entry_id(item) for item in bound if entry_id(item) and entry_id(item) not in wanted]
+    # A scene Studio made that this remote no longer lists is removed from the account, so
+    # deleting, renaming and moving scenes leaves nothing behind. The user's own scenes stay.
+    scene_delete = [{"sceneID": entry_id(item), "name": str(item.get("sceneName") or "")}
+                    for item in bound if _is_scene(item) and entry_id(item) in real_scenes
+                    and entry_id(item) not in wanted and studio_made(real_scenes[entry_id(item)])]
     return {"items": items, "create": create, "remove": remove, "skipped": skipped, "as_matter": as_matter,
-            "scene_create": scene_create, "scene_update": scene_update}
+            "scene_create": scene_create, "scene_update": scene_update, "scene_differs": scene_differs,
+            "scene_delete": scene_delete}
 
 
 def _same_name(left: Any, right: Any) -> bool:
@@ -300,6 +342,12 @@ def preview(steps: dict[str, Any], account_remotes: list[dict[str, Any]],
     for scene in steps.get("scene_create", []):
         lines.append(f"Scene {scene['name']}: made in your SwitchBot account as a tap-to-run scene with "
                      "nothing to run, so the app knows it")
+    for scene in steps.get("scene_delete", []):
+        lines.append(f"Scene {scene['name']}: the empty scene Studio made for it is removed from your "
+                     "account, as the remote no longer has it")
+    for name in steps.get("scene_differs", []):
+        lines.append(f"Scene {name}: its name or look differs from your own scene in the account; Sync "
+                     "leaves your scene as it is, so change one of them to match")
     for scene in steps.get("scene_update", []):
         lines.append(f"Scene {scene['name']}: its name, icon and colour in your account set as on the remote"
                      + (f" (was {scene['was']})" if scene["was"] and scene["was"] != scene["name"] else ""))

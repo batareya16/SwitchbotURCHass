@@ -143,3 +143,19 @@ def test_the_firmware_check_asks_as_the_app_and_reads_the_remotes_package():
                           "langCode": "en"}
     assert cloud.firmware_package_version({"targetBleVersion": 49}) == 49
     assert cloud.firmware_package_version([]) is None
+
+
+def test_scenes_are_listed_and_deleted_the_way_the_app_does():
+    sent = []
+
+    async def post(path, body, renew=True):
+        sent.append((path, body))
+        return {"scenes": [{"sceneID": "S1", "name": "QWERT", "actions": []}]} if path.endswith("getList") else {}
+
+    client = cloud.SwitchBotCloudClient(None, {"group_id": "G"}, None)
+    client.post = post
+    assert asyncio.run(client.list_scenes()) == [{"sceneID": "S1", "name": "QWERT", "actions": []}]
+    asyncio.run(client.delete_scenes([{"sceneID": "S1"}]))
+    assert sent == [("/scene/v1/scene/getList", {"groupID": "G", "sceneType": "scene"}),
+                    ("/scene/v1/scene/delete", {"scenes": [{"id": "S1", "isOldData": False}],
+                                                "groupID": "G", "sceneType": "scene"})]
